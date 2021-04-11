@@ -171,3 +171,6 @@ inclusion in the next release.
 --
 Alexandre Julliard
 julliard@winehq.org
+
+The purpose is only and only for Red's binary releases of Slackware.
+See https://github.com/RSKYS/wine-source/releases/
