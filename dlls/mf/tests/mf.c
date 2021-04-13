@@ -1170,6 +1170,7 @@ static void test_media_session(void)
     IMFShutdown *shutdown;
     PROPVARIANT propvar;
     DWORD status, caps;
+    IMFGetService *gs;
     IMFClock *clock;
     IUnknown *unk;
     HRESULT hr;
@@ -1270,6 +1271,16 @@ todo_wine
 
     hr = IMFMediaSession_Shutdown(session);
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+
+    check_interface(session, &IID_IMFGetService, TRUE);
+
+    hr = IMFMediaSession_QueryInterface(session, &IID_IMFGetService, (void **)&gs);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFGetService_GetService(gs, &MF_RATE_CONTROL_SERVICE, &IID_IMFRateSupport, (void **)&rate_support);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+
+    IMFGetService_Release(gs);
 
     hr = IMFShutdown_GetShutdownStatus(shutdown, &status);
     ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
@@ -2109,9 +2120,13 @@ todo_wine {
 
             IMFTopologyNode_Release(sink_node2);
 
+            hr = IMFTopology_SetUINT32(full_topology, &IID_IMFTopology, 123);
+            ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
             hr = IMFTopoLoader_Load(loader, full_topology, &topology2, NULL);
             ok(hr == S_OK, "Failed to resolve topology, hr %#x.\n", hr);
             ok(full_topology != topology2, "Unexpected instance.\n");
+            hr = IMFTopology_GetUINT32(topology2, &IID_IMFTopology, &value);
+            ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
 
             IMFTopology_Release(topology2);
             IMFTopology_Release(full_topology);
@@ -3874,7 +3889,10 @@ if (SUCCEEDED(hr))
     check_interface(sink, &IID_IMFClockStateSink, TRUE);
     check_interface(sink, &IID_IMFGetService, TRUE);
     todo_wine check_interface(sink, &IID_IMFPresentationTimeSource, TRUE);
+    todo_wine check_service_interface(sink, &MF_RATE_CONTROL_SERVICE, &IID_IMFRateSupport, TRUE);
+    check_service_interface(sink, &MF_RATE_CONTROL_SERVICE, &IID_IMFRateControl, FALSE);
     check_service_interface(sink, &MR_POLICY_VOLUME_SERVICE, &IID_IMFSimpleAudioVolume, TRUE);
+    check_service_interface(sink, &MR_STREAM_VOLUME_SERVICE, &IID_IMFAudioStreamVolume, TRUE);
 
     /* Clock */
     hr = IMFMediaSink_QueryInterface(sink, &IID_IMFClockStateSink, (void **)&state_sink);
@@ -5219,6 +5237,7 @@ static void test_MFRequireProtectedEnvironment(void)
     hr = MFRequireProtectedEnvironment(pd);
     ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
 
+    IMFMediaType_Release(mediatype);
     IMFStreamDescriptor_Release(sd);
     IMFPresentationDescriptor_Release(pd);
 }

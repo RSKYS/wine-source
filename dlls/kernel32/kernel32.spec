@@ -719,7 +719,7 @@
 @ stdcall -import GetLongPathNameW(wstr ptr long)
 @ stdcall GetMailslotInfo(long ptr ptr ptr ptr)
 @ stdcall GetMaximumProcessorCount(long)
-# @ stub GetMaximumProcessorGroupCount
+@ stdcall GetMaximumProcessorGroupCount()
 @ stdcall -import GetModuleFileNameA(long ptr long)
 @ stdcall -import GetModuleFileNameW(long ptr long)
 @ stdcall -import GetModuleHandleA(str)
@@ -1152,6 +1152,7 @@
 @ stdcall -import PeekConsoleInputW(ptr ptr long ptr)
 @ stdcall -import PeekNamedPipe(long ptr long ptr ptr ptr)
 @ stdcall -import PostQueuedCompletionStatus(long long ptr ptr)
+@ stdcall -import PackageIdFromFullName(wstr long ptr ptr)
 @ stdcall PowerClearRequest(long long)
 @ stdcall PowerCreateRequest(ptr)
 @ stdcall PowerSetRequest(long long)
