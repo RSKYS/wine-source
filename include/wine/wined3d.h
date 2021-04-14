@@ -2566,6 +2566,9 @@ void __cdecl wined3d_device_context_draw_indirect(struct wined3d_device_context 
         struct wined3d_buffer *buffer, unsigned int offset, bool indexed);
 void __cdecl wined3d_device_context_generate_mipmaps(struct wined3d_device_context *context,
         struct wined3d_shader_resource_view *view);
+HRESULT __cdecl wined3d_device_context_map(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx,
+        struct wined3d_map_desc *map_desc, const struct wined3d_box *box, unsigned int flags);
 void __cdecl wined3d_device_context_resolve_sub_resource(struct wined3d_device_context *context,
         struct wined3d_resource *dst_resource, unsigned int dst_sub_resource_idx,
         struct wined3d_resource *src_resource, unsigned int src_sub_resource_idx, enum wined3d_format_id format_id);
@@ -2604,6 +2607,8 @@ void __cdecl wined3d_device_context_set_vertex_declaration(struct wined3d_device
         struct wined3d_vertex_declaration *declaration);
 void __cdecl wined3d_device_context_set_viewports(struct wined3d_device_context *context, unsigned int viewport_count,
         const struct wined3d_viewport *viewports);
+HRESULT __cdecl wined3d_device_context_unmap(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx);
 void __cdecl wined3d_device_context_update_sub_resource(struct wined3d_device_context *context,
         struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
         const void *data, unsigned int row_pitch, unsigned int depth_pitch, unsigned int flags);

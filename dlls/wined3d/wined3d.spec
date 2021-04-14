@@ -171,6 +171,7 @@
 @ cdecl wined3d_device_context_dispatch(ptr long long long)
 @ cdecl wined3d_device_context_dispatch_indirect(ptr ptr long)
 @ cdecl wined3d_device_context_generate_mipmaps(ptr ptr)
+@ cdecl wined3d_device_context_map(ptr ptr long ptr ptr long)
 @ cdecl wined3d_device_context_resolve_sub_resource(ptr ptr long ptr long long)
 @ cdecl wined3d_device_context_set_blend_state(ptr ptr ptr long)
 @ cdecl wined3d_device_context_set_constant_buffer(ptr long long ptr)
@@ -189,6 +190,7 @@
 @ cdecl wined3d_device_context_set_unordered_access_view(ptr long long ptr long)
 @ cdecl wined3d_device_context_set_vertex_declaration(ptr ptr)
 @ cdecl wined3d_device_context_set_viewports(ptr long ptr)
+@ cdecl wined3d_device_context_unmap(ptr ptr long)
 @ cdecl wined3d_device_context_update_sub_resource(ptr ptr long ptr ptr long long long)
 
 @ cdecl wined3d_output_find_closest_matching_mode(ptr ptr)
