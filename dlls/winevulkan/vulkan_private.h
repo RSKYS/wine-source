@@ -28,13 +28,13 @@
 #include <pthread.h>
 
 #include "wine/debug.h"
-#include "wine/heap.h"
 #include "wine/list.h"
 #define VK_NO_PROTOTYPES
 #include "wine/vulkan.h"
 #include "wine/vulkan_driver.h"
 
 #include "vulkan_thunks.h"
+#include "loader_thunks.h"
 
 /* Magic value defined by Vulkan ICD / Loader spec */
 #define VULKAN_ICD_MAGIC_VALUE 0x01CDC0DE
@@ -89,8 +89,8 @@ struct VkDevice_T
     struct VkPhysicalDevice_T *phys_dev; /* parent */
     VkDevice device; /* native device */
 
-    struct VkQueue_T **queues;
-    uint32_t max_queue_families;
+    struct VkQueue_T* queues;
+    uint32_t queue_count;
 
     unsigned int quirks;
 
@@ -155,6 +155,8 @@ struct VkQueue_T
     struct VkDevice_T *device; /* parent */
     VkQueue queue; /* native queue */
 
+    uint32_t family_index;
+    uint32_t queue_index;
     VkDeviceQueueCreateFlags flags;
 
     struct wine_vk_mapping mapping;
@@ -242,5 +244,10 @@ BOOL wine_vk_instance_extension_supported(const char *name) DECLSPEC_HIDDEN;
 
 BOOL wine_vk_is_type_wrapped(VkObjectType type) DECLSPEC_HIDDEN;
 uint64_t wine_vk_unwrap_handle(VkObjectType type, uint64_t handle) DECLSPEC_HIDDEN;
+
+extern const struct unix_funcs loader_funcs;
+extern const struct unix_funcs *unix_funcs;
+
+const struct unix_funcs *unix_vk_init(const struct vulkan_funcs *driver) DECLSPEC_HIDDEN;
 
 #endif /* __WINE_VULKAN_PRIVATE_H */

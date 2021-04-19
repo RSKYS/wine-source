@@ -21,8 +21,12 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winternl.h"
 #include "winreg.h"
 #include "winuser.h"
+#include "initguid.h"
+#include "devguid.h"
+#include "setupapi.h"
 
 #include "vulkan_private.h"
 
@@ -33,9 +37,28 @@ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
  */
 #define WINE_VULKAN_ICD_VERSION 4
 
+DEFINE_DEVPROPKEY(DEVPROPKEY_GPU_LUID, 0x60b193cb, 0x5276, 0x4d0f, 0x96, 0xfc, 0xf1, 0x73, 0xab, 0xad, 0x3e, 0xc6, 2);
+DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_GPU_VULKAN_UUID, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5c, 2);
+
+const struct unix_funcs *unix_funcs;
+
 static HINSTANCE hinstance;
 
 static void *wine_vk_get_global_proc_addr(const char *name);
+
+#define wine_vk_find_struct(s, t) wine_vk_find_struct_((void *)s, VK_STRUCTURE_TYPE_##t)
+static void *wine_vk_find_struct_(void *s, VkStructureType t)
+{
+    VkBaseOutStructure *header;
+
+    for (header = s; header; header = header->pNext)
+    {
+        if (header->sType == t)
+            return header;
+    }
+
+    return NULL;
+}
 
 VkResult WINAPI wine_vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayerProperties *properties)
 {
@@ -184,6 +207,160 @@ VkResult WINAPI wine_vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *supporte
     TRACE("Loader requested ICD version %u, returning %u\n", req_version, *supported_version);
 
     return VK_SUCCESS;
+}
+
+static BOOL WINAPI wine_vk_init(INIT_ONCE *once, void *param, void **context)
+{
+    const struct vulkan_funcs *driver;
+    HDC hdc;
+
+    hdc = GetDC(0);
+    driver = __wine_get_vulkan_driver(hdc, WINE_VULKAN_DRIVER_VERSION);
+    ReleaseDC(0, hdc);
+    if (!driver)
+        ERR("Failed to load Wine graphics driver supporting Vulkan.\n");
+
+    return driver && !__wine_init_unix_lib(hinstance, DLL_PROCESS_ATTACH, driver, &unix_funcs);
+}
+
+static BOOL  wine_vk_init_once(void)
+{
+    static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+
+    return InitOnceExecuteOnce(&init_once, wine_vk_init, NULL, NULL);
+}
+
+VkResult WINAPI wine_vkCreateInstance(const VkInstanceCreateInfo *create_info,
+        const VkAllocationCallbacks *allocator, VkInstance *instance)
+{
+    TRACE("create_info %p, allocator %p, instance %p\n", create_info, allocator, instance);
+
+    if(!wine_vk_init_once())
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    return unix_funcs->p_vkCreateInstance(create_info, allocator, instance);
+}
+
+VkResult WINAPI wine_vkEnumerateInstanceExtensionProperties(const char *layer_name,
+        uint32_t *count, VkExtensionProperties *properties)
+{
+    TRACE("%p, %p, %p\n", layer_name, count, properties);
+
+    if (layer_name)
+    {
+        WARN("Layer enumeration not supported from ICD.\n");
+        return VK_ERROR_LAYER_NOT_PRESENT;
+    }
+
+    if (!wine_vk_init_once())
+    {
+        *count = 0;
+        return VK_SUCCESS;
+    }
+
+    return unix_funcs->p_vkEnumerateInstanceExtensionProperties(layer_name, count, properties);
+}
+
+VkResult WINAPI wine_vkEnumerateInstanceVersion(uint32_t *version)
+{
+    TRACE("%p\n", version);
+
+    if (!wine_vk_init_once())
+    {
+        *version = VK_API_VERSION_1_0;
+        return VK_SUCCESS;
+    }
+
+    return unix_funcs->p_vkEnumerateInstanceVersion(version);
+}
+
+static HANDLE get_display_device_init_mutex(void)
+{
+    static const WCHAR init_mutexW[] = {'d','i','s','p','l','a','y','_','d','e','v','i','c','e','_','i','n','i','t',0};
+    HANDLE mutex = CreateMutexW(NULL, FALSE, init_mutexW);
+
+    WaitForSingleObject(mutex, INFINITE);
+    return mutex;
+}
+
+static void release_display_device_init_mutex(HANDLE mutex)
+{
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+}
+
+/* Wait until graphics driver is loaded by explorer */
+static void wait_graphics_driver_ready(void)
+{
+    static BOOL ready = FALSE;
+
+    if (!ready)
+    {
+        SendMessageW(GetDesktopWindow(), WM_NULL, 0, 0);
+        ready = TRUE;
+    }
+}
+
+static void fill_luid_property(VkPhysicalDeviceProperties2 *properties2)
+{
+    static const WCHAR pci[] = {'P','C','I',0};
+    VkPhysicalDeviceIDProperties *id;
+    SP_DEVINFO_DATA device_data;
+    DWORD type, device_idx = 0;
+    HDEVINFO devinfo;
+    HANDLE mutex;
+    GUID uuid;
+    LUID luid;
+
+    if (!(id = wine_vk_find_struct(properties2, PHYSICAL_DEVICE_ID_PROPERTIES)))
+        return;
+
+    wait_graphics_driver_ready();
+    mutex = get_display_device_init_mutex();
+    devinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, pci, NULL, 0);
+    device_data.cbSize = sizeof(device_data);
+    while (SetupDiEnumDeviceInfo(devinfo, device_idx++, &device_data))
+    {
+        if (!SetupDiGetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_GPU_VULKAN_UUID,
+                &type, (BYTE *)&uuid, sizeof(uuid), NULL, 0))
+            continue;
+
+        if (!IsEqualGUID(&uuid, id->deviceUUID))
+            continue;
+
+        if (SetupDiGetDevicePropertyW(devinfo, &device_data, &DEVPROPKEY_GPU_LUID, &type,
+                (BYTE *)&luid, sizeof(luid), NULL, 0))
+        {
+            memcpy(&id->deviceLUID, &luid, sizeof(id->deviceLUID));
+            id->deviceLUIDValid = VK_TRUE;
+            id->deviceNodeMask = 1;
+            break;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(devinfo);
+    release_display_device_init_mutex(mutex);
+
+    TRACE("deviceName:%s deviceLUIDValid:%d LUID:%08x:%08x deviceNodeMask:%#x.\n",
+            properties2->properties.deviceName, id->deviceLUIDValid, luid.HighPart, luid.LowPart,
+            id->deviceNodeMask);
+}
+
+void WINAPI wine_vkGetPhysicalDeviceProperties2(VkPhysicalDevice phys_dev,
+        VkPhysicalDeviceProperties2 *properties2)
+{
+    TRACE("%p, %p\n", phys_dev, properties2);
+
+    unix_funcs->p_vkGetPhysicalDeviceProperties2(phys_dev, properties2);
+    fill_luid_property(properties2);
+}
+
+void WINAPI wine_vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice phys_dev,
+        VkPhysicalDeviceProperties2 *properties2)
+{
+    TRACE("%p, %p\n", phys_dev, properties2);
+
+    unix_funcs->p_vkGetPhysicalDeviceProperties2KHR(phys_dev, properties2);
+    fill_luid_property(properties2);
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, void *reserved)

@@ -241,8 +241,6 @@ static mode_t start_umask;
 /* at some point we may want to allow Winelib apps to set this */
 static const BOOL is_case_sensitive = FALSE;
 
-static struct file_identity windir;
-
 static pthread_mutex_t dir_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t mnt_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -2477,7 +2475,7 @@ NTSTATUS WINAPI NtQueryDirectoryFile( HANDLE handle, HANDLE event, PIO_APC_ROUTI
  * There must be at least MAX_DIR_ENTRY_LEN+2 chars available at pos.
  */
 static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, int length,
-                                  BOOLEAN check_case, BOOLEAN *is_win_dir )
+                                  BOOLEAN check_case )
 {
     WCHAR buffer[MAX_DIR_ENTRY_LEN];
     BOOLEAN is_name_8_dot_3;
@@ -2493,11 +2491,7 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
     if (ret >= 0 && ret <= MAX_DIR_ENTRY_LEN)
     {
         unix_name[pos + ret] = 0;
-        if (!stat( unix_name, &st ))
-        {
-            if (is_win_dir) *is_win_dir = is_same_file( &windir, &st );
-            return STATUS_SUCCESS;
-        }
+        if (!stat( unix_name, &st )) return STATUS_SUCCESS;
     }
     if (check_case) goto not_found;  /* we want an exact match */
 
@@ -2536,7 +2530,7 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
                         {
                             strcpy( unix_name + pos, kde[1].d_name );
                             close( fd );
-                            goto success;
+                            return STATUS_SUCCESS;
                         }
                     }
                     ret = ntdll_umbstowcs( kde[0].d_name, strlen(kde[0].d_name),
@@ -2546,7 +2540,7 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
                         strcpy( unix_name + pos,
                                 kde[1].d_name[0] ? kde[1].d_name : kde[0].d_name );
                         close( fd );
-                        goto success;
+                        return STATUS_SUCCESS;
                     }
                     if (ioctl( fd, VFAT_IOCTL_READDIR_BOTH, (long)kde ) == -1)
                     {
@@ -2573,7 +2567,7 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
         {
             strcpy( unix_name + pos, de->d_name );
             closedir( dir );
-            goto success;
+            return STATUS_SUCCESS;
         }
 
         if (!is_name_8_dot_3) continue;
@@ -2586,7 +2580,7 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
             {
                 strcpy( unix_name + pos, de->d_name );
                 closedir( dir );
-                goto success;
+                return STATUS_SUCCESS;
             }
         }
     }
@@ -2595,10 +2589,6 @@ static NTSTATUS find_file_in_dir( char *unix_name, int pos, const WCHAR *name, i
 not_found:
     unix_name[pos - 1] = 0;
     return STATUS_OBJECT_PATH_NOT_FOUND;
-
-success:
-    if (is_win_dir && !stat( unix_name, &st )) *is_win_dir = is_same_file( &windir, &st );
-    return STATUS_SUCCESS;
 }
 
 
@@ -2611,115 +2601,163 @@ static const WCHAR driversetcW[] = {'s','y','s','t','e','m','3','2','\\','d','r'
 static const WCHAR logfilesW[] = {'s','y','s','t','e','m','3','2','\\','l','o','g','f','i','l','e','s',0};
 static const WCHAR spoolW[] = {'s','y','s','t','e','m','3','2','\\','s','p','o','o','l',0};
 static const WCHAR system32W[] = {'s','y','s','t','e','m','3','2',0};
+static const WCHAR syswow64W[] = {'s','y','s','w','o','w','6','4',0};
 static const WCHAR sysnativeW[] = {'s','y','s','n','a','t','i','v','e',0};
 static const WCHAR regeditW[] = {'r','e','g','e','d','i','t','.','e','x','e',0};
+static const WCHAR syswow64_regeditW[] = {'s','y','s','w','o','w','6','4','\\','r','e','g','e','d','i','t','.','e','x','e',0};
+static const WCHAR windirW[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',0};
+static const WCHAR syswow64dirW[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\','s','y','s','w','o','w','6','4','\\'};
 
-static struct
+static const WCHAR * const no_redirect[] =
 {
-    const WCHAR *source;
-    const char *unix_target;
-} redirects[] =
-{
-    { catrootW, NULL },
-    { catroot2W, NULL },
-    { driversstoreW, NULL },
-    { driversetcW, NULL },
-    { logfilesW, NULL },
-    { spoolW, NULL },
-    { system32W, "syswow64" },
-    { sysnativeW, "system32" },
-    { regeditW, "syswow64/regedit.exe" }
+    catrootW,
+    catroot2W,
+    driversstoreW,
+    driversetcW,
+    logfilesW,
+    spoolW
 };
 
-static unsigned int nb_redirects;
+static struct file_identity windir, sysdir;
 
+static inline ULONG starts_with_path( const WCHAR *name, ULONG name_len, const WCHAR *prefix )
+{
+    ULONG len = wcslen( prefix );
+
+    if (name_len < len) return 0;
+    if (wcsnicmp( name, prefix, len )) return 0;
+    if (name_len > len && name[len] != '\\') return 0;
+    return len;
+}
+
+static BOOL replace_path( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *str, ULONG prefix_len,
+                          const WCHAR *match, const WCHAR *replace )
+{
+    const WCHAR *name = attr->ObjectName->Buffer;
+    ULONG match_len, replace_len, len = attr->ObjectName->Length / sizeof(WCHAR);
+    WCHAR *p;
+
+    if (!starts_with_path( name + prefix_len, len - prefix_len, match )) return FALSE;
+
+    match_len = wcslen( match );
+    replace_len = wcslen( replace );
+    str->Length = (len + replace_len - match_len) * sizeof(WCHAR);
+    str->MaximumLength = str->Length + sizeof(WCHAR);
+    if (!(p = str->Buffer = malloc( str->MaximumLength ))) return FALSE;
+
+    memcpy( p, name, prefix_len * sizeof(WCHAR) );
+    p += prefix_len;
+    memcpy( p, replace, replace_len * sizeof(WCHAR) );
+    p += replace_len;
+    name += prefix_len + match_len;
+    len -= prefix_len + match_len;
+    memcpy( p, name, len * sizeof(WCHAR) );
+    p[len] = 0;
+    attr->ObjectName = str;
+    return TRUE;
+}
 
 /***********************************************************************
  *           init_redirects
  */
 static void init_redirects(void)
 {
-    static const char windows_dir[] = "/dosdevices/c:/windows";
+    static const char system_dir[] = "/dosdevices/c:/windows/system32";
     char *dir;
     struct stat st;
 
-    if (!(dir = malloc( strlen(config_dir) + sizeof(windows_dir) ))) return;
+    if (!(dir = malloc( strlen(config_dir) + sizeof(system_dir) ))) return;
     strcpy( dir, config_dir );
-    strcat( dir, windows_dir );
+    strcat( dir, system_dir );
+    if (!stat( dir, &st ))
+    {
+        sysdir.dev = st.st_dev;
+        sysdir.ino = st.st_ino;
+    }
+    *strrchr( dir, '/' ) = 0;
     if (!stat( dir, &st ))
     {
         windir.dev = st.st_dev;
         windir.ino = st.st_ino;
-        nb_redirects = ARRAY_SIZE( redirects );
     }
     else ERR( "%s: %s\n", dir, strerror(errno) );
     free( dir );
 
 }
 
-
 /***********************************************************************
- *           match_redirect
- *
- * Check if path matches a redirect name. If yes, return matched length.
+ *           get_redirect
  */
-static int match_redirect( const WCHAR *path, int len, const WCHAR *redir, BOOLEAN check_case )
+BOOL get_redirect( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *redir )
 {
-    int i = 0;
+    const WCHAR *name = attr->ObjectName->Buffer;
+    unsigned int i, prefix_len = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
 
-    while (i < len)
+    redir->Buffer = NULL;
+    if (!NtCurrentTeb64()) return FALSE;
+    if (!len) return FALSE;
+
+    if (!attr->RootDirectory)
     {
-        int start = i;
-        while (i < len && !IS_SEPARATOR(path[i])) i++;
-        if (check_case)
-        {
-            if (wcsncmp( path + start, redir, i - start )) return 0;
-        }
-        else
-        {
-            if (wcsnicmp( path + start, redir, i - start )) return 0;
-        }
-        redir += i - start;
-        while (i < len && IS_SEPARATOR(path[i])) i++;
-        if (!*redir) return i;
-        if (*redir++ != '\\') return 0;
+        prefix_len = wcslen( windirW );
+        if (len < prefix_len || wcsnicmp( name, windirW, prefix_len )) return FALSE;
     }
-    return 0;
-}
-
-
-/***********************************************************************
- *           get_redirect_path
- *
- * Retrieve the Unix path corresponding to a redirected path if any.
- */
-static int get_redirect_path( char *unix_name, int pos, const WCHAR *name, int length, BOOLEAN check_case )
-{
-    unsigned int i;
-    int len;
-
-    for (i = 0; i < nb_redirects; i++)
+    else
     {
-        if ((len = match_redirect( name, length, redirects[i].source, check_case )))
+        int fd, needs_close;
+        struct stat st;
+
+        if (server_get_unix_fd( attr->RootDirectory, 0, &fd, &needs_close, NULL, NULL )) return FALSE;
+        fstat( fd, &st );
+        if (needs_close) close( fd );
+        if (!is_same_file( &windir, &st ))
         {
-            if (!redirects[i].unix_target) break;
-            unix_name[pos++] = '/';
-            strcpy( unix_name + pos, redirects[i].unix_target );
-            return len;
+            if (!is_same_file( &sysdir, &st )) return FALSE;
+            if (NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR]) return FALSE;
+            if (name[0] == '\\') return FALSE;
+
+            /* only check for paths that should NOT be redirected */
+            for (i = 0; i < ARRAY_SIZE( no_redirect ); i++)
+                if (starts_with_path( name, len, no_redirect[i] + 9 /* "system32\\" */)) return FALSE;
+
+            /* redirect everything else */
+            redir->Length = sizeof(syswow64dirW) + len * sizeof(WCHAR);
+            redir->MaximumLength = redir->Length + sizeof(WCHAR);
+            if (!(redir->Buffer = malloc( redir->MaximumLength ))) return FALSE;
+            memcpy( redir->Buffer, syswow64dirW, sizeof(syswow64dirW) );
+            memcpy( redir->Buffer + ARRAY_SIZE(syswow64dirW), name, len * sizeof(WCHAR) );
+            redir->Buffer[redir->Length / sizeof(WCHAR)] = 0;
+            attr->RootDirectory = 0;
+            attr->ObjectName = redir;
+            return TRUE;
         }
     }
-    return 0;
+
+    /* sysnative is redirected even when redirection is disabled */
+
+    if (replace_path( attr, redir, prefix_len, sysnativeW, system32W )) return TRUE;
+
+    if (NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR]) return FALSE;
+
+    for (i = 0; i < ARRAY_SIZE( no_redirect ); i++)
+        if (starts_with_path( name + prefix_len, len - prefix_len, no_redirect[i] )) return FALSE;
+
+    if (replace_path( attr, redir, prefix_len, system32W, syswow64W )) return TRUE;
+    if (replace_path( attr, redir, prefix_len, regeditW, syswow64_regeditW )) return TRUE;
+    return FALSE;
 }
 
 #else  /* _WIN64 */
 
 /* there are no redirects on 64-bit */
-static int get_redirect_path( char *unix_name, int pos, const WCHAR *name, int length, BOOLEAN check_case )
+BOOL get_redirect( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *redir )
 {
-    return 0;
+    redir->Buffer = NULL;
+    return FALSE;
 }
 
 #endif
+
 
 #define IS_OPTION_TRUE(ch) ((ch) == 'y' || (ch) == 'Y' || (ch) == 't' || (ch) == 'T' || (ch) == '1')
 
@@ -2926,29 +2964,6 @@ static NTSTATUS find_drive_rootA( LPCSTR *ppath, unsigned int len, int *drive_re
 
 
 /******************************************************************************
- *           rebuild_nt_name
- */
-static void rebuild_nt_name( const UNICODE_STRING *nameW, DWORD prefix_len,
-                             const char *unix_name, UNICODE_STRING *nt_name )
-{
-    WCHAR *buf;
-    DWORD len;
-
-    while (*unix_name == '/') unix_name++;
-    nt_name->MaximumLength = (prefix_len + strlen(unix_name) + 2) * sizeof(WCHAR);
-    if (!(buf = malloc( nt_name->MaximumLength ))) return;
-    nt_name->Buffer = buf;
-    memcpy( buf, nameW->Buffer, prefix_len * sizeof(WCHAR) );
-    if (prefix_len && buf[prefix_len - 1] != '\\') buf[prefix_len++] = '\\';
-    buf += prefix_len;
-    len = ntdll_umbstowcs( unix_name, strlen(unix_name), buf, strlen(unix_name) );
-    for (; len; len--, buf++) if (*buf == '/') *buf = '\\';
-    *buf = 0;
-    nt_name->Length = (buf - nt_name->Buffer) * sizeof(WCHAR);
-}
-
-
-/******************************************************************************
  *           find_file_id
  *
  * Recursively search directories from the dir queue for a given inode.
@@ -3018,6 +3033,7 @@ static NTSTATUS file_id_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *
     ULONGLONG file_id;
     struct stat st, root_st;
 
+    nt_name->Buffer = NULL;
     if (attr->ObjectName->Length != sizeof(ULONGLONG)) return STATUS_OBJECT_PATH_SYNTAX_BAD;
     if (!attr->RootDirectory) return STATUS_INVALID_PARAMETER;
     memcpy( &file_id, attr->ObjectName->Buffer, sizeof(file_id) );
@@ -3071,7 +3087,15 @@ done:
     {
         TRACE( "%s -> %s\n", wine_dbgstr_longlong(file_id), debugstr_a(unix_name) );
         *unix_name_ret = unix_name;
-        if (nt_name) rebuild_nt_name( attr->ObjectName, 0, unix_name, nt_name );
+
+        nt_name->MaximumLength = (strlen(unix_name) + 1) * sizeof(WCHAR);
+        if ((nt_name->Buffer = malloc( nt_name->MaximumLength )))
+        {
+            DWORD i, len = ntdll_umbstowcs( unix_name, strlen(unix_name), nt_name->Buffer, strlen(unix_name) );
+            nt_name->Buffer[len] = 0;
+            nt_name->Length = len * sizeof(WCHAR);
+            for (i = 0; i < len; i++) if (nt_name->Buffer[i] == '/') nt_name->Buffer[i] = '\\';
+        }
     }
     else
     {
@@ -3093,11 +3117,10 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
 {
     static const WCHAR invalid_charsW[] = { INVALID_NT_CHARS, '/', 0 };
     NTSTATUS status;
-    int ret, len;
+    int ret;
     struct stat st;
     char *unix_name = *buffer;
     const WCHAR *ptr, *end;
-    const BOOL redirect = NtCurrentTeb64() && !NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR];
 
     /* check syntax of individual components */
 
@@ -3132,20 +3155,16 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
         char *p;
         unix_name[pos + 1 + ret] = 0;
         for (p = unix_name + pos ; *p; p++) if (*p == '\\') *p = '/';
-        if (!name_len || !redirect || (!strstr( unix_name, "/windows/") && strncmp( unix_name, "windows/", 8 )))
+        if (!stat( unix_name, &st ))
         {
-            if (!stat( unix_name, &st ))
-            {
-                if (disposition == FILE_CREATE)
-                    return STATUS_OBJECT_NAME_COLLISION;
-                return STATUS_SUCCESS;
-            }
+            if (disposition == FILE_CREATE) return STATUS_OBJECT_NAME_COLLISION;
+            return STATUS_SUCCESS;
         }
     }
 
     if (!name_len)  /* empty name -> drive root doesn't exist */
         return STATUS_OBJECT_PATH_NOT_FOUND;
-    if (is_unix && !redirect && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE))
+    if (is_unix && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE))
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
     /* now do it component by component */
@@ -3153,7 +3172,6 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
     while (name_len)
     {
         const WCHAR *end, *next;
-        BOOLEAN is_win_dir = FALSE;
 
         end = name;
         while (end < name + name_len && *end != '\\') end++;
@@ -3171,8 +3189,7 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
             unix_name = *buffer = new_name;
         }
 
-        status = find_file_in_dir( unix_name, pos, name, end - name,
-                                   is_unix, redirect ? &is_win_dir : NULL );
+        status = find_file_in_dir( unix_name, pos, name, end - name, is_unix );
 
         /* if this is the last element, not finding it is not necessarily fatal */
         if (!name_len)
@@ -3202,14 +3219,6 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
 
         pos += strlen( unix_name + pos );
         name = next;
-
-        if (is_win_dir && (len = get_redirect_path( unix_name, pos, name, name_len, is_unix )))
-        {
-            name += len;
-            name_len -= len;
-            pos += strlen( unix_name + pos );
-            TRACE( "redirecting -> %s + %s\n", debugstr_a(unix_name), debugstr_w(name) );
-        }
     }
 
     return status;
@@ -3217,79 +3226,10 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
 
 
 /******************************************************************************
- *           nt_to_unix_file_name_attr
+ *           nt_to_unix_file_name_no_root
  */
-static NTSTATUS nt_to_unix_file_name_attr( const OBJECT_ATTRIBUTES *attr, char **name_ret,
-                                           UNICODE_STRING *nt_name, UINT disposition )
-{
-    enum server_fd_type type;
-    int old_cwd, root_fd, needs_close;
-    const WCHAR *name;
-    char *unix_name;
-    int name_len, unix_len;
-    NTSTATUS status;
-
-    if (!attr->RootDirectory)  /* without root dir fall back to normal lookup */
-        return nt_to_unix_file_name( attr->ObjectName, name_ret, nt_name, disposition );
-
-    name     = attr->ObjectName->Buffer;
-    name_len = attr->ObjectName->Length / sizeof(WCHAR);
-
-    if (name_len && name[0] == '\\') return STATUS_INVALID_PARAMETER;
-
-    unix_len = name_len * 3 + MAX_DIR_ENTRY_LEN + 3;
-    if (!(unix_name = malloc( unix_len ))) return STATUS_NO_MEMORY;
-    unix_name[0] = '.';
-
-    if (!(status = server_get_unix_fd( attr->RootDirectory, 0, &root_fd, &needs_close, &type, NULL )))
-    {
-        if (type != FD_TYPE_DIR)
-        {
-            if (needs_close) close( root_fd );
-            status = STATUS_BAD_DEVICE_TYPE;
-        }
-        else
-        {
-            mutex_lock( &dir_mutex );
-            if ((old_cwd = open( ".", O_RDONLY )) != -1 && fchdir( root_fd ) != -1)
-            {
-                status = lookup_unix_name( name, name_len, &unix_name, unix_len, 1, disposition, FALSE );
-                if (fchdir( old_cwd ) == -1) chdir( "/" );
-            }
-            else status = errno_to_status( errno );
-            mutex_unlock( &dir_mutex );
-            if (old_cwd != -1) close( old_cwd );
-            if (needs_close) close( root_fd );
-        }
-    }
-    else if (status == STATUS_OBJECT_TYPE_MISMATCH) status = STATUS_BAD_DEVICE_TYPE;
-
-    if (status == STATUS_SUCCESS || status == STATUS_NO_SUCH_FILE)
-    {
-        TRACE( "%s -> %s\n", debugstr_us(attr->ObjectName), debugstr_a(unix_name) );
-        *name_ret = unix_name;
-        if (nt_name) rebuild_nt_name( attr->ObjectName, 0, unix_name, nt_name );
-    }
-    else
-    {
-        TRACE( "%s not found in %s\n", debugstr_w(name), unix_name );
-        free( unix_name );
-    }
-    return status;
-}
-
-
-/******************************************************************************
- *           nt_to_unix_file_name
- *
- * Convert a file name from NT namespace to Unix namespace.
- *
- * If disposition is not FILE_OPEN or FILE_OVERWRITE, the last path
- * element doesn't have to exist; in that case STATUS_NO_SUCH_FILE is
- * returned, but the unix name is still filled in properly.
- */
-NTSTATUS nt_to_unix_file_name( const UNICODE_STRING *nameW, char **unix_name_ret,
-                               UNICODE_STRING *nt_name, UINT disposition )
+static NTSTATUS nt_to_unix_file_name_no_root( const UNICODE_STRING *nameW, char **unix_name_ret,
+                                              UINT disposition )
 {
     static const WCHAR unixW[] = {'u','n','i','x'};
     static const WCHAR invalid_charsW[] = { INVALID_NT_CHARS, 0 };
@@ -3372,15 +3312,83 @@ NTSTATUS nt_to_unix_file_name( const UNICODE_STRING *nameW, char **unix_name_ret
         }
     }
 
-    name += prefix_len + 1;
-    name_len -= prefix_len + 1;
+    prefix_len++;  /* skip initial backslash */
+    if (name_len > prefix_len && name[prefix_len] == '\\') prefix_len++;  /* allow a second backslash */
+    name += prefix_len;
+    name_len -= prefix_len;
 
     status = lookup_unix_name( name, name_len, &unix_name, unix_len, pos, disposition, is_unix );
     if (status == STATUS_SUCCESS || status == STATUS_NO_SUCH_FILE)
     {
         TRACE( "%s -> %s\n", debugstr_us(nameW), debugstr_a(unix_name) );
         *unix_name_ret = unix_name;
-        if (nt_name) rebuild_nt_name( nameW, name - nameW->Buffer, unix_name + pos, nt_name );
+    }
+    else
+    {
+        TRACE( "%s not found in %s\n", debugstr_w(name), unix_name );
+        free( unix_name );
+    }
+    return status;
+}
+
+
+/******************************************************************************
+ *           nt_to_unix_file_name
+ *
+ * Convert a file name from NT namespace to Unix namespace.
+ *
+ * If disposition is not FILE_OPEN or FILE_OVERWRITE, the last path
+ * element doesn't have to exist; in that case STATUS_NO_SUCH_FILE is
+ * returned, but the unix name is still filled in properly.
+ */
+NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, UINT disposition )
+{
+    enum server_fd_type type;
+    int old_cwd, root_fd, needs_close;
+    const WCHAR *name;
+    char *unix_name;
+    int name_len, unix_len;
+    NTSTATUS status;
+
+    if (!attr->RootDirectory)  /* without root dir fall back to normal lookup */
+        return nt_to_unix_file_name_no_root( attr->ObjectName, name_ret, disposition );
+
+    name     = attr->ObjectName->Buffer;
+    name_len = attr->ObjectName->Length / sizeof(WCHAR);
+
+    if (name_len && name[0] == '\\') return STATUS_INVALID_PARAMETER;
+
+    unix_len = name_len * 3 + MAX_DIR_ENTRY_LEN + 3;
+    if (!(unix_name = malloc( unix_len ))) return STATUS_NO_MEMORY;
+    unix_name[0] = '.';
+
+    if (!(status = server_get_unix_fd( attr->RootDirectory, 0, &root_fd, &needs_close, &type, NULL )))
+    {
+        if (type != FD_TYPE_DIR)
+        {
+            if (needs_close) close( root_fd );
+            status = STATUS_BAD_DEVICE_TYPE;
+        }
+        else
+        {
+            mutex_lock( &dir_mutex );
+            if ((old_cwd = open( ".", O_RDONLY )) != -1 && fchdir( root_fd ) != -1)
+            {
+                status = lookup_unix_name( name, name_len, &unix_name, unix_len, 1, disposition, FALSE );
+                if (fchdir( old_cwd ) == -1) chdir( "/" );
+            }
+            else status = errno_to_status( errno );
+            mutex_unlock( &dir_mutex );
+            if (old_cwd != -1) close( old_cwd );
+            if (needs_close) close( root_fd );
+        }
+    }
+    else if (status == STATUS_OBJECT_TYPE_MISMATCH) status = STATUS_BAD_DEVICE_TYPE;
+
+    if (status == STATUS_SUCCESS || status == STATUS_NO_SUCH_FILE)
+    {
+        TRACE( "%s -> %s\n", debugstr_us(attr->ObjectName), debugstr_a(unix_name) );
+        *name_ret = unix_name;
     }
     else
     {
@@ -3404,7 +3412,13 @@ NTSTATUS CDECL wine_nt_to_unix_file_name( const UNICODE_STRING *nameW, char *nam
                                           UINT disposition )
 {
     char *buffer = NULL;
-    NTSTATUS status = nt_to_unix_file_name( nameW, &buffer, NULL, disposition );
+    NTSTATUS status;
+    UNICODE_STRING redir;
+    OBJECT_ATTRIBUTES attr;
+
+    InitializeObjectAttributes( &attr, (UNICODE_STRING *)nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
+    get_redirect( &attr, &redir );
+    status = nt_to_unix_file_name( &attr, &buffer, disposition );
 
     if (buffer)
     {
@@ -3413,6 +3427,7 @@ NTSTATUS CDECL wine_nt_to_unix_file_name( const UNICODE_STRING *nameW, char *nam
         *size = strlen(buffer) + 1;
         free( buffer );
     }
+    free( redir.Buffer );
     return status;
 }
 
@@ -3697,7 +3712,8 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
                               ULONG attributes, ULONG sharing, ULONG disposition,
                               ULONG options, void *ea_buffer, ULONG ea_length )
 {
-    UNICODE_STRING nt_name = { 0 };
+    OBJECT_ATTRIBUTES new_attr;
+    UNICODE_STRING nt_name;
     char *unix_name;
     BOOL created = FALSE;
 
@@ -3711,10 +3727,17 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
 
     if (alloc_size) FIXME( "alloc_size not supported\n" );
 
+    new_attr = *attr;
     if (options & FILE_OPEN_BY_FILE_ID)
-        io->u.Status = file_id_to_unix_file_name( attr, &unix_name, &nt_name );
+    {
+        io->u.Status = file_id_to_unix_file_name( &new_attr, &unix_name, &nt_name );
+        if (!io->u.Status) new_attr.ObjectName = &nt_name;
+    }
     else
-        io->u.Status = nt_to_unix_file_name_attr( attr, &unix_name, &nt_name, disposition );
+    {
+        get_redirect( &new_attr, &nt_name );
+        io->u.Status = nt_to_unix_file_name( &new_attr, &unix_name, disposition );
+    }
 
     if (io->u.Status == STATUS_BAD_DEVICE_TYPE)
     {
@@ -3725,12 +3748,13 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
             req->rootdir    = wine_server_obj_handle( attr->RootDirectory );
             req->sharing    = sharing;
             req->options    = options;
-            wine_server_add_data( req, attr->ObjectName->Buffer, attr->ObjectName->Length );
+            wine_server_add_data( req, new_attr.ObjectName->Buffer, new_attr.ObjectName->Length );
             io->u.Status = wine_server_call( req );
             *handle = wine_server_ptr_handle( reply->handle );
         }
         SERVER_END_REQ;
         if (io->u.Status == STATUS_SUCCESS) io->Information = FILE_OPENED;
+        free( nt_name.Buffer );
         return io->u.Status;
     }
 
@@ -3742,12 +3766,8 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
 
     if (io->u.Status == STATUS_SUCCESS)
     {
-        OBJECT_ATTRIBUTES nt_attr = *attr;
-
-        if (nt_name.Buffer) nt_attr.ObjectName = &nt_name;
-        io->u.Status = open_unix_file( handle, unix_name, access, &nt_attr, attributes,
+        io->u.Status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
                                        sharing, disposition, options, ea_buffer, ea_length );
-        free( nt_name.Buffer );
         free( unix_name );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), io->u.Status );
@@ -3779,6 +3799,7 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
         if (!once++) ERR_(winediag)( "Too many open files, ulimit -n probably needs to be increased\n" );
     }
 
+    free( nt_name.Buffer );
     return io->u.Status;
 }
 
@@ -3900,8 +3921,11 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
 {
     char *unix_name;
     NTSTATUS status;
+    UNICODE_STRING redir;
+    OBJECT_ATTRIBUTES new_attr = *attr;
 
-    if (!(status = nt_to_unix_file_name_attr( attr, &unix_name, NULL, FILE_OPEN )))
+    get_redirect( &new_attr, &redir );
+    if (!(status = nt_to_unix_file_name( &new_attr, &unix_name, FILE_OPEN )))
     {
         ULONG attributes;
         struct stat st;
@@ -3930,6 +3954,7 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
         free( unix_name );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    free( redir.Buffer );
     return status;
 }
 
@@ -3941,8 +3966,11 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
 {
     char *unix_name;
     NTSTATUS status;
+    UNICODE_STRING redir;
+    OBJECT_ATTRIBUTES new_attr = *attr;
 
-    if (!(status = nt_to_unix_file_name_attr( attr, &unix_name, NULL, FILE_OPEN )))
+    get_redirect( &new_attr, &redir );
+    if (!(status = nt_to_unix_file_name( &new_attr, &unix_name, FILE_OPEN )))
     {
         ULONG attributes;
         struct stat st;
@@ -3959,6 +3987,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
         free( unix_name );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    free( redir.Buffer );
     return status;
 }
 
@@ -4491,38 +4520,35 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
         if (len >= sizeof(FILE_RENAME_INFORMATION))
         {
             FILE_RENAME_INFORMATION *info = ptr;
-            UNICODE_STRING name_str, nt_name = { 0 };
+            UNICODE_STRING name_str, redir;
             OBJECT_ATTRIBUTES attr;
             char *unix_name;
 
             name_str.Buffer = info->FileName;
             name_str.Length = info->FileNameLength;
             name_str.MaximumLength = info->FileNameLength + sizeof(WCHAR);
+            InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
+            get_redirect( &attr, &redir );
 
-            attr.Length = sizeof(attr);
-            attr.ObjectName = &name_str;
-            attr.RootDirectory = info->RootDirectory;
-            attr.Attributes = OBJ_CASE_INSENSITIVE;
-
-            io->u.Status = nt_to_unix_file_name_attr( &attr, &unix_name, &nt_name, FILE_OPEN_IF );
-            if (io->u.Status != STATUS_SUCCESS && io->u.Status != STATUS_NO_SUCH_FILE)
-                break;
-
-            SERVER_START_REQ( set_fd_name_info )
+            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
+            if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
             {
-                req->handle   = wine_server_obj_handle( handle );
-                req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
-                req->namelen  = nt_name.Length;
-                req->link     = FALSE;
-                req->replace  = info->ReplaceIfExists;
-                wine_server_add_data( req, nt_name.Buffer, nt_name.Length );
-                wine_server_add_data( req, unix_name, strlen(unix_name) );
-                io->u.Status = wine_server_call( req );
-            }
-            SERVER_END_REQ;
+                SERVER_START_REQ( set_fd_name_info )
+                {
+                    req->handle   = wine_server_obj_handle( handle );
+                    req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
+                    req->namelen  = attr.ObjectName->Length;
+                    req->link     = FALSE;
+                    req->replace  = info->ReplaceIfExists;
+                    wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );
+                    wine_server_add_data( req, unix_name, strlen(unix_name) );
+                    io->u.Status = wine_server_call( req );
+                }
+                SERVER_END_REQ;
 
-            free( unix_name );
-            free( nt_name.Buffer );
+                free( unix_name );
+            }
+            free( redir.Buffer );
         }
         else io->u.Status = STATUS_INVALID_PARAMETER_3;
         break;
@@ -4531,38 +4557,35 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
         if (len >= sizeof(FILE_LINK_INFORMATION))
         {
             FILE_LINK_INFORMATION *info = ptr;
-            UNICODE_STRING name_str, nt_name = { 0 };
+            UNICODE_STRING name_str, redir;
             OBJECT_ATTRIBUTES attr;
             char *unix_name;
 
             name_str.Buffer = info->FileName;
             name_str.Length = info->FileNameLength;
             name_str.MaximumLength = info->FileNameLength + sizeof(WCHAR);
+            InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
+            get_redirect( &attr, &redir );
 
-            attr.Length = sizeof(attr);
-            attr.ObjectName = &name_str;
-            attr.RootDirectory = info->RootDirectory;
-            attr.Attributes = OBJ_CASE_INSENSITIVE;
-
-            io->u.Status = nt_to_unix_file_name_attr( &attr, &unix_name, &nt_name, FILE_OPEN_IF );
-            if (io->u.Status != STATUS_SUCCESS && io->u.Status != STATUS_NO_SUCH_FILE)
-                break;
-
-            SERVER_START_REQ( set_fd_name_info )
+            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
+            if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
             {
-                req->handle   = wine_server_obj_handle( handle );
-                req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
-                req->namelen  = nt_name.Length;
-                req->link     = TRUE;
-                req->replace  = info->ReplaceIfExists;
-                wine_server_add_data( req, nt_name.Buffer, nt_name.Length );
-                wine_server_add_data( req, unix_name, strlen(unix_name) );
-                io->u.Status  = wine_server_call( req );
-            }
-            SERVER_END_REQ;
+                SERVER_START_REQ( set_fd_name_info )
+                {
+                    req->handle   = wine_server_obj_handle( handle );
+                    req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
+                    req->namelen  = attr.ObjectName->Length;
+                    req->link     = TRUE;
+                    req->replace  = info->ReplaceIfExists;
+                    wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );
+                    wine_server_add_data( req, unix_name, strlen(unix_name) );
+                    io->u.Status  = wine_server_call( req );
+                }
+                SERVER_END_REQ;
 
-            free( unix_name );
-            free( nt_name.Buffer );
+                free( unix_name );
+            }
+            free( redir.Buffer );
         }
         else io->u.Status = STATUS_INVALID_PARAMETER_3;
         break;
@@ -6711,7 +6734,7 @@ NTSTATUS WINAPI NtQueryObject( HANDLE handle, OBJECT_INFORMATION_CLASS info_clas
     {
         OBJECT_BASIC_INFORMATION *p = ptr;
 
-        if (len < sizeof(*p)) return STATUS_INVALID_BUFFER_SIZE;
+        if (len < sizeof(*p)) return STATUS_INFO_LENGTH_MISMATCH;
 
         SERVER_START_REQ( get_object_info )
         {
