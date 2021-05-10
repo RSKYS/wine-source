@@ -2549,6 +2549,7 @@ struct wined3d_context_vk
     VkCommandPool vk_command_pool;
     struct wined3d_command_buffer_vk current_command_buffer;
     uint64_t completed_command_buffer_id;
+    VkDeviceSize retired_bo_size;
 
     struct
     {
@@ -3913,6 +3914,7 @@ struct wined3d_null_views_vk
     VkDescriptorImageInfo vk_info_2dms;
     VkDescriptorImageInfo vk_info_3d;
     VkDescriptorImageInfo vk_info_cube;
+    VkDescriptorImageInfo vk_info_1d_array;
     VkDescriptorImageInfo vk_info_2d_array;
     VkDescriptorImageInfo vk_info_2dms_array;
 };
@@ -3921,6 +3923,7 @@ struct wined3d_null_views_vk
 #define WINED3D_ALLOCATOR_CHUNK_ORDER_COUNT 15
 #define WINED3D_ALLOCATOR_MIN_BLOCK_SIZE    (WINED3D_ALLOCATOR_CHUNK_SIZE >> (WINED3D_ALLOCATOR_CHUNK_ORDER_COUNT - 1))
 #define WINED3D_SLAB_BO_MIN_OBJECT_ALIGN    16
+#define WINED3D_RETIRED_BO_SIZE_THRESHOLD   (64 * 1024 * 1024)
 
 struct wined3d_allocator_chunk
 {
@@ -4692,8 +4695,12 @@ struct wined3d_device_context_ops
             unsigned int flags);
     HRESULT (*unmap)(struct wined3d_device_context *context, struct wined3d_resource *resource,
         unsigned int sub_resource_idx);
+    void (*update_sub_resource)(struct wined3d_device_context *context, struct wined3d_resource *resource,
+            unsigned int sub_resource_idx, const struct wined3d_box *box,
+            const void *data, unsigned int row_pitch, unsigned int slice_pitch);
     void (*issue_query)(struct wined3d_device_context *context, struct wined3d_query *query, unsigned int flags);
     void (*flush)(struct wined3d_device_context *context);
+    void (*acquire_resource)(struct wined3d_device_context *context, struct wined3d_resource *resource);
 };
 
 struct wined3d_device_context
@@ -4826,9 +4833,6 @@ void wined3d_device_context_emit_set_vertex_declaration(struct wined3d_device_co
         struct wined3d_vertex_declaration *declaration) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_viewports(struct wined3d_device_context *context, unsigned int viewport_count,
         const struct wined3d_viewport *viewports) DECLSPEC_HIDDEN;
-void wined3d_device_context_emit_update_sub_resource(struct wined3d_device_context *context,
-        struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
-        const void *data, unsigned int row_pitch, unsigned int slice_pitch) DECLSPEC_HIDDEN;
 
 static inline void wined3d_resource_wait_idle(struct wined3d_resource *resource)
 {

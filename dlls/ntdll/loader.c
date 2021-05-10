@@ -51,6 +51,18 @@ WINE_DECLARE_DEBUG_CHANNEL(imports);
 #define DEFAULT_SECURITY_COOKIE_32  0xbb40e64e
 #define DEFAULT_SECURITY_COOKIE_16  (DEFAULT_SECURITY_COOKIE_32 >> 16)
 
+#ifdef __i386__
+static const WCHAR pe_dir[] = L"\\i386-windows";
+#elif defined __x86_64__
+static const WCHAR pe_dir[] = L"\\x86_64-windows";
+#elif defined __arm__
+static const WCHAR pe_dir[] = L"\\arm-windows";
+#elif defined __aarch64__
+static const WCHAR pe_dir[] = L"\\aarch64-windows";
+#else
+static const WCHAR pe_dir[] = L"";
+#endif
+
 /* we don't want to include winuser.h */
 #define RT_MANIFEST                         ((ULONG_PTR)24)
 #define ISOLATIONAWARE_MANIFEST_RESOURCE_ID ((ULONG_PTR)2)
@@ -712,6 +724,29 @@ static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY
 
 
 /*************************************************************************
+ *		find_name_in_exports
+ *
+ * Helper for find_named_export.
+ */
+static int find_name_in_exports( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports, const char *name )
+{
+    const WORD *ordinals = get_rva( module, exports->AddressOfNameOrdinals );
+    const DWORD *names = get_rva( module, exports->AddressOfNames );
+    int min = 0, max = exports->NumberOfNames - 1;
+
+    while (min <= max)
+    {
+        int res, pos = (min + max) / 2;
+        char *ename = get_rva( module, names[pos] );
+        if (!(res = strcmp( ename, name ))) return ordinals[pos];
+        if (res > 0) max = pos - 1;
+        else min = pos + 1;
+    }
+    return -1;
+}
+
+
+/*************************************************************************
  *		find_named_export
  *
  * Find an exported function by name.
@@ -722,10 +757,10 @@ static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *
 {
     const WORD *ordinals = get_rva( module, exports->AddressOfNameOrdinals );
     const DWORD *names = get_rva( module, exports->AddressOfNames );
-    int min = 0, max = exports->NumberOfNames - 1;
+    int ordinal;
 
     /* first check the hint */
-    if (hint >= 0 && hint <= max)
+    if (hint >= 0 && hint < exports->NumberOfNames)
     {
         char *ename = get_rva( module, names[hint] );
         if (!strcmp( ename, name ))
@@ -733,17 +768,30 @@ static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *
     }
 
     /* then do a binary search */
-    while (min <= max)
-    {
-        int res, pos = (min + max) / 2;
-        char *ename = get_rva( module, names[pos] );
-        if (!(res = strcmp( ename, name )))
-            return find_ordinal_export( module, exports, exp_size, ordinals[pos], load_path );
-        if (res > 0) max = pos - 1;
-        else min = pos + 1;
-    }
-    return NULL;
+    if ((ordinal = find_name_in_exports( module, exports, name )) == -1) return NULL;
+    return find_ordinal_export( module, exports, exp_size, ordinal, load_path );
 
+}
+
+
+/*************************************************************************
+ *		RtlFindExportedRoutineByName
+ */
+void * WINAPI RtlFindExportedRoutineByName( HMODULE module, const char *name )
+{
+    const IMAGE_EXPORT_DIRECTORY *exports;
+    const DWORD *functions;
+    DWORD exp_size;
+    int ordinal;
+
+    exports = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size );
+    if (!exports || exp_size < sizeof(*exports)) return NULL;
+
+    if ((ordinal = find_name_in_exports( module, exports, name )) == -1) return NULL;
+    if (ordinal >= exports->NumberOfFunctions) return NULL;
+    functions = get_rva( module, exports->AddressOfFunctions );
+    if (!functions[ordinal]) return NULL;
+    return get_rva( module, functions[ordinal] );
 }
 
 
@@ -1064,10 +1112,9 @@ static void free_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
  */
 static NTSTATUS fixup_imports_ilonly( WINE_MODREF *wm, LPCWSTR load_path, void **entry )
 {
-    IMAGE_EXPORT_DIRECTORY *exports;
-    DWORD exp_size;
     NTSTATUS status;
-    void *proc = NULL;
+    void *proc;
+    const char *name;
     WINE_MODREF *prev, *imp;
 
     if (!(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS)) return STATUS_SUCCESS;  /* already done */
@@ -1089,13 +1136,8 @@ static NTSTATUS fixup_imports_ilonly( WINE_MODREF *wm, LPCWSTR load_path, void *
 
     TRACE( "loaded mscoree for %s\n", debugstr_w(wm->ldr.FullDllName.Buffer) );
 
-    if ((exports = RtlImageDirectoryEntryToData( imp->ldr.DllBase, TRUE,
-                                                 IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
-    {
-        const char *name = (wm->ldr.Flags & LDR_IMAGE_IS_DLL) ? "_CorDllMain" : "_CorExeMain";
-        proc = find_named_export( imp->ldr.DllBase, exports, exp_size, name, -1, load_path );
-    }
-    if (!proc) return STATUS_PROCEDURE_NOT_FOUND;
+    name = (wm->ldr.Flags & LDR_IMAGE_IS_DLL) ? "_CorDllMain" : "_CorExeMain";
+    if (!(proc = RtlFindExportedRoutineByName( imp->ldr.DllBase, name ))) return STATUS_PROCEDURE_NOT_FOUND;
     *entry = proc;
     return STATUS_SUCCESS;
 }
@@ -2432,6 +2474,45 @@ failed:
 
 
 /***********************************************************************
+ *	build_dlldata_path
+ *
+ * Helper for find_actctx_dll.
+ */
+static NTSTATUS build_dlldata_path( LPCWSTR libname, ACTCTX_SECTION_KEYED_DATA *data, LPWSTR *fullname )
+{
+    struct dllredirect_data *dlldata = data->lpData;
+    char *base = data->lpSectionBase;
+    SIZE_T total = dlldata->total_len + (wcslen(libname) + 1) * sizeof(WCHAR);
+    WCHAR *p, *buffer;
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG i;
+
+    if (!(p = buffer = RtlAllocateHeap( GetProcessHeap(), 0, total ))) return STATUS_NO_MEMORY;
+    for (i = 0; i < dlldata->paths_count; i++)
+    {
+        memcpy( p, base + dlldata->paths[i].offset, dlldata->paths[i].len );
+        p += dlldata->paths[i].len / sizeof(WCHAR);
+    }
+    if (p == buffer || p[-1] == '\\') wcscpy( p, libname );
+    else *p = 0;
+
+    if (dlldata->flags & DLL_REDIRECT_PATH_EXPAND)
+    {
+        RtlExpandEnvironmentStrings( NULL, buffer, wcslen(buffer), NULL, 0, &total );
+        if ((*fullname = RtlAllocateHeap( GetProcessHeap(), 0, total * sizeof(WCHAR) )))
+            RtlExpandEnvironmentStrings( NULL, buffer, wcslen(buffer), *fullname, total, NULL );
+        else
+            status = STATUS_NO_MEMORY;
+
+        RtlFreeHeap( GetProcessHeap(), 0, buffer );
+    }
+    else *fullname = buffer;
+
+    return status;
+}
+
+
+/***********************************************************************
  *	find_actctx_dll
  *
  * Find the full path (if any) of the dll from the activation context.
@@ -2440,8 +2521,9 @@ static NTSTATUS find_actctx_dll( LPCWSTR libname, LPWSTR *fullname )
 {
     static const WCHAR winsxsW[] = {'\\','w','i','n','s','x','s','\\'};
 
-    ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION *info;
+    ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION *info = NULL;
     ACTCTX_SECTION_KEYED_DATA data;
+    struct dllredirect_data *dlldata;
     UNICODE_STRING nameW;
     NTSTATUS status;
     SIZE_T needed, size = 1024;
@@ -2453,6 +2535,18 @@ static NTSTATUS find_actctx_dll( LPCWSTR libname, LPWSTR *fullname )
                                                     ACTIVATION_CONTEXT_SECTION_DLL_REDIRECTION,
                                                     &nameW, &data );
     if (status != STATUS_SUCCESS) return status;
+
+    if (data.ulLength < offsetof( struct dllredirect_data, paths[0] ))
+    {
+        status = STATUS_SXS_KEY_NOT_FOUND;
+        goto done;
+    }
+    dlldata = data.lpData;
+    if (!(dlldata->flags & DLL_REDIRECT_PATH_OMITS_ASSEMBLY_ROOT))
+    {
+        status = build_dlldata_path( libname, &data, fullname );
+        goto done;
+    }
 
     for (;;)
     {
@@ -2541,7 +2635,7 @@ static NTSTATUS get_env_var( const WCHAR *name, SIZE_T extra, UNICODE_STRING *re
 
     for (;;)
     {
-        ret->Buffer = RtlAllocateHeap( GetProcessHeap(), 0, size );
+        ret->Buffer = RtlAllocateHeap( GetProcessHeap(), 0, size * sizeof(WCHAR) );
         status = RtlQueryEnvironmentVariable( NULL, name, wcslen(name),
                                               ret->Buffer, size - extra - 1, &len );
         if (!status)
@@ -2552,7 +2646,11 @@ static NTSTATUS get_env_var( const WCHAR *name, SIZE_T extra, UNICODE_STRING *re
             return status;
         }
         RtlFreeHeap( GetProcessHeap(), 0, ret->Buffer );
-        if (status != STATUS_BUFFER_TOO_SMALL) return status;
+        if (status != STATUS_BUFFER_TOO_SMALL)
+        {
+            ret->Buffer = NULL;
+            return status;
+        }
         size = len + 1 + extra;
     }
 }
@@ -2588,18 +2686,19 @@ static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *ne
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         RtlFreeUnicodeString( new_name );
     }
+
     for (i = 0; ; i++)
     {
         swprintf( dllpath, ARRAY_SIZE(dllpath), L"WINEDLLDIR%u", i );
-        if (get_env_var( dllpath, 20 + wcslen(name), new_name )) break;
+        if (get_env_var( dllpath, wcslen(pe_dir) + wcslen(name) + 1, new_name )) break;
         len = new_name->Length;
+        RtlAppendUnicodeToString( new_name, pe_dir );
         RtlAppendUnicodeToString( new_name, L"\\" );
         RtlAppendUnicodeToString( new_name, name );
         status = open_dll_file( new_name, pwm, mapping, image_info, id );
-        if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;
-        else if (status != STATUS_DLL_NOT_FOUND) goto done;
+        if (status != STATUS_DLL_NOT_FOUND) goto done;
         new_name->Length = len;
-        RtlAppendUnicodeToString( new_name, L"\\fakedlls\\" );
+        RtlAppendUnicodeToString( new_name, L"\\" );
         RtlAppendUnicodeToString( new_name, name );
         status = open_dll_file( new_name, pwm, mapping, image_info, id );
         if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;

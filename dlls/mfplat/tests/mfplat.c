@@ -20,6 +20,7 @@
 
 #include <stdarg.h>
 #include <string.h>
+#include <limits.h>
 
 #define COBJMACROS
 
@@ -261,6 +262,8 @@ static HRESULT (WINAPI *pMFCreateDXGISurfaceBuffer)(REFIID riid, IUnknown *surfa
         IMFMediaBuffer **buffer);
 static HRESULT (WINAPI *pMFCreateVideoMediaTypeFromSubtype)(const GUID *subtype, IMFVideoMediaType **media_type);
 static HRESULT (WINAPI *pMFLockSharedWorkQueue)(const WCHAR *name, LONG base_priority, DWORD *taskid, DWORD *queue);
+static HRESULT (WINAPI *pMFLockDXGIDeviceManager)(UINT *token, IMFDXGIDeviceManager **manager);
+static HRESULT (WINAPI *pMFUnlockDXGIDeviceManager)(void);
 
 static HWND create_window(void)
 {
@@ -934,6 +937,7 @@ static void init_functions(void)
     X(MFCreateVideoSampleAllocatorEx);
     X(MFGetPlaneSize);
     X(MFGetStrideForBitmapInfoHeader);
+    X(MFLockDXGIDeviceManager);
     X(MFLockSharedWorkQueue);
     X(MFMapDX9FormatToDXGIFormat);
     X(MFMapDXGIFormatToDX9Format);
@@ -946,6 +950,7 @@ static void init_functions(void)
     X(MFTRegisterLocalByCLSID);
     X(MFTUnregisterLocal);
     X(MFTUnregisterLocalByCLSID);
+    X(MFUnlockDXGIDeviceManager);
 
     if ((mod = LoadLibraryA("d3d11.dll")))
     {
@@ -3129,7 +3134,9 @@ static void test_event_queue(void)
     EXPECT_REF(&callback.IMFAsyncCallback_iface, 2);
 
     IMFMediaEventQueue_Release(queue);
-    EXPECT_REF(&callback.IMFAsyncCallback_iface, 1);
+    ret = get_refcount(&callback.IMFAsyncCallback_iface);
+    ok(ret == 1 || broken(ret == 2) /* Vista */,
+       "Unexpected refcount %d, expected 1.\n", ret);
 
     hr = MFShutdown();
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
@@ -4240,10 +4247,20 @@ static void test_wrapped_media_type(void)
 
 static void test_MFCreateWaveFormatExFromMFMediaType(void)
 {
+    static const struct wave_fmt_test
+    {
+        const GUID *subtype;
+        WORD format_tag;
+    }
+    wave_fmt_tests[] =
+    {
+        { &MFAudioFormat_PCM,   WAVE_FORMAT_PCM, },
+        { &MFAudioFormat_Float, WAVE_FORMAT_IEEE_FLOAT, },
+    };
     WAVEFORMATEXTENSIBLE *format_ext;
     IMFMediaType *mediatype;
     WAVEFORMATEX *format;
-    UINT32 size;
+    UINT32 size, i;
     HRESULT hr;
 
     hr = MFCreateMediaType(&mediatype);
@@ -4261,45 +4278,48 @@ static void test_MFCreateWaveFormatExFromMFMediaType(void)
     hr = IMFMediaType_SetGUID(mediatype, &MF_MT_SUBTYPE, &MFMediaType_Video);
     ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
 
-    /* Audio/PCM */
     hr = IMFMediaType_SetGUID(mediatype, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
     ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
-    hr = IMFMediaType_SetGUID(mediatype, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
-    ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
 
-    hr = MFCreateWaveFormatExFromMFMediaType(mediatype, &format, &size, MFWaveFormatExConvertFlag_Normal);
-    ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
-    ok(format != NULL, "Expected format structure.\n");
-    ok(size == sizeof(*format), "Unexpected size %u.\n", size);
-    ok(format->wFormatTag == WAVE_FORMAT_PCM, "Unexpected tag.\n");
-    ok(format->nChannels == 0, "Unexpected number of channels, %u.\n", format->nChannels);
-    ok(format->nSamplesPerSec == 0, "Unexpected sample rate, %u.\n", format->nSamplesPerSec);
-    ok(format->nAvgBytesPerSec == 0, "Unexpected average data rate rate, %u.\n", format->nAvgBytesPerSec);
-    ok(format->nBlockAlign == 0, "Unexpected alignment, %u.\n", format->nBlockAlign);
-    ok(format->wBitsPerSample == 0, "Unexpected sample size, %u.\n", format->wBitsPerSample);
-    ok(format->cbSize == 0, "Unexpected size field, %u.\n", format->cbSize);
-    CoTaskMemFree(format);
+    for (i = 0; i < ARRAY_SIZE(wave_fmt_tests); ++i)
+    {
+        hr = IMFMediaType_SetGUID(mediatype, &MF_MT_SUBTYPE, wave_fmt_tests[i].subtype);
+        ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
 
-    hr = MFCreateWaveFormatExFromMFMediaType(mediatype, (WAVEFORMATEX **)&format_ext, &size,
-            MFWaveFormatExConvertFlag_ForceExtensible);
-    ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
-    ok(format_ext != NULL, "Expected format structure.\n");
-    ok(size == sizeof(*format_ext), "Unexpected size %u.\n", size);
-    ok(format_ext->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE, "Unexpected tag.\n");
-    ok(format_ext->Format.nChannels == 0, "Unexpected number of channels, %u.\n", format_ext->Format.nChannels);
-    ok(format_ext->Format.nSamplesPerSec == 0, "Unexpected sample rate, %u.\n", format_ext->Format.nSamplesPerSec);
-    ok(format_ext->Format.nAvgBytesPerSec == 0, "Unexpected average data rate rate, %u.\n",
-            format_ext->Format.nAvgBytesPerSec);
-    ok(format_ext->Format.nBlockAlign == 0, "Unexpected alignment, %u.\n", format_ext->Format.nBlockAlign);
-    ok(format_ext->Format.wBitsPerSample == 0, "Unexpected sample size, %u.\n", format_ext->Format.wBitsPerSample);
-    ok(format_ext->Format.cbSize == sizeof(*format_ext) - sizeof(format_ext->Format), "Unexpected size field, %u.\n",
-            format_ext->Format.cbSize);
-    CoTaskMemFree(format_ext);
+        hr = MFCreateWaveFormatExFromMFMediaType(mediatype, &format, &size, MFWaveFormatExConvertFlag_Normal);
+        ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
+        ok(format != NULL, "Expected format structure.\n");
+        ok(size == sizeof(*format), "Unexpected size %u.\n", size);
+        ok(format->wFormatTag == wave_fmt_tests[i].format_tag, "Expected tag %u, got %u.\n", wave_fmt_tests[i].format_tag, format->wFormatTag);
+        ok(format->nChannels == 0, "Unexpected number of channels, %u.\n", format->nChannels);
+        ok(format->nSamplesPerSec == 0, "Unexpected sample rate, %u.\n", format->nSamplesPerSec);
+        ok(format->nAvgBytesPerSec == 0, "Unexpected average data rate rate, %u.\n", format->nAvgBytesPerSec);
+        ok(format->nBlockAlign == 0, "Unexpected alignment, %u.\n", format->nBlockAlign);
+        ok(format->wBitsPerSample == 0, "Unexpected sample size, %u.\n", format->wBitsPerSample);
+        ok(format->cbSize == 0, "Unexpected size field, %u.\n", format->cbSize);
+        CoTaskMemFree(format);
 
-    hr = MFCreateWaveFormatExFromMFMediaType(mediatype, &format, &size, MFWaveFormatExConvertFlag_ForceExtensible + 1);
-    ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
-    ok(size == sizeof(*format), "Unexpected size %u.\n", size);
-    CoTaskMemFree(format);
+        hr = MFCreateWaveFormatExFromMFMediaType(mediatype, (WAVEFORMATEX **)&format_ext, &size,
+                MFWaveFormatExConvertFlag_ForceExtensible);
+        ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
+        ok(format_ext != NULL, "Expected format structure.\n");
+        ok(size == sizeof(*format_ext), "Unexpected size %u.\n", size);
+        ok(format_ext->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE, "Unexpected tag.\n");
+        ok(format_ext->Format.nChannels == 0, "Unexpected number of channels, %u.\n", format_ext->Format.nChannels);
+        ok(format_ext->Format.nSamplesPerSec == 0, "Unexpected sample rate, %u.\n", format_ext->Format.nSamplesPerSec);
+        ok(format_ext->Format.nAvgBytesPerSec == 0, "Unexpected average data rate rate, %u.\n",
+                format_ext->Format.nAvgBytesPerSec);
+        ok(format_ext->Format.nBlockAlign == 0, "Unexpected alignment, %u.\n", format_ext->Format.nBlockAlign);
+        ok(format_ext->Format.wBitsPerSample == 0, "Unexpected sample size, %u.\n", format_ext->Format.wBitsPerSample);
+        ok(format_ext->Format.cbSize == sizeof(*format_ext) - sizeof(format_ext->Format), "Unexpected size field, %u.\n",
+                format_ext->Format.cbSize);
+        CoTaskMemFree(format_ext);
+
+        hr = MFCreateWaveFormatExFromMFMediaType(mediatype, &format, &size, MFWaveFormatExConvertFlag_ForceExtensible + 1);
+        ok(hr == S_OK, "Failed to create format, hr %#x.\n", hr);
+        ok(size == sizeof(*format), "Unexpected size %u.\n", size);
+        CoTaskMemFree(format);
+    }
 
     IMFMediaType_Release(mediatype);
 }
@@ -5608,7 +5628,7 @@ static void test_MFCreate2DMediaBuffer(void)
 
         hr = IMFMediaBuffer_Lock(buffer, &data, &length2, NULL);
         ok(hr == S_OK, "Failed to lock buffer, hr %#x.\n", hr);
-        ok(length == ptr->contiguous_length, "%d: unexpected linear buffer length %u for %u x %u, format %s.\n",
+        ok(length2 == ptr->contiguous_length, "%d: unexpected linear buffer length %u for %u x %u, format %s.\n",
                 i, length2, ptr->width, ptr->height, wine_dbgstr_an((char *)&ptr->fourcc, 4));
 
         hr = IMFMediaBuffer_Unlock(buffer);
@@ -7115,6 +7135,77 @@ static void test_MFLockSharedWorkQueue(void)
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
 }
 
+static void test_MFllMulDiv(void)
+{
+    /* (a * b + d) / c */
+    static const struct muldivtest
+    {
+        LONGLONG a;
+        LONGLONG b;
+        LONGLONG c;
+        LONGLONG d;
+        LONGLONG result;
+    }
+    muldivtests[] =
+    {
+        { 0, 0, 0, 0, _I64_MAX },
+        { 1000000, 1000000, 2, 0, 500000000000 },
+        { _I64_MAX, 3, _I64_MAX, 0, 3 },
+        { _I64_MAX, 3, _I64_MAX, 1, 3 },
+        { -10000, 3, 100, 0, -300 },
+        { 2, 0, 3, 5, 1 },
+        { 2, 1, 1, -3, -1 },
+        /* a * b product does not fit in uint64_t */
+        { _I64_MAX, 4, 8, 0, _I64_MAX / 2 },
+        /* Large a * b product, large denominator */
+        { _I64_MAX, 4, 0x100000000, 0, 0x1ffffffff },
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(muldivtests); ++i)
+    {
+        LONGLONG result;
+
+        result = MFllMulDiv(muldivtests[i].a, muldivtests[i].b, muldivtests[i].c, muldivtests[i].d);
+        ok(result == muldivtests[i].result, "%u: unexpected result %s, expected %s.\n", i,
+                wine_dbgstr_longlong(result), wine_dbgstr_longlong(muldivtests[i].result));
+    }
+}
+
+static void test_shared_dxgi_device_manager(void)
+{
+    IMFDXGIDeviceManager *manager;
+    HRESULT hr;
+    UINT token;
+
+    if (!pMFLockDXGIDeviceManager)
+    {
+        win_skip("Shared DXGI device manager is not supported.\n");
+        return;
+    }
+
+    hr = pMFUnlockDXGIDeviceManager();
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    manager = NULL;
+    hr = pMFLockDXGIDeviceManager(NULL, &manager);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(!!manager, "Unexpected instance.\n");
+
+    hr = pMFLockDXGIDeviceManager(&token, &manager);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    EXPECT_REF(manager, 3);
+
+    hr = pMFUnlockDXGIDeviceManager();
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    EXPECT_REF(manager, 2);
+
+    hr = pMFUnlockDXGIDeviceManager();
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+}
+
 START_TEST(mfplat)
 {
     char **argv;
@@ -7179,6 +7270,8 @@ START_TEST(mfplat)
     test_dxgi_surface_buffer();
     test_sample_allocator();
     test_MFMapDX9FormatToDXGIFormat();
+    test_MFllMulDiv();
+    test_shared_dxgi_device_manager();
 
     CoUninitialize();
 }

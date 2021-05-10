@@ -309,12 +309,42 @@ static HRESULT video_presenter_set_media_type(struct video_presenter *presenter,
     return hr;
 }
 
+static HRESULT video_presenter_configure_output_type(struct video_presenter *presenter, const MFVideoArea *aperture,
+        IMFMediaType *media_type)
+{
+    unsigned int size;
+    GUID subtype;
+    LONG stride;
+    HRESULT hr;
+
+    hr = IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_SIZE, (UINT64)aperture->Area.cx << 32 | aperture->Area.cy);
+    if (SUCCEEDED(hr))
+        hr = IMFMediaType_SetBlob(media_type, &MF_MT_GEOMETRIC_APERTURE, (UINT8 *)aperture, sizeof(*aperture));
+    if (SUCCEEDED(hr))
+        hr = IMFMediaType_SetBlob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8 *)aperture, sizeof(*aperture));
+
+    if (SUCCEEDED(hr))
+        hr = IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
+
+    if (SUCCEEDED(hr))
+    {
+        hr = MFGetStrideForBitmapInfoHeader(subtype.Data1, aperture->Area.cx, &stride);
+        if (SUCCEEDED(hr))
+            hr = MFGetPlaneSize(subtype.Data1, aperture->Area.cx, aperture->Area.cy, &size);
+        if (SUCCEEDED(hr))
+            hr = IMFMediaType_SetUINT32(media_type, &MF_MT_DEFAULT_STRIDE, stride);
+        if (SUCCEEDED(hr))
+            hr = IMFMediaType_SetUINT32(media_type, &MF_MT_SAMPLE_SIZE, stride);
+    }
+
+    return hr;
+}
+
 static HRESULT video_presenter_invalidate_media_type(struct video_presenter *presenter)
 {
     IMFMediaType *media_type, *candidate_type;
+    MFVideoArea aperture = {{ 0 }};
     unsigned int idx = 0;
-    UINT64 frame_size;
-    MFVideoArea aperture;
     RECT rect;
     HRESULT hr;
 
@@ -332,11 +362,6 @@ static HRESULT video_presenter_invalidate_media_type(struct video_presenter *pre
 
     aperture.Area.cx = rect.right - rect.left;
     aperture.Area.cy = rect.bottom - rect.top;
-    aperture.OffsetX.value = 0;
-    aperture.OffsetX.fract = 0;
-    aperture.OffsetY.value = 0;
-    aperture.OffsetY.fract = 0;
-    frame_size = (UINT64)aperture.Area.cx << 32 | aperture.Area.cy;
 
     while (SUCCEEDED(hr = IMFTransform_GetOutputAvailableType(presenter->mixer, 0, idx++, &candidate_type)))
     {
@@ -346,10 +371,10 @@ static HRESULT video_presenter_invalidate_media_type(struct video_presenter *pre
             WARN("Failed to clone a media type, hr %#x.\n", hr);
         IMFMediaType_Release(candidate_type);
 
-        IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_SIZE, frame_size);
-        IMFMediaType_SetBlob(media_type, &MF_MT_GEOMETRIC_APERTURE, (UINT8 *)&aperture, sizeof(aperture));
+        hr = video_presenter_configure_output_type(presenter, &aperture, media_type);
 
-        hr = IMFTransform_SetOutputType(presenter->mixer, 0, media_type, MFT_SET_TYPE_TEST_ONLY);
+        if (SUCCEEDED(hr))
+            hr = IMFTransform_SetOutputType(presenter->mixer, 0, media_type, MFT_SET_TYPE_TEST_ONLY);
 
         if (SUCCEEDED(hr))
             hr = video_presenter_set_media_type(presenter, media_type);
@@ -366,17 +391,21 @@ static HRESULT video_presenter_invalidate_media_type(struct video_presenter *pre
     return hr;
 }
 
-static void video_presenter_sample_queue_init(struct video_presenter *presenter)
+static HRESULT video_presenter_sample_queue_init(struct video_presenter *presenter)
 {
     struct sample_queue *queue = &presenter->thread.queue;
 
     if (queue->size)
-        return;
+        return S_OK;
 
     memset(queue, 0, sizeof(*queue));
-    queue->samples = calloc(presenter->allocator_capacity, sizeof(*queue->samples));
+    if (!(queue->samples = calloc(presenter->allocator_capacity, sizeof(*queue->samples))))
+        return E_OUTOFMEMORY;
+
     queue->size = presenter->allocator_capacity;
     queue->back = queue->size - 1;
+
+    return S_OK;
 }
 
 static void video_presenter_sample_queue_push(struct video_presenter *presenter, IMFSample *sample)
@@ -516,13 +545,14 @@ static void video_presenter_check_queue(struct video_presenter *presenter,
 {
     LONGLONG pts, clocktime, delta;
     unsigned int wait = 0;
-    BOOL present = TRUE;
     IMFSample *sample;
     MFTIME systime;
+    BOOL present;
     HRESULT hr;
 
     while (video_presenter_sample_queue_pop(presenter, &sample))
     {
+        present = TRUE;
         wait = 0;
 
         if (presenter->clock)
@@ -688,10 +718,13 @@ static DWORD CALLBACK video_presenter_streaming_thread(void *arg)
 
 static HRESULT video_presenter_start_streaming(struct video_presenter *presenter)
 {
+    HRESULT hr;
+
     if (presenter->thread.hthread)
         return S_OK;
 
-    video_presenter_sample_queue_init(presenter);
+    if (FAILED(hr = video_presenter_sample_queue_init(presenter)))
+        return hr;
 
     if (!(presenter->thread.ready_event = CreateEventW(NULL, FALSE, FALSE, NULL)))
         return HRESULT_FROM_WIN32(GetLastError());

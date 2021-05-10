@@ -34,6 +34,7 @@ sync_test("elem_props", function() {
     test_exposed("doScroll", v < 11);
     test_exposed("readyState", v < 11);
     test_exposed("clientTop", true);
+    test_exposed("title", true);
     test_exposed("querySelectorAll", v >= 8);
     test_exposed("textContent", v >= 9);
     test_exposed("prefix", v >= 9);
@@ -115,6 +116,9 @@ sync_test("window_props", function() {
     test_exposed("getSelection", v >= 9);
     test_exposed("onfocusout", v >= 9);
     test_exposed("getComputedStyle", v >= 9);
+    test_exposed("requestAnimationFrame", v >= 10);
+    test_exposed("Map", v >= 11);
+    test_exposed("Set", v >= 11);
     if(v >= 9) /* FIXME: native exposes it in all compat modes */
         test_exposed("performance", true);
 });
@@ -538,6 +542,7 @@ sync_test("delete_prop", function() {
 });
 
 var func_scope_val = 1;
+var func_scope_val2 = 2;
 
 sync_test("func_scope", function() {
     var func_scope_val = 2;
@@ -571,4 +576,211 @@ sync_test("func_scope", function() {
 
     window = 1;
     ok(window === window.self, "window = " + window);
+
+    ! function func_scope_val2() {};
+    ok(window.func_scope_val2 === 2, "window.func_scope_val2 = " + window.func_scope_val2);
+
+    var o = {};
+    (function(x) {
+        ok(x === o, "x = " + x);
+        ! function x() {};
+        ok(x === o, "x != o");
+    })(o);
+
+    (function(x) {
+        ok(x === o, "x = " + x);
+        1, function x() {};
+        ok(x === o, "x != o");
+    })(o);
+
+    (function() {
+        ! function x() {};
+        try {
+            x();
+            ok(false, "expected exception");
+        }catch(e) {}
+    })(o);
+});
+
+sync_test("set_obj", function() {
+    if(!("Set" in window)) return;
+
+    var s = new Set, r;
+    ok(Object.getPrototypeOf(s) === Set.prototype, "unexpected Set prototype");
+
+    function test_length(name, len) {
+        ok(Set.prototype[name].length === len, "Set.prototype." + name + " = " + Set.prototype[name].length);
+    }
+    test_length("add", 1);
+    test_length("clear", 0);
+    test_length("delete", 1);
+    test_length("forEach", 1);
+    test_length("has", 1);
+    ok(!("entries" in s), "entries are in Set");
+    ok(!("keys" in s), "keys are in Set");
+    ok(!("values" in s), "values are in Set");
+
+    r = Object.prototype.toString.call(s);
+    ok(r === "[object Object]", "toString returned " + r);
+});
+
+sync_test("map_obj", function() {
+    if(!("Map" in window)) return;
+
+    var s = new Map, r, i;
+    ok(Object.getPrototypeOf(s) === Map.prototype, "unexpected Map prototype");
+
+    function test_length(name, len) {
+        ok(Map.prototype[name].length === len, "Map.prototype." + name + " = " + Map.prototype[name].length);
+    }
+    test_length("clear", 0);
+    test_length("delete", 1);
+    test_length("forEach", 1);
+    test_length("get", 1);
+    test_length("has", 1);
+    test_length("set", 2);
+    ok(!("entries" in s), "entries are in Map");
+    ok(!("keys" in s), "keys are in Map");
+    ok(!("values" in s), "values are in Map");
+    todo_wine.
+    ok("size" in Map.prototype, "size is not in Map.prototype");
+
+    r = Object.prototype.toString.call(s);
+    ok(r === "[object Object]", "toString returned " + r);
+
+    r = s.get("test");
+    ok(r === undefined, "get(test) returned " + r);
+    r = s.has("test");
+    ok(r === false, "has(test) returned " + r);
+    ok(s.size === 0, "size = " + s.size + " expected 0");
+
+    r = s.set("test", 1);
+    ok(r === undefined, "set returned " + r);
+    ok(s.size === 1, "size = " + s.size + " expected 1");
+    r = s.get("test");
+    ok(r === 1, "get(test) returned " + r);
+    r = s.has("test");
+    ok(r === true, "has(test) returned " + r);
+
+    s.size = 100;
+    ok(s.size === 1, "size = " + s.size + " expected 1");
+
+    s.set("test", 2);
+    r = s.get("test");
+    ok(r === 2, "get(test) returned " + r);
+    r = s.has("test");
+    ok(r === true, "has(test) returned " + r);
+
+    r = s["delete"]("test"); /* using s.delete() would break parsing in quirks mode */
+    ok(r === true, "delete(test) returned " + r);
+    ok(s.size === 0, "size = " + s.size + " expected 0");
+    r = s["delete"]("test");
+    ok(r === false, "delete(test) returned " + r);
+
+    var test_keys = [undefined, null, NaN, 3, "str", false, true, {}];
+    for(i in test_keys) {
+        r = s.set(test_keys[i], test_keys[i] + 1);
+        ok(r === undefined, "set(test) returned " + r);
+    }
+    ok(s.size === test_keys.length, "size = " + s.size + " expected " + test_keys.length);
+    for(i in test_keys) {
+        r = s.get(test_keys[i]);
+        if(isNaN(test_keys[i]))
+            ok(isNaN(r), "get(" + test_keys[i] + ") returned " + r);
+        else
+            ok(r === test_keys[i] + 1, "get(" + test_keys[i] + ") returned " + r);
+    }
+
+    var calls = [];
+    i = 0;
+    r = s.forEach(function(value, key) {
+        if(isNaN(test_keys[i])) {
+            ok(isNaN(key), "key = " + key + " expected NaN");
+            ok(isNaN(value), "value = " + value + " expected NaN");
+        }else {
+            ok(key === test_keys[i], "key = " + key + " expected " + test_keys[i]);
+            ok(value === key + 1, "value = " + value);
+        }
+        i++;
+    });
+    ok(i === test_keys.length, "i = " + i);
+    ok(r === undefined, "forEach returned " + r);
+
+    s.set(3, "test2")
+    calls = [];
+    i = 0;
+    s.forEach(function(value, key) {
+        if(isNaN(test_keys[i]))
+            ok(isNaN(key), "key = " + key + " expected " + test_keys[i]);
+        else
+            ok(key === test_keys[i], "key = " + key + " expected " + test_keys[i]);
+        i++;
+    });
+    ok(i === test_keys.length, "i = " + i);
+
+    r = s.clear();
+    ok(r === undefined, "clear returned " + r);
+    ok(s.size === 0, "size = " + s.size + " expected 0");
+    r = s.get(test_keys[0]);
+    ok(r === undefined, "get returned " + r);
+
+    s = new Map();
+    s.set(1, 10);
+    s.set(2, 20);
+    s.set(3, 30);
+    i = true;
+    s.forEach(function() {
+        ok(i, "unexpected call");
+        s.clear();
+        i = false;
+    });
+
+    s = new Map();
+    s.set(1, 10);
+    s.set(2, 20);
+    s.set(3, 30);
+    i = 0;
+    s.forEach(function(value, key) {
+        i += key + value;
+        r = s["delete"](key);
+        ok(r === true, "delete returned " + r);
+    });
+    ok(i === 66, "i = " + i);
+
+    try {
+        Map.prototype.set.call({}, 1, 2);
+        ok(false, "expected exception");
+    }catch(e) {
+        ok(e.number === 0xa13fc - 0x80000000, "e.number = " + e.number);
+    }
+});
+
+sync_test("elem_attr", function() {
+    var v = document.documentMode;
+    var elem = document.createElement("div"), r;
+
+    r = elem.getAttribute("class");
+    ok(r === null, "class attr = " + r);
+    r = elem.getAttribute("className");
+    ok(r === (v < 8 ? "" : null), "className attr = " + r);
+
+    elem.className = "cls";
+    r = elem.getAttribute("class");
+    ok(r === (v < 8 ? null : "cls"), "class attr = " + r);
+    r = elem.getAttribute("className");
+    ok(r === (v < 8 ? "cls" : null), "className attr = " + r);
+
+    elem.setAttribute("class", "cls2");
+    ok(elem.className === (v < 8 ? "cls" : "cls2"), "elem.className = " + elem.className);
+    r = elem.getAttribute("class");
+    ok(r === "cls2", "class attr = " + r);
+    r = elem.getAttribute("className");
+    ok(r === (v < 8 ? "cls" : null), "className attr = " + r);
+
+    elem.setAttribute("className", "cls3");
+    ok(elem.className === (v < 8 ? "cls3" : "cls2"), "elem.className = " + elem.className);
+    r = elem.getAttribute("class");
+    ok(r === "cls2", "class attr = " + r);
+    r = elem.getAttribute("className");
+    ok(r === "cls3", "className attr = " + r);
 });

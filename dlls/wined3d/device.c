@@ -652,7 +652,7 @@ bool wined3d_device_vk_create_null_resources(struct wined3d_device_vk *device_vk
     vk_info = context_vk->vk_info;
 
     usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT
-            | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     memory_type = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     if (!wined3d_context_vk_create_bo(context_vk, 16, usage, memory_type, &r->bo))
         return false;
@@ -778,6 +778,16 @@ bool wined3d_device_vk_create_null_views(struct wined3d_device_vk *device_vk, st
     v->vk_info_1d.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     TRACE("Created 1D image view 0x%s.\n", wine_dbgstr_longlong(v->vk_info_1d.imageView));
 
+    view_desc.viewType = VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+    if ((vr = VK_CALL(vkCreateImageView(device_vk->vk_device, &view_desc, NULL, &v->vk_info_1d_array.imageView))) < 0)
+    {
+        ERR("Failed to create 1D image view, vr %s.\n", wined3d_debug_vkresult(vr));
+        goto fail;
+    }
+    v->vk_info_1d_array.sampler = VK_NULL_HANDLE;
+    v->vk_info_1d_array.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    TRACE("Created 1D array image view 0x%s.\n", wine_dbgstr_longlong(v->vk_info_1d_array.imageView));
+
     view_desc.image = r->image_2d.vk_image;
     view_desc.viewType = VK_IMAGE_VIEW_TYPE_2D;
     if ((vr = VK_CALL(vkCreateImageView(device_vk->vk_device, &view_desc, NULL, &v->vk_info_2d.imageView))) < 0)
@@ -858,6 +868,8 @@ fail:
         VK_CALL(vkDestroyImageView(device_vk->vk_device, v->vk_info_2dms.imageView, NULL));
     if (v->vk_info_2d.imageView)
         VK_CALL(vkDestroyImageView(device_vk->vk_device, v->vk_info_2d.imageView, NULL));
+    if (v->vk_info_1d_array.imageView)
+        VK_CALL(vkDestroyImageView(device_vk->vk_device, v->vk_info_1d_array.imageView, NULL));
     if (v->vk_info_1d.imageView)
         VK_CALL(vkDestroyImageView(device_vk->vk_device, v->vk_info_1d.imageView, NULL));
     if (v->vk_view_buffer_float)
@@ -877,6 +889,7 @@ void wined3d_device_vk_destroy_null_views(struct wined3d_device_vk *device_vk, s
     wined3d_context_vk_destroy_vk_image_view(context_vk, v->vk_info_3d.imageView, id);
     wined3d_context_vk_destroy_vk_image_view(context_vk, v->vk_info_2dms.imageView, id);
     wined3d_context_vk_destroy_vk_image_view(context_vk, v->vk_info_2d.imageView, id);
+    wined3d_context_vk_destroy_vk_image_view(context_vk, v->vk_info_1d_array.imageView, id);
     wined3d_context_vk_destroy_vk_image_view(context_vk, v->vk_info_1d.imageView, id);
 
     wined3d_context_vk_destroy_vk_buffer_view(context_vk, v->vk_view_buffer_float, id);
@@ -1229,10 +1242,10 @@ void CDECL wined3d_device_set_stream_output(struct wined3d_device *device, UINT 
     wined3d_device_context_set_stream_output(&device->cs->c, idx, buffer, offset);
 }
 
-struct wined3d_buffer * CDECL wined3d_device_get_stream_output(struct wined3d_device *device,
-        UINT idx, UINT *offset)
+struct wined3d_buffer * CDECL wined3d_device_context_get_stream_output(struct wined3d_device_context *context,
+        unsigned int idx, unsigned int *offset)
 {
-    TRACE("device %p, idx %u, offset %p.\n", device, idx, offset);
+    TRACE("context %p, idx %u, offset %p.\n", context, idx, offset);
 
     if (idx >= WINED3D_MAX_STREAM_OUTPUT_BUFFERS)
     {
@@ -1241,8 +1254,8 @@ struct wined3d_buffer * CDECL wined3d_device_get_stream_output(struct wined3d_de
     }
 
     if (offset)
-        *offset = device->cs->c.state->stream_output[idx].offset;
-    return device->cs->c.state->stream_output[idx].buffer;
+        *offset = context->state->stream_output[idx].offset;
+    return context->state->stream_output[idx].buffer;
 }
 
 HRESULT CDECL wined3d_device_set_stream_source(struct wined3d_device *device, UINT stream_idx,
@@ -1254,13 +1267,13 @@ HRESULT CDECL wined3d_device_set_stream_source(struct wined3d_device *device, UI
     return wined3d_device_context_set_stream_source(&device->cs->c, stream_idx, buffer, offset, stride);
 }
 
-HRESULT CDECL wined3d_device_get_stream_source(const struct wined3d_device *device,
-        UINT stream_idx, struct wined3d_buffer **buffer, UINT *offset, UINT *stride)
+HRESULT CDECL wined3d_device_context_get_stream_source(const struct wined3d_device_context *context,
+        unsigned int stream_idx, struct wined3d_buffer **buffer, unsigned int *offset, unsigned int *stride)
 {
     const struct wined3d_stream_state *stream;
 
-    TRACE("device %p, stream_idx %u, buffer %p, offset %p, stride %p.\n",
-            device, stream_idx, buffer, offset, stride);
+    TRACE("context %p, stream_idx %u, buffer %p, offset %p, stride %p.\n",
+            context, stream_idx, buffer, offset, stride);
 
     if (stream_idx >= WINED3D_MAX_STREAMS)
     {
@@ -1268,7 +1281,7 @@ HRESULT CDECL wined3d_device_get_stream_source(const struct wined3d_device *devi
         return WINED3DERR_INVALIDCALL;
     }
 
-    stream = &device->cs->c.state->streams[stream_idx];
+    stream = &context->state->streams[stream_idx];
     *buffer = stream->buffer;
     if (offset)
         *offset = stream->offset;
@@ -1524,12 +1537,12 @@ void CDECL wined3d_device_set_index_buffer(struct wined3d_device *device,
     wined3d_device_context_set_index_buffer(&device->cs->c, buffer, format_id, offset);
 }
 
-struct wined3d_buffer * CDECL wined3d_device_get_index_buffer(const struct wined3d_device *device,
+struct wined3d_buffer * CDECL wined3d_device_context_get_index_buffer(const struct wined3d_device_context *context,
         enum wined3d_format_id *format, unsigned int *offset)
 {
-    const struct wined3d_state *state = device->cs->c.state;
+    const struct wined3d_state *state = context->state;
 
-    TRACE("device %p, format %p, offset %p.\n", device, format, offset);
+    TRACE("context %p, format %p, offset %p.\n", context, format, offset);
 
     *format = state->index_format;
     if (offset)
@@ -1650,11 +1663,9 @@ struct wined3d_rasterizer_state * CDECL wined3d_device_context_get_rasterizer_st
     return context->state->rasterizer_state;
 }
 
-void CDECL wined3d_device_set_render_state(struct wined3d_device *device,
+static void wined3d_device_set_render_state(struct wined3d_device *device,
         enum wined3d_render_state state, DWORD value)
 {
-    TRACE("device %p, state %s (%#x), value %#x.\n", device, debug_d3drenderstate(state), state, value);
-
     if (state > WINEHIGHEST_RENDER_STATE)
     {
         WARN("Unhandled render state %#x.\n", state);
@@ -1722,8 +1733,7 @@ void CDECL wined3d_device_context_get_scissor_rects(const struct wined3d_device_
 
     TRACE("context %p, rect_count %p, rects %p.\n", context, rect_count, rects);
 
-    count = rect_count ? min(*rect_count, state->scissor_rect_count) : 1;
-    if (count && rects)
+    if (rects && (count = rect_count ? min(*rect_count, state->scissor_rect_count) : 1))
         memcpy(rects, state->scissor_rects, count * sizeof(*rects));
     if (rect_count)
         *rect_count = state->scissor_rect_count;
@@ -1876,11 +1886,12 @@ void CDECL wined3d_device_set_vertex_declaration(struct wined3d_device *device,
     wined3d_device_context_set_vertex_declaration(&device->cs->c, declaration);
 }
 
-struct wined3d_vertex_declaration * CDECL wined3d_device_get_vertex_declaration(const struct wined3d_device *device)
+struct wined3d_vertex_declaration * CDECL wined3d_device_context_get_vertex_declaration(
+        const struct wined3d_device_context *context)
 {
-    TRACE("device %p.\n", device);
+    TRACE("context %p.\n", context);
 
-    return device->cs->c.state->vertex_declaration;
+    return context->state->vertex_declaration;
 }
 
 void CDECL wined3d_device_context_set_shader(struct wined3d_device_context *context,
@@ -2475,6 +2486,18 @@ void CDECL wined3d_device_set_vs_resource_view(struct wined3d_device *device,
     wined3d_device_context_set_shader_resource_view(&device->cs->c, WINED3D_SHADER_TYPE_VERTEX, idx, view);
 }
 
+struct wined3d_shader_resource_view * CDECL wined3d_device_context_get_shader_resource_view(
+        const struct wined3d_device_context *context, enum wined3d_shader_type shader_type, unsigned int idx)
+{
+    if (idx >= MAX_SHADER_RESOURCE_VIEWS)
+    {
+        WARN("Invalid view index %u.\n", idx);
+        return NULL;
+    }
+
+    return context->state->shader_resource_view[shader_type][idx];
+}
+
 static struct wined3d_shader_resource_view *wined3d_device_get_shader_resource_view(
         const struct wined3d_device *device, enum wined3d_shader_type shader_type, unsigned int idx)
 {
@@ -2500,6 +2523,20 @@ void CDECL wined3d_device_set_vs_sampler(struct wined3d_device *device, UINT idx
     TRACE("device %p, idx %u, sampler %p.\n", device, idx, sampler);
 
     wined3d_device_context_set_sampler(&device->cs->c, WINED3D_SHADER_TYPE_VERTEX, idx, sampler);
+}
+
+struct wined3d_sampler * CDECL wined3d_device_context_get_sampler(const struct wined3d_device_context *context,
+        enum wined3d_shader_type shader_type, unsigned int idx)
+{
+    TRACE("context %p, shader_type %#x, idx %u.\n", context, shader_type, idx);
+
+    if (idx >= MAX_SAMPLER_OBJECTS)
+    {
+        WARN("Invalid sampler index %u.\n", idx);
+        return NULL;
+    }
+
+    return context->state->sampler[shader_type][idx];
 }
 
 static struct wined3d_sampler *wined3d_device_get_sampler(const struct wined3d_device *device,
@@ -2850,6 +2887,20 @@ struct wined3d_sampler * CDECL wined3d_device_get_cs_sampler(const struct wined3
     TRACE("device %p, idx %u.\n", device, idx);
 
     return wined3d_device_get_sampler(device, WINED3D_SHADER_TYPE_COMPUTE, idx);
+}
+
+struct wined3d_unordered_access_view * CDECL wined3d_device_context_get_unordered_access_view(
+        const struct wined3d_device_context *context, enum wined3d_pipeline pipeline, unsigned int idx)
+{
+    TRACE("context %p, pipeline %#x, idx %u.\n", context, pipeline, idx);
+
+    if (idx >= MAX_UNORDERED_ACCESS_VIEWS)
+    {
+        WARN("Invalid UAV index %u.\n", idx);
+        return NULL;
+    }
+
+    return context->state->unordered_access_view[pipeline][idx];
 }
 
 static struct wined3d_unordered_access_view *wined3d_device_get_pipeline_unordered_access_view(
@@ -4419,11 +4470,11 @@ void CDECL wined3d_device_set_predication(struct wined3d_device *device,
     wined3d_device_context_set_predication(&device->cs->c, predicate, value);
 }
 
-struct wined3d_query * CDECL wined3d_device_get_predication(struct wined3d_device *device, BOOL *value)
+struct wined3d_query * CDECL wined3d_device_context_get_predication(struct wined3d_device_context *context, BOOL *value)
 {
-    struct wined3d_state *state = device->cs->c.state;
+    struct wined3d_state *state = context->state;
 
-    TRACE("device %p, value %p.\n", device, value);
+    TRACE("context %p, value %p.\n", context, value);
 
     if (value)
         *value = state->predicate_value;
@@ -4447,25 +4498,25 @@ void CDECL wined3d_device_dispatch_compute_indirect(struct wined3d_device *devic
     wined3d_device_context_dispatch_indirect(&device->cs->c, buffer, offset);
 }
 
-void CDECL wined3d_device_set_primitive_type(struct wined3d_device *device,
+void CDECL wined3d_device_context_set_primitive_type(struct wined3d_device_context *context,
         enum wined3d_primitive_type primitive_type, unsigned int patch_vertex_count)
 {
-    struct wined3d_state *state = device->cs->c.state;
+    struct wined3d_state *state = context->state;
 
-    TRACE("device %p, primitive_type %s, patch_vertex_count %u.\n",
-            device, debug_d3dprimitivetype(primitive_type), patch_vertex_count);
+    TRACE("context %p, primitive_type %s, patch_vertex_count %u.\n",
+            context, debug_d3dprimitivetype(primitive_type), patch_vertex_count);
 
     state->primitive_type = primitive_type;
     state->patch_vertex_count = patch_vertex_count;
 }
 
-void CDECL wined3d_device_get_primitive_type(const struct wined3d_device *device,
+void CDECL wined3d_device_context_get_primitive_type(const struct wined3d_device_context *context,
         enum wined3d_primitive_type *primitive_type, unsigned int *patch_vertex_count)
 {
-    const struct wined3d_state *state = device->cs->c.state;
+    const struct wined3d_state *state = context->state;
 
-    TRACE("device %p, primitive_type %p, patch_vertex_count %p.\n",
-            device, primitive_type, patch_vertex_count);
+    TRACE("context %p, primitive_type %p, patch_vertex_count %p.\n",
+            context, primitive_type, patch_vertex_count);
 
     *primitive_type = state->primitive_type;
     if (patch_vertex_count)
@@ -5157,10 +5208,7 @@ void CDECL wined3d_device_context_update_sub_resource(struct wined3d_device_cont
         return;
     }
 
-    wined3d_resource_wait_idle(resource);
-
-    wined3d_device_context_emit_update_sub_resource(context, resource,
-            sub_resource_idx, box, data, row_pitch, depth_pitch);
+    context->ops->update_sub_resource(context, resource, sub_resource_idx, box, data, row_pitch, depth_pitch);
 }
 
 void CDECL wined3d_device_context_resolve_sub_resource(struct wined3d_device_context *context,
@@ -5322,7 +5370,6 @@ HRESULT CDECL wined3d_device_context_map(struct wined3d_device_context *context,
     }
 
     flags = sanitise_map_flags(resource, flags);
-    wined3d_resource_wait_idle(resource);
 
     return context->ops->map(context, resource, sub_resource_idx, map_desc, box, flags);
 }
@@ -5340,39 +5387,32 @@ void CDECL wined3d_device_context_issue_query(struct wined3d_device_context *con
 {
     TRACE("context %p, query %p, flags %#x.\n", context, query, flags);
 
-    if (flags & WINED3DISSUE_END)
-        ++query->counter_main;
-
     query->device->cs->c.ops->issue_query(context, query, flags);
-
-    if (flags & WINED3DISSUE_BEGIN)
-        query->state = QUERY_BUILDING;
-    else
-        query->state = QUERY_SIGNALLED;
 }
 
-struct wined3d_rendertarget_view * CDECL wined3d_device_get_rendertarget_view(const struct wined3d_device *device,
-        unsigned int view_idx)
+struct wined3d_rendertarget_view * CDECL wined3d_device_context_get_rendertarget_view(
+        const struct wined3d_device_context *context, unsigned int view_idx)
 {
     unsigned int max_rt_count;
 
-    TRACE("device %p, view_idx %u.\n", device, view_idx);
+    TRACE("context %p, view_idx %u.\n", context, view_idx);
 
-    max_rt_count = device->adapter->d3d_info.limits.max_rt_count;
+    max_rt_count = context->device->adapter->d3d_info.limits.max_rt_count;
     if (view_idx >= max_rt_count)
     {
         WARN("Only %u render targets are supported.\n", max_rt_count);
         return NULL;
     }
 
-    return device->cs->c.state->fb.render_targets[view_idx];
+    return context->state->fb.render_targets[view_idx];
 }
 
-struct wined3d_rendertarget_view * CDECL wined3d_device_get_depth_stencil_view(const struct wined3d_device *device)
+struct wined3d_rendertarget_view * CDECL wined3d_device_context_get_depth_stencil_view(
+        const struct wined3d_device_context *context)
 {
-    TRACE("device %p.\n", device);
+    TRACE("context %p.\n", context);
 
-    return device->cs->c.state->fb.depth_stencil;
+    return context->state->fb.depth_stencil;
 }
 
 HRESULT CDECL wined3d_device_set_rendertarget_view(struct wined3d_device *device,

@@ -148,8 +148,20 @@ static void test_query(void)
         "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey\r\n"
         "    Wine    REG_SZ    Second instance\r\n\r\n";
 
+    const char *test8a = "\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey1\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey2\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey3\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey4\r\n";
+
+    const char *test8b = "\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey1\r\n\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey2\r\n\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey3\r\n\r\n"
+        "HKEY_CURRENT_USER\\" KEY_BASE "\\subkey4\r\n\r\n";
+
     DWORD r, dword = 0x123;
-    HKEY key, subkey;
+    HKEY hkey, subkey;
     BYTE buf[512];
 
     delete_tree(HKEY_CURRENT_USER, KEY_BASE);
@@ -167,10 +179,14 @@ static void test_query(void)
     run_reg_exe("reg query -H", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
 
+    /* Key not present */
+    run_reg_exe("reg query HKCU\\" KEY_BASE, &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
     /* Create a test key */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &key);
-    add_value(key, "Test1", REG_SZ, "Hello, World", 13);
-    add_value(key, "Test2", REG_DWORD, &dword, sizeof(dword));
+    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
+    add_value(hkey, "Test1", REG_SZ, "Hello, World", 13);
+    add_value(hkey, "Test2", REG_DWORD, &dword, sizeof(dword));
 
     run_reg_exe("reg query HKCU\\" KEY_BASE " /v", &r);
     ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
@@ -202,14 +218,14 @@ static void test_query(void)
     run_reg_exe("reg query HKCU\\" KEY_BASE " /v Test2", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
 
-    add_value(key, "Wine", REG_SZ, "First instance", 15);
+    add_value(hkey, "Wine", REG_SZ, "First instance", 15);
 
     /* Create a test subkey */
-    add_key(key, "subkey", &subkey);
+    add_key(hkey, "subkey", &subkey);
 
     read_reg_output("reg query HKCU\\" KEY_BASE, buf, sizeof(buf), &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
-    compare_query(buf, test3, FALSE, TODO_REG_COMPARE);
+    compare_query(buf, test3, FALSE, 0);
 
     add_value(subkey, "Test3", REG_SZ, "Some string data", 16);
     dword = 0xabc;
@@ -235,16 +251,17 @@ static void test_query(void)
 
     read_reg_output("reg query HKCU\\" KEY_BASE "\\ /s", buf, sizeof(buf), &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
-    compare_query(buf, test6, FALSE, TODO_REG_COMPARE);
+    compare_query(buf, test6, FALSE, 0);
 
     read_reg_output("reg query HKCU\\" KEY_BASE " /v Wine /s", buf, sizeof(buf), &r);
     ok(r == REG_EXIT_SUCCESS || r == REG_EXIT_FAILURE /* WinXP */,
        "got exit code %d, expected 0\n", r);
     compare_query(buf, test7, TRUE, 0);
 
-    add_value(key, NULL, REG_SZ, "Empty", 6);
+    add_value(hkey, NULL, REG_SZ, "Empty", 6);
     add_value(subkey, NULL, REG_SZ, "Empty", 6);
     close_key(subkey);
+    close_key(hkey);
 
     run_reg_exe("reg query HKCU\\" KEY_BASE "\\subkey /ve", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
@@ -253,17 +270,25 @@ static void test_query(void)
     ok(r == REG_EXIT_SUCCESS || r == REG_EXIT_FAILURE /* WinXP */,
        "got exit code %d, expected 0\n", r);
 
-    /* Clean-up, then query */
-    delete_key(key, "subkey");
-    close_key(key);
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
 
-    run_reg_exe("reg query HKCU\\" KEY_BASE "\\subkey", &r);
-    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+    /* Subkeys only */
+    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
+    add_key(hkey, "subkey1", NULL);
+    add_key(hkey, "subkey2", NULL);
+    add_key(hkey, "subkey3", NULL);
+    add_key(hkey, "subkey4", NULL);
+    close_key(hkey);
 
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    read_reg_output("reg query HKCU\\" KEY_BASE, buf, sizeof(buf), &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    compare_query(buf, test8a, FALSE, 0);
 
-    run_reg_exe("reg query HKCU\\" KEY_BASE, &r);
-    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+    read_reg_output("reg query HKCU\\" KEY_BASE " /s", buf, sizeof(buf), &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    compare_query(buf, test8b, FALSE, 0);
+
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
 }
 
 START_TEST(query)

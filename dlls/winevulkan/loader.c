@@ -28,7 +28,7 @@
 #include "devguid.h"
 #include "setupapi.h"
 
-#include "vulkan_private.h"
+#include "vulkan_loader.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
@@ -60,7 +60,7 @@ static void *wine_vk_find_struct_(void *s, VkStructureType t)
     return NULL;
 }
 
-VkResult WINAPI wine_vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayerProperties *properties)
+VkResult WINAPI vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayerProperties *properties)
 {
     TRACE("%p, %p\n", count, properties);
 
@@ -71,11 +71,11 @@ VkResult WINAPI wine_vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayer
 static const struct vulkan_func vk_global_dispatch_table[] =
 {
     /* These functions must call wine_vk_init_once() before accessing vk_funcs. */
-    {"vkCreateInstance", &wine_vkCreateInstance},
-    {"vkEnumerateInstanceExtensionProperties", &wine_vkEnumerateInstanceExtensionProperties},
-    {"vkEnumerateInstanceLayerProperties", &wine_vkEnumerateInstanceLayerProperties},
-    {"vkEnumerateInstanceVersion", &wine_vkEnumerateInstanceVersion},
-    {"vkGetInstanceProcAddr", &wine_vkGetInstanceProcAddr},
+    {"vkCreateInstance", &vkCreateInstance},
+    {"vkEnumerateInstanceExtensionProperties", &vkEnumerateInstanceExtensionProperties},
+    {"vkEnumerateInstanceLayerProperties", &vkEnumerateInstanceLayerProperties},
+    {"vkEnumerateInstanceVersion", &vkEnumerateInstanceVersion},
+    {"vkGetInstanceProcAddr", &vkGetInstanceProcAddr},
 };
 
 static void *wine_vk_get_global_proc_addr(const char *name)
@@ -93,7 +93,7 @@ static void *wine_vk_get_global_proc_addr(const char *name)
     return NULL;
 }
 
-PFN_vkVoidFunction WINAPI wine_vkGetInstanceProcAddr(VkInstance instance, const char *name)
+PFN_vkVoidFunction WINAPI vkGetInstanceProcAddr(VkInstance instance, const char *name)
 {
     void *func;
 
@@ -130,7 +130,7 @@ PFN_vkVoidFunction WINAPI wine_vkGetInstanceProcAddr(VkInstance instance, const 
     return NULL;
 }
 
-PFN_vkVoidFunction WINAPI wine_vkGetDeviceProcAddr(VkDevice device, const char *name)
+PFN_vkVoidFunction WINAPI vkGetDeviceProcAddr(VkDevice device, const char *name)
 {
     void *func;
     TRACE("%p, %s\n", device, debugstr_a(name));
@@ -159,7 +159,7 @@ PFN_vkVoidFunction WINAPI wine_vkGetDeviceProcAddr(VkDevice device, const char *
      * https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers/issues/2323
      * https://github.com/KhronosGroup/Vulkan-Docs/issues/655
      */
-    if (device->quirks & WINEVULKAN_QUIRK_GET_DEVICE_PROC_ADDR
+    if (((struct wine_vk_device_base *)device)->quirks & WINEVULKAN_QUIRK_GET_DEVICE_PROC_ADDR
             && ((func = wine_vk_get_instance_proc_addr(name))
              || (func = wine_vk_get_phys_dev_proc_addr(name))))
     {
@@ -171,14 +171,14 @@ PFN_vkVoidFunction WINAPI wine_vkGetDeviceProcAddr(VkDevice device, const char *
     return NULL;
 }
 
-void * WINAPI wine_vk_icdGetPhysicalDeviceProcAddr(VkInstance instance, const char *name)
+void * WINAPI vk_icdGetPhysicalDeviceProcAddr(VkInstance instance, const char *name)
 {
     TRACE("%p, %s\n", instance, debugstr_a(name));
 
     return wine_vk_get_phys_dev_proc_addr(name);
 }
 
-void * WINAPI wine_vk_icdGetInstanceProcAddr(VkInstance instance, const char *name)
+void * WINAPI vk_icdGetInstanceProcAddr(VkInstance instance, const char *name)
 {
     TRACE("%p, %s\n", instance, debugstr_a(name));
 
@@ -187,10 +187,10 @@ void * WINAPI wine_vk_icdGetInstanceProcAddr(VkInstance instance, const char *na
      * Vulkan API. One of them in our case should forward to the other, so just forward
      * to the older vkGetInstanceProcAddr.
      */
-    return wine_vkGetInstanceProcAddr(instance, name);
+    return vkGetInstanceProcAddr(instance, name);
 }
 
-VkResult WINAPI wine_vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *supported_version)
+VkResult WINAPI vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *supported_version)
 {
     uint32_t req_version;
 
@@ -230,7 +230,7 @@ static BOOL  wine_vk_init_once(void)
     return InitOnceExecuteOnce(&init_once, wine_vk_init, NULL, NULL);
 }
 
-VkResult WINAPI wine_vkCreateInstance(const VkInstanceCreateInfo *create_info,
+VkResult WINAPI vkCreateInstance(const VkInstanceCreateInfo *create_info,
         const VkAllocationCallbacks *allocator, VkInstance *instance)
 {
     TRACE("create_info %p, allocator %p, instance %p\n", create_info, allocator, instance);
@@ -241,7 +241,7 @@ VkResult WINAPI wine_vkCreateInstance(const VkInstanceCreateInfo *create_info,
     return unix_funcs->p_vkCreateInstance(create_info, allocator, instance);
 }
 
-VkResult WINAPI wine_vkEnumerateInstanceExtensionProperties(const char *layer_name,
+VkResult WINAPI vkEnumerateInstanceExtensionProperties(const char *layer_name,
         uint32_t *count, VkExtensionProperties *properties)
 {
     TRACE("%p, %p, %p\n", layer_name, count, properties);
@@ -261,7 +261,7 @@ VkResult WINAPI wine_vkEnumerateInstanceExtensionProperties(const char *layer_na
     return unix_funcs->p_vkEnumerateInstanceExtensionProperties(layer_name, count, properties);
 }
 
-VkResult WINAPI wine_vkEnumerateInstanceVersion(uint32_t *version)
+VkResult WINAPI vkEnumerateInstanceVersion(uint32_t *version)
 {
     TRACE("%p\n", version);
 
@@ -276,8 +276,7 @@ VkResult WINAPI wine_vkEnumerateInstanceVersion(uint32_t *version)
 
 static HANDLE get_display_device_init_mutex(void)
 {
-    static const WCHAR init_mutexW[] = {'d','i','s','p','l','a','y','_','d','e','v','i','c','e','_','i','n','i','t',0};
-    HANDLE mutex = CreateMutexW(NULL, FALSE, init_mutexW);
+    HANDLE mutex = CreateMutexW(NULL, FALSE, L"display_device_init");
 
     WaitForSingleObject(mutex, INFINITE);
     return mutex;
@@ -303,7 +302,6 @@ static void wait_graphics_driver_ready(void)
 
 static void fill_luid_property(VkPhysicalDeviceProperties2 *properties2)
 {
-    static const WCHAR pci[] = {'P','C','I',0};
     VkPhysicalDeviceIDProperties *id;
     SP_DEVINFO_DATA device_data;
     DWORD type, device_idx = 0;
@@ -317,7 +315,7 @@ static void fill_luid_property(VkPhysicalDeviceProperties2 *properties2)
 
     wait_graphics_driver_ready();
     mutex = get_display_device_init_mutex();
-    devinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, pci, NULL, 0);
+    devinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, L"PCI", NULL, 0);
     device_data.cbSize = sizeof(device_data);
     while (SetupDiEnumDeviceInfo(devinfo, device_idx++, &device_data))
     {
@@ -345,7 +343,7 @@ static void fill_luid_property(VkPhysicalDeviceProperties2 *properties2)
             id->deviceNodeMask);
 }
 
-void WINAPI wine_vkGetPhysicalDeviceProperties2(VkPhysicalDevice phys_dev,
+void WINAPI vkGetPhysicalDeviceProperties2(VkPhysicalDevice phys_dev,
         VkPhysicalDeviceProperties2 *properties2)
 {
     TRACE("%p, %p\n", phys_dev, properties2);
@@ -354,7 +352,7 @@ void WINAPI wine_vkGetPhysicalDeviceProperties2(VkPhysicalDevice phys_dev,
     fill_luid_property(properties2);
 }
 
-void WINAPI wine_vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice phys_dev,
+void WINAPI vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice phys_dev,
         VkPhysicalDeviceProperties2 *properties2)
 {
     TRACE("%p, %p\n", phys_dev, properties2);
@@ -377,10 +375,8 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, void *reserved)
     return TRUE;
 }
 
-static const WCHAR winevulkan_json_resW[] = {'w','i','n','e','v','u','l','k','a','n','_','j','s','o','n',0};
-static const WCHAR winevulkan_json_pathW[] = {'\\','w','i','n','e','v','u','l','k','a','n','.','j','s','o','n',0};
-static const WCHAR vulkan_driversW[] = {'S','o','f','t','w','a','r','e','\\','K','h','r','o','n','o','s','\\',
-                                        'V','u','l','k','a','n','\\','D','r','i','v','e','r','s',0};
+static const WCHAR winevulkan_json_pathW[] = L"\\winevulkan.json";
+static const WCHAR vulkan_driversW[] = L"Software\\Khronos\\Vulkan\\Drivers";
 
 HRESULT WINAPI DllRegisterServer(void)
 {
@@ -393,7 +389,7 @@ HRESULT WINAPI DllRegisterServer(void)
 
     /* Create the JSON manifest and registry key to register this ICD with the official Vulkan loader. */
     TRACE("\n");
-    rsrc = FindResourceW(hinstance, winevulkan_json_resW, (const WCHAR *)RT_RCDATA);
+    rsrc = FindResourceW(hinstance, L"winevulkan_json", (const WCHAR *)RT_RCDATA);
     data = LockResource(LoadResource(hinstance, rsrc));
     datalen = SizeofResource(hinstance, rsrc);
 

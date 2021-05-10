@@ -147,21 +147,6 @@ static void dump_ioctl_code( const char *prefix, const ioctl_code_t *code )
     }
 }
 
-static void dump_client_cpu( const char *prefix, const client_cpu_t *code )
-{
-    switch (*code)
-    {
-#define CASE(c) case CPU_##c: fprintf( stderr, "%s%s", prefix, #c ); break
-        CASE(x86);
-        CASE(x86_64);
-        CASE(POWERPC);
-        CASE(ARM);
-        CASE(ARM64);
-        default: fprintf( stderr, "%s%u", prefix, *code ); break;
-#undef CASE
-    }
-}
-
 static void dump_apc_call( const char *prefix, const apc_call_t *call )
 {
     fprintf( stderr, "%s{", prefix );
@@ -231,6 +216,7 @@ static void dump_apc_call( const char *prefix, const apc_call_t *call )
     case APC_CREATE_THREAD:
         dump_uint64( "APC_CREATE_THREAD,func=", &call->create_thread.func );
         dump_uint64( ",arg=", &call->create_thread.arg );
+        dump_uint64( ",zero_bits=", &call->create_thread.zero_bits );
         dump_uint64( ",reserve=", &call->create_thread.reserve );
         dump_uint64( ",commit=", &call->create_thread.commit );
         fprintf( stderr, ",flags=%x", call->create_thread.flags );
@@ -409,6 +395,29 @@ static void dump_irp_params( const char *prefix, const irp_params_t *data )
     }
 }
 
+static void dump_rawinput( const char *prefix, const union rawinput *rawinput )
+{
+    switch (rawinput->type)
+    {
+    case RIM_TYPEMOUSE:
+        fprintf( stderr, "%s{type=MOUSE,x=%d,y=%d,data=%08x}", prefix, rawinput->mouse.x,
+                 rawinput->mouse.y, rawinput->mouse.data );
+        break;
+    case RIM_TYPEKEYBOARD:
+        fprintf( stderr, "%s{type=KEYBOARD,message=%04x,vkey=%04hx,scan=%04hx}", prefix,
+                 rawinput->kbd.message, rawinput->kbd.vkey, rawinput->kbd.scan );
+        break;
+    case RIM_TYPEHID:
+        fprintf( stderr, "%s{type=HID,device=%04x,param=%04x,page=%04hx,usage=%04hx}",
+                 prefix, rawinput->hid.device, rawinput->hid.param, rawinput->hid.usage_page,
+                 rawinput->hid.usage );
+        break;
+    default:
+        fprintf( stderr, "%s{type=%04x}", prefix, rawinput->type );
+        break;
+    }
+}
+
 static void dump_hw_input( const char *prefix, const hw_input_t *input )
 {
     switch (input->type)
@@ -429,6 +438,11 @@ static void dump_hw_input( const char *prefix, const hw_input_t *input )
     case INPUT_HARDWARE:
         fprintf( stderr, "%s{type=HARDWARE,msg=%04x", prefix, input->hw.msg );
         dump_uint64( ",lparam=", &input->hw.lparam );
+        switch (input->hw.msg)
+        {
+        case WM_INPUT_DEVICE_CHANGE:
+            dump_rawinput( ",rawinput=", &input->hw.rawinput );
+        }
         fputc( '}', stderr );
         break;
     default:
@@ -480,6 +494,21 @@ static void dump_varargs_uints64( const char *prefix, data_size_t size )
     while (len > 0)
     {
         dump_uint64( "", data++ );
+        if (--len) fputc( ',', stderr );
+    }
+    fputc( '}', stderr );
+    remove_data( size );
+}
+
+static void dump_varargs_ushorts( const char *prefix, data_size_t size )
+{
+    const unsigned short *data = cur_data;
+    data_size_t len = size / sizeof(*data);
+
+    fprintf( stderr, "%s{", prefix );
+    while (len > 0)
+    {
+        fprintf( stderr, "%04x", *data++ );
         if (--len) fputc( ',', stderr );
     }
     fputc( '}', stderr );
@@ -602,11 +631,10 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
     memset( &ctx, 0, sizeof(ctx) );
     memcpy( &ctx, context, size );
 
-    fprintf( stderr,"%s{", prefix );
-    dump_client_cpu( "cpu=", &ctx.cpu );
-    switch (ctx.cpu)
+    switch (ctx.machine)
     {
-    case CPU_x86:
+    case IMAGE_FILE_MACHINE_I386:
+        fprintf( stderr, "%s{machine=i386", prefix );
         if (ctx.flags & SERVER_CTX_CONTROL)
             fprintf( stderr, ",eip=%08x,esp=%08x,ebp=%08x,eflags=%08x,cs=%04x,ss=%04x",
                      ctx.ctl.i386_regs.eip, ctx.ctl.i386_regs.esp, ctx.ctl.i386_regs.ebp,
@@ -644,7 +672,8 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
             dump_uints( ",ymm_high=", (const unsigned int *)ctx.ymm.ymm_high_regs.ymm_high,
                         sizeof(ctx.ymm.ymm_high_regs) / sizeof(int) );
         break;
-    case CPU_x86_64:
+    case IMAGE_FILE_MACHINE_AMD64:
+        fprintf( stderr, "%s{machine=x86_64", prefix );
         if (ctx.flags & SERVER_CTX_CONTROL)
         {
             dump_uint64( ",rip=", &ctx.ctl.x86_64_regs.rip );
@@ -696,27 +725,8 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
             dump_uints( ",ymm_high=", (const unsigned int *)ctx.ymm.ymm_high_regs.ymm_high,
                         sizeof(ctx.ymm.ymm_high_regs) / sizeof(int) );
         break;
-    case CPU_POWERPC:
-        if (ctx.flags & SERVER_CTX_CONTROL)
-            fprintf( stderr, ",iar=%08x,msr=%08x,ctr=%08x,lr=%08x,dar=%08x,dsisr=%08x,trap=%08x",
-                     ctx.ctl.powerpc_regs.iar, ctx.ctl.powerpc_regs.msr, ctx.ctl.powerpc_regs.ctr,
-                     ctx.ctl.powerpc_regs.lr, ctx.ctl.powerpc_regs.dar, ctx.ctl.powerpc_regs.dsisr,
-                     ctx.ctl.powerpc_regs.trap );
-        if (ctx.flags & SERVER_CTX_INTEGER)
-        {
-            for (i = 0; i < 32; i++) fprintf( stderr, ",gpr%u=%08x", i, ctx.integer.powerpc_regs.gpr[i] );
-            fprintf( stderr, ",cr=%08x,xer=%08x",
-                     ctx.integer.powerpc_regs.cr, ctx.integer.powerpc_regs.xer );
-        }
-        if (ctx.flags & SERVER_CTX_DEBUG_REGISTERS)
-            for (i = 0; i < 8; i++) fprintf( stderr, ",dr%u=%08x", i, ctx.debug.powerpc_regs.dr[i] );
-        if (ctx.flags & SERVER_CTX_FLOATING_POINT)
-        {
-            for (i = 0; i < 32; i++) fprintf( stderr, ",fpr%u=%g", i, ctx.fp.powerpc_regs.fpr[i] );
-            fprintf( stderr, ",fpscr=%g", ctx.fp.powerpc_regs.fpscr );
-        }
-        break;
-    case CPU_ARM:
+    case IMAGE_FILE_MACHINE_ARMNT:
+        fprintf( stderr, "%s{machine=arm", prefix );
         if (ctx.flags & SERVER_CTX_CONTROL)
             fprintf( stderr, ",sp=%08x,lr=%08x,pc=%08x,cpsr=%08x",
                      ctx.ctl.arm_regs.sp, ctx.ctl.arm_regs.lr,
@@ -741,7 +751,8 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
             fprintf( stderr, ",fpscr=%08x", ctx.fp.arm_regs.fpscr );
         }
         break;
-    case CPU_ARM64:
+    case IMAGE_FILE_MACHINE_ARM64:
+        fprintf( stderr, "%s{machine=arm64", prefix );
         if (ctx.flags & SERVER_CTX_CONTROL)
         {
             dump_uint64( ",sp=", &ctx.ctl.arm64_regs.sp );
@@ -779,6 +790,9 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
             }
             fprintf( stderr, ",fpcr=%08x,fpsr=%08x", ctx.fp.arm64_regs.fpcr, ctx.fp.arm64_regs.fpsr );
         }
+        break;
+    default:
+        fprintf( stderr, "%s{machine=%04x", prefix, ctx.machine );
         break;
     }
     fputc( '}', stderr );
@@ -1371,7 +1385,7 @@ static void dump_new_process_request( const struct new_process_request *req )
     fprintf( stderr, ", flags=%08x", req->flags );
     fprintf( stderr, ", socket_fd=%d", req->socket_fd );
     fprintf( stderr, ", access=%08x", req->access );
-    dump_client_cpu( ", cpu=", &req->cpu );
+    fprintf( stderr, ", machine=%04x", req->machine );
     fprintf( stderr, ", info_size=%u", req->info_size );
     fprintf( stderr, ", handles_size=%u", req->handles_size );
     dump_varargs_object_attributes( ", objattr=", cur_size );
@@ -1444,7 +1458,6 @@ static void dump_init_first_thread_request( const struct init_first_thread_reque
     dump_uint64( ", ldt_copy=", &req->ldt_copy );
     fprintf( stderr, ", reply_fd=%d", req->reply_fd );
     fprintf( stderr, ", wait_fd=%d", req->wait_fd );
-    dump_client_cpu( ", cpu=", &req->cpu );
 }
 
 static void dump_init_first_thread_reply( const struct init_first_thread_reply *req )
@@ -1453,7 +1466,7 @@ static void dump_init_first_thread_reply( const struct init_first_thread_reply *
     fprintf( stderr, ", tid=%04x", req->tid );
     dump_timeout( ", server_start=", &req->server_start );
     fprintf( stderr, ", info_size=%u", req->info_size );
-    fprintf( stderr, ", all_cpus=%08x", req->all_cpus );
+    dump_varargs_ushorts( ", machines=", cur_size );
 }
 
 static void dump_init_thread_request( const struct init_thread_request *req )
@@ -1509,7 +1522,7 @@ static void dump_get_process_info_reply( const struct get_process_info_reply *re
     dump_timeout( ", end_time=", &req->end_time );
     fprintf( stderr, ", exit_code=%d", req->exit_code );
     fprintf( stderr, ", priority=%d", req->priority );
-    dump_client_cpu( ", cpu=", &req->cpu );
+    fprintf( stderr, ", machine=%04x", req->machine );
     dump_varargs_pe_image_info( ", image=", cur_size );
 }
 
@@ -4452,6 +4465,20 @@ static void dump_resume_process_request( const struct resume_process_request *re
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
+static void dump_get_next_thread_request( const struct get_next_thread_request *req )
+{
+    fprintf( stderr, " process=%04x", req->process );
+    fprintf( stderr, ", last=%04x", req->last );
+    fprintf( stderr, ", access=%08x", req->access );
+    fprintf( stderr, ", attributes=%08x", req->attributes );
+    fprintf( stderr, ", flags=%08x", req->flags );
+}
+
+static void dump_get_next_thread_reply( const struct get_next_thread_reply *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
 static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_new_process_request,
     (dump_func)dump_get_new_process_info_request,
@@ -4726,6 +4753,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_terminate_job_request,
     (dump_func)dump_suspend_process_request,
     (dump_func)dump_resume_process_request,
+    (dump_func)dump_get_next_thread_request,
 };
 
 static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
@@ -5002,6 +5030,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     NULL,
+    (dump_func)dump_get_next_thread_reply,
 };
 
 static const char * const req_names[REQ_NB_REQUESTS] = {
@@ -5278,6 +5307,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "terminate_job",
     "suspend_process",
     "resume_process",
+    "get_next_thread",
 };
 
 static const struct
@@ -5289,7 +5319,6 @@ static const struct
     { "ABANDONED_WAIT_0",            STATUS_ABANDONED_WAIT_0 },
     { "ACCESS_DENIED",               STATUS_ACCESS_DENIED },
     { "ACCESS_VIOLATION",            STATUS_ACCESS_VIOLATION },
-    { "ADDRESS_ALREADY_ASSOCIATED",  STATUS_ADDRESS_ALREADY_ASSOCIATED },
     { "ALERTED",                     STATUS_ALERTED },
     { "BAD_DEVICE_TYPE",             STATUS_BAD_DEVICE_TYPE },
     { "BAD_IMPERSONATION_LEVEL",     STATUS_BAD_IMPERSONATION_LEVEL },
@@ -5298,14 +5327,13 @@ static const struct
     { "CANCELLED",                   STATUS_CANCELLED },
     { "CANNOT_DELETE",               STATUS_CANNOT_DELETE },
     { "CANT_OPEN_ANONYMOUS",         STATUS_CANT_OPEN_ANONYMOUS },
-    { "CANT_WAIT",                   STATUS_CANT_WAIT },
     { "CHILD_MUST_BE_VOLATILE",      STATUS_CHILD_MUST_BE_VOLATILE },
     { "CONNECTION_ABORTED",          STATUS_CONNECTION_ABORTED },
-    { "CONNECTION_DISCONNECTED",     STATUS_CONNECTION_DISCONNECTED },
     { "CONNECTION_REFUSED",          STATUS_CONNECTION_REFUSED },
     { "CONNECTION_RESET",            STATUS_CONNECTION_RESET },
     { "DEBUGGER_INACTIVE",           STATUS_DEBUGGER_INACTIVE },
     { "DEVICE_BUSY",                 STATUS_DEVICE_BUSY },
+    { "DEVICE_NOT_READY",            STATUS_DEVICE_NOT_READY },
     { "DIRECTORY_NOT_EMPTY",         STATUS_DIRECTORY_NOT_EMPTY },
     { "DISK_FULL",                   STATUS_DISK_FULL },
     { "DLL_NOT_FOUND",               STATUS_DLL_NOT_FOUND },
@@ -5335,6 +5363,7 @@ static const struct
     { "INSUFFICIENT_RESOURCES",      STATUS_INSUFFICIENT_RESOURCES },
     { "INVALID_ADDRESS",             STATUS_INVALID_ADDRESS },
     { "INVALID_CID",                 STATUS_INVALID_CID },
+    { "INVALID_CONNECTION",          STATUS_INVALID_CONNECTION },
     { "INVALID_DEVICE_REQUEST",      STATUS_INVALID_DEVICE_REQUEST },
     { "INVALID_FILE_FOR_SECTION",    STATUS_INVALID_FILE_FOR_SECTION },
     { "INVALID_HANDLE",              STATUS_INVALID_HANDLE },
@@ -5424,7 +5453,6 @@ static const struct
     { "WSAEFAULT",                   0xc0010000 | WSAEFAULT },
     { "WSAEHOSTDOWN",                0xc0010000 | WSAEHOSTDOWN },
     { "WSAEHOSTUNREACH",             0xc0010000 | WSAEHOSTUNREACH },
-    { "WSAEINPROGRESS",              0xc0010000 | WSAEINPROGRESS },
     { "WSAEINTR",                    0xc0010000 | WSAEINTR },
     { "WSAEINVAL",                   0xc0010000 | WSAEINVAL },
     { "WSAEISCONN",                  0xc0010000 | WSAEISCONN },

@@ -1,7 +1,6 @@
 MODULE    = hidclass.sys
 IMPORTLIB = hidclass
-IMPORTS   = hal ntoskrnl
-DELAYIMPORTS = setupapi
+IMPORTS   = hal ntoskrnl user32
 
 EXTRADLLFLAGS = -mno-cygwin
 

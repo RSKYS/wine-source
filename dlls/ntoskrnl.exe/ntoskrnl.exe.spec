@@ -465,6 +465,7 @@
 @ stdcall IoReuseIrp(ptr long)
 @ stub IoSetCompletionRoutineEx
 @ stdcall IoSetDeviceInterfaceState(ptr long)
+@ stdcall IoSetDevicePropertyData(ptr ptr long long long long ptr)
 @ stub IoSetDeviceToVerify
 @ stub IoSetFileOrigin
 @ stub IoSetHardErrorOrVerifyDevice
@@ -1212,6 +1213,7 @@
 @ stdcall RtlQueryDynamicTimeZoneInformation(ptr)
 @ stdcall RtlQueryInformationAcl(ptr ptr long long)
 @ stdcall RtlQueryPackageIdentity(long ptr ptr ptr ptr ptr)
+@ stdcall RtlQueryProcessPlaceholderCompatibilityMode()
 @ stdcall RtlQueryRegistryValues(long ptr ptr ptr ptr)
 @ stdcall RtlQueryRegistryValuesEx(long ptr ptr ptr ptr) RtlQueryRegistryValues
 @ stdcall RtlQueryTimeZoneInformation(ptr)

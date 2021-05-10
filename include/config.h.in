@@ -288,15 +288,6 @@
 /* Define to 1 if you have the `isnan' function. */
 #undef HAVE_ISNAN
 
-/* Define to 1 if you have the `j0' function. */
-#undef HAVE_J0
-
-/* Define to 1 if you have the `j1' function. */
-#undef HAVE_J1
-
-/* Define to 1 if you have the `jn' function. */
-#undef HAVE_JN
-
 /* Define to 1 if you have the <jpeglib.h> header file. */
 #undef HAVE_JPEGLIB_H
 
@@ -462,18 +453,6 @@
 /* Define to 1 if you have the <linux/videodev2.h> header file. */
 #undef HAVE_LINUX_VIDEODEV2_H
 
-/* Define to 1 if you have the `llrint' function. */
-#undef HAVE_LLRINT
-
-/* Define to 1 if you have the `llrintf' function. */
-#undef HAVE_LLRINTF
-
-/* Define to 1 if you have the `llround' function. */
-#undef HAVE_LLROUND
-
-/* Define to 1 if you have the `llroundf' function. */
-#undef HAVE_LLROUNDF
-
 /* Define to 1 if you have the `log1p' function. */
 #undef HAVE_LOG1P
 
@@ -485,18 +464,6 @@
 
 /* Define to 1 if you have the `log2f' function. */
 #undef HAVE_LOG2F
-
-/* Define to 1 if you have the `lrint' function. */
-#undef HAVE_LRINT
-
-/* Define to 1 if you have the `lrintf' function. */
-#undef HAVE_LRINTF
-
-/* Define to 1 if you have the `lround' function. */
-#undef HAVE_LROUND
-
-/* Define to 1 if you have the `lroundf' function. */
-#undef HAVE_LROUNDF
 
 /* Define to 1 if you have the `lstat' function. */
 #undef HAVE_LSTAT
@@ -704,18 +671,6 @@
 
 /* Define to 1 if you have the `res_getservers' function. */
 #undef HAVE_RES_GETSERVERS
-
-/* Define to 1 if you have the `rint' function. */
-#undef HAVE_RINT
-
-/* Define to 1 if you have the `rintf' function. */
-#undef HAVE_RINTF
-
-/* Define to 1 if you have the `round' function. */
-#undef HAVE_ROUND
-
-/* Define to 1 if you have the `roundf' function. */
-#undef HAVE_ROUNDF
 
 /* Define to 1 if you have the <sasl/sasl.h> header file. */
 #undef HAVE_SASL_SASL_H
@@ -1174,15 +1129,6 @@
 
 /* Define if Xrandr has the XRRGetProviderResources function */
 #undef HAVE_XRRGETPROVIDERRESOURCES
-
-/* Define to 1 if you have the `y0' function. */
-#undef HAVE_Y0
-
-/* Define to 1 if you have the `y1' function. */
-#undef HAVE_Y1
-
-/* Define to 1 if you have the `yn' function. */
-#undef HAVE_YN
 
 /* Define to 1 if you have the `_spawnvp' function. */
 #undef HAVE__SPAWNVP

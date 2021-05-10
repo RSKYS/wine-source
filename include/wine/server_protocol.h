@@ -110,23 +110,15 @@ typedef union
 } debug_event_t;
 
 
-enum cpu_type
-{
-    CPU_x86, CPU_x86_64, CPU_POWERPC, CPU_ARM, CPU_ARM64
-};
-typedef int client_cpu_t;
-
-
 typedef struct
 {
-    client_cpu_t     cpu;
+    unsigned int     machine;
     unsigned int     flags;
     union
     {
         struct { unsigned int eip, ebp, esp, eflags, cs, ss; } i386_regs;
         struct { unsigned __int64 rip, rbp, rsp;
                  unsigned int cs, ss, flags, __pad; } x86_64_regs;
-        struct { unsigned int iar, msr, ctr, lr, dar, dsisr, trap, __pad; } powerpc_regs;
         struct { unsigned int sp, lr, pc, cpsr; } arm_regs;
         struct { unsigned __int64 sp, pc, pstate; } arm64_regs;
     } ctl;
@@ -135,7 +127,6 @@ typedef struct
         struct { unsigned int eax, ebx, ecx, edx, esi, edi; } i386_regs;
         struct { unsigned __int64 rax,rbx, rcx, rdx, rsi, rdi,
                                   r8, r9, r10, r11, r12, r13, r14, r15; } x86_64_regs;
-        struct { unsigned int gpr[32], cr, xer; } powerpc_regs;
         struct { unsigned int r[13]; } arm_regs;
         struct { unsigned __int64 x[31]; } arm64_regs;
     } integer;
@@ -149,7 +140,6 @@ typedef struct
         struct { unsigned int ctrl, status, tag, err_off, err_sel, data_off, data_sel, cr0npx;
                  unsigned char regs[80]; } i386_regs;
         struct { struct { unsigned __int64 low, high; } fpregs[32]; } x86_64_regs;
-        struct { double fpr[32], fpscr; } powerpc_regs;
         struct { unsigned __int64 d[32]; unsigned int fpscr; } arm_regs;
         struct { struct { unsigned __int64 low, high; } q[32]; unsigned int fpcr, fpsr; } arm64_regs;
     } fp;
@@ -157,7 +147,6 @@ typedef struct
     {
         struct { unsigned int dr0, dr1, dr2, dr3, dr6, dr7; } i386_regs;
         struct { unsigned __int64 dr0, dr1, dr2, dr3, dr6, dr7; } x86_64_regs;
-        struct { unsigned int dr[8]; } powerpc_regs;
         struct { unsigned int bvr[8], bcr[8], wvr[1], wcr[1]; } arm_regs;
         struct { unsigned __int64 bvr[8], wvr[2]; unsigned int bcr[8], wcr[2]; } arm64_regs;
     } debug;
@@ -273,30 +262,40 @@ struct hw_msg_source
     unsigned int    origin;
 };
 
+union rawinput
+{
+    int type;
+    struct
+    {
+        int            type;
+        unsigned int   message;
+        unsigned short vkey;
+        unsigned short scan;
+    } kbd;
+    struct
+    {
+        int            type;
+        int            x;
+        int            y;
+        unsigned int   data;
+    } mouse;
+    struct
+    {
+        int            type;
+        unsigned int   device;
+        unsigned int   param;
+        unsigned short usage_page;
+        unsigned short usage;
+    } hid;
+};
+
 struct hardware_msg_data
 {
     lparam_t             info;
     unsigned int         hw_id;
     unsigned int         flags;
     struct hw_msg_source source;
-    union
-    {
-        int type;
-        struct
-        {
-            int            type;
-            unsigned int   message;
-            unsigned short vkey;
-            unsigned short scan;
-        } kbd;
-        struct
-        {
-            int            type;
-            int            x;
-            int            y;
-            unsigned int   data;
-        } mouse;
-    } rawinput;
+    union rawinput       rawinput;
 };
 
 struct callback_msg_data
@@ -341,6 +340,7 @@ typedef union
         int            type;
         unsigned int   msg;
         lparam_t       lparam;
+        union rawinput rawinput;
     } hw;
 } hw_input_t;
 
@@ -575,6 +575,7 @@ typedef union
         unsigned int     flags;
         client_ptr_t     func;
         client_ptr_t     arg;
+        mem_size_t       zero_bits;
         mem_size_t       reserve;
         mem_size_t       commit;
     } create_thread;
@@ -836,7 +837,8 @@ struct new_process_request
     unsigned int flags;
     int          socket_fd;
     unsigned int access;
-    client_cpu_t cpu;
+    unsigned short machine;
+    char __pad_38[2];
     data_size_t  info_size;
     data_size_t  handles_size;
     /* VARARG(objattr,object_attributes); */
@@ -930,8 +932,6 @@ struct init_first_thread_request
     client_ptr_t ldt_copy;
     int          reply_fd;
     int          wait_fd;
-    client_cpu_t cpu;
-    char __pad_60[4];
 };
 struct init_first_thread_reply
 {
@@ -940,7 +940,8 @@ struct init_first_thread_reply
     thread_id_t  tid;
     timeout_t    server_start;
     data_size_t  info_size;
-    unsigned int all_cpus;
+    /* VARARG(machines,ushorts); */
+    char __pad_28[4];
 };
 
 
@@ -1013,9 +1014,9 @@ struct get_process_info_reply
     timeout_t    end_time;
     int          exit_code;
     int          priority;
-    client_cpu_t cpu;
+    unsigned short machine;
     /* VARARG(image,pe_image_info); */
-    char __pad_60[4];
+    char __pad_58[6];
 };
 
 
@@ -5385,6 +5386,24 @@ struct resume_process_reply
 };
 
 
+
+struct get_next_thread_request
+{
+    struct request_header __header;
+    obj_handle_t process;
+    obj_handle_t last;
+    unsigned int access;
+    unsigned int attributes;
+    unsigned int flags;
+};
+struct get_next_thread_reply
+{
+    struct reply_header __header;
+    obj_handle_t handle;
+    char __pad_12[4];
+};
+
+
 enum request
 {
     REQ_new_process,
@@ -5660,6 +5679,7 @@ enum request
     REQ_terminate_job,
     REQ_suspend_process,
     REQ_resume_process,
+    REQ_get_next_thread,
     REQ_NB_REQUESTS
 };
 
@@ -5940,6 +5960,7 @@ union generic_request
     struct terminate_job_request terminate_job_request;
     struct suspend_process_request suspend_process_request;
     struct resume_process_request resume_process_request;
+    struct get_next_thread_request get_next_thread_request;
 };
 union generic_reply
 {
@@ -6218,11 +6239,12 @@ union generic_reply
     struct terminate_job_reply terminate_job_reply;
     struct suspend_process_reply suspend_process_reply;
     struct resume_process_reply resume_process_reply;
+    struct get_next_thread_reply get_next_thread_reply;
 };
 
 /* ### protocol_version begin ### */
 
-#define SERVER_PROTOCOL_VERSION 691
+#define SERVER_PROTOCOL_VERSION 700
 
 /* ### protocol_version end ### */
 

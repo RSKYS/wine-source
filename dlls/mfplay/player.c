@@ -34,6 +34,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
 DEFINE_GUID(_MF_TOPO_MEDIA_ITEM, 0x6c1bb4df, 0x59ba, 0x4020, 0x85, 0x0c, 0x35, 0x79, 0xa2, 0x7a, 0xe2, 0x51);
+DEFINE_GUID(_MF_CUSTOM_SINK, 0x7c1bb4df, 0x59ba, 0x4020, 0x85, 0x0c, 0x35, 0x79, 0xa2, 0x7a, 0xe2, 0x51);
 
 static const WCHAR eventclassW[] = L"MediaPlayerEventCallbackClass";
 
@@ -434,18 +435,62 @@ static HRESULT WINAPI media_item_SetStartStopPosition(IMFPMediaItem *iface, cons
     return E_NOTIMPL;
 }
 
+static HRESULT media_item_get_stream_type(IMFStreamDescriptor *sd, GUID *major)
+{
+    IMFMediaTypeHandler *handler;
+    HRESULT hr;
+
+    if (SUCCEEDED(hr = IMFStreamDescriptor_GetMediaTypeHandler(sd, &handler)))
+    {
+        hr = IMFMediaTypeHandler_GetMajorType(handler, major);
+        IMFMediaTypeHandler_Release(handler);
+    }
+
+    return hr;
+}
+
+static HRESULT media_item_has_stream(struct media_item *item, const GUID *major, BOOL *has_stream, BOOL *is_selected)
+{
+    IMFStreamDescriptor *sd;
+    unsigned int idx = 0;
+    BOOL selected;
+    GUID guid;
+
+    *has_stream = *is_selected = FALSE;
+
+    while (SUCCEEDED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(item->pd, idx++, &selected, &sd)))
+    {
+        if (SUCCEEDED(media_item_get_stream_type(sd, &guid)) && IsEqualGUID(&guid, major))
+        {
+            *has_stream = TRUE;
+            *is_selected = selected;
+        }
+
+        IMFStreamDescriptor_Release(sd);
+
+        if (*has_stream && *is_selected)
+            break;
+    }
+
+    return S_OK;
+}
+
 static HRESULT WINAPI media_item_HasVideo(IMFPMediaItem *iface, BOOL *has_video, BOOL *selected)
 {
-    FIXME("%p, %p, %p.\n", iface, has_video, selected);
+    struct media_item *item = impl_from_IMFPMediaItem(iface);
 
-    return E_NOTIMPL;
+    TRACE("%p, %p, %p.\n", iface, has_video, selected);
+
+    return media_item_has_stream(item, &MFMediaType_Video, has_video, selected);
 }
 
 static HRESULT WINAPI media_item_HasAudio(IMFPMediaItem *iface, BOOL *has_audio, BOOL *selected)
 {
-    FIXME("%p, %p, %p.\n", iface, has_audio, selected);
+    struct media_item *item = impl_from_IMFPMediaItem(iface);
 
-    return E_NOTIMPL;
+    TRACE("%p, %p, %p.\n", iface, has_audio, selected);
+
+    return media_item_has_stream(item, &MFMediaType_Audio, has_audio, selected);
 }
 
 static HRESULT WINAPI media_item_IsProtected(IMFPMediaItem *iface, BOOL *protected)
@@ -550,9 +595,34 @@ static HRESULT WINAPI media_item_GetCharacteristics(IMFPMediaItem *iface, MFP_ME
 
 static HRESULT WINAPI media_item_SetStreamSink(IMFPMediaItem *iface, DWORD index, IUnknown *sink)
 {
-    FIXME("%p, %u, %p.\n", iface, index, sink);
+    struct media_item *item = impl_from_IMFPMediaItem(iface);
+    IMFStreamDescriptor *sd;
+    IUnknown *sink_object;
+    BOOL selected;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %u, %p.\n", iface, index, sink);
+
+    if (FAILED(hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(item->pd, index, &selected, &sd)))
+        return hr;
+
+    if (sink)
+    {
+        if (FAILED(hr = IUnknown_QueryInterface(sink, &IID_IMFStreamSink, (void **)&sink_object)))
+            hr = IUnknown_QueryInterface(sink, &IID_IMFActivate, (void **)&sink_object);
+
+        if (sink_object)
+        {
+            hr = IMFStreamDescriptor_SetUnknown(sd, &_MF_CUSTOM_SINK, sink_object);
+            IUnknown_Release(sink_object);
+        }
+    }
+    else
+        IMFStreamDescriptor_DeleteItem(sd, &_MF_CUSTOM_SINK);
+
+    IMFStreamDescriptor_Release(sd);
+
+    return hr;
 }
 
 static HRESULT WINAPI media_item_GetMetadata(IMFPMediaItem *iface, IPropertyStore **metadata)
@@ -975,16 +1045,27 @@ static HRESULT WINAPI media_player_CreateMediaItemFromObject(IMFPMediaPlayer *if
     return hr;
 }
 
-static HRESULT media_item_get_stream_type(IMFStreamDescriptor *sd, GUID *major)
+static HRESULT media_item_create_source_node(struct media_item *item, IMFStreamDescriptor *sd,
+        IMFTopologyNode **node)
 {
-    IMFMediaTypeHandler *handler;
     HRESULT hr;
 
-    if (SUCCEEDED(hr = IMFStreamDescriptor_GetMediaTypeHandler(sd, &handler)))
+    if (SUCCEEDED(hr = MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, node)))
     {
-        hr = IMFMediaTypeHandler_GetMajorType(handler, major);
-        IMFMediaTypeHandler_Release(handler);
+        IMFTopologyNode_SetUnknown(*node, &MF_TOPONODE_SOURCE, (IUnknown *)item->source);
+        IMFTopologyNode_SetUnknown(*node, &MF_TOPONODE_PRESENTATION_DESCRIPTOR, (IUnknown *)item->pd);
+        IMFTopologyNode_SetUnknown(*node, &MF_TOPONODE_STREAM_DESCRIPTOR, (IUnknown *)sd);
     }
+
+    return hr;
+}
+
+static HRESULT media_item_create_sink_node(IUnknown *sink, IMFTopologyNode **node)
+{
+    HRESULT hr;
+
+    if (SUCCEEDED(hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, node)))
+        IMFTopologyNode_SetObject(*node, sink);
 
     return hr;
 }
@@ -992,59 +1073,65 @@ static HRESULT media_item_get_stream_type(IMFStreamDescriptor *sd, GUID *major)
 static HRESULT media_item_create_topology(struct media_player *player, struct media_item *item, IMFTopology **out)
 {
     IMFTopologyNode *src_node, *sink_node;
-    IMFActivate *sar_activate;
+    BOOL selected, video_added = FALSE;
     IMFStreamDescriptor *sd;
     IMFTopology *topology;
     unsigned int idx;
-    BOOL selected;
+    IUnknown *sink;
     HRESULT hr;
     GUID major;
 
     if (FAILED(hr = MFCreateTopology(&topology)))
         return hr;
 
-    /* FIXME: handle user sinks */
-
-    /* Use first stream if none selected. */
-    if (player->output_window)
-    {
-        FIXME("Video streams are not handled.\n");
-    }
-
-    /* Set up audio branches for all selected streams. */
+    /* Set up branches for all selected streams. */
 
     idx = 0;
     while (SUCCEEDED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(item->pd, idx++, &selected, &sd)))
     {
-        if (selected && SUCCEEDED(media_item_get_stream_type(sd, &major)) && IsEqualGUID(&major, &MFMediaType_Audio))
+        if (!selected || FAILED(media_item_get_stream_type(sd, &major)))
         {
-            if (SUCCEEDED(hr = MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &src_node)))
-            {
-                IMFTopologyNode_SetUnknown(src_node, &MF_TOPONODE_SOURCE, (IUnknown *)item->source);
-                IMFTopologyNode_SetUnknown(src_node, &MF_TOPONODE_PRESENTATION_DESCRIPTOR, (IUnknown *)item->pd);
-                IMFTopologyNode_SetUnknown(src_node, &MF_TOPONODE_STREAM_DESCRIPTOR, (IUnknown *)sd);
+            IMFStreamDescriptor_Release(sd);
+            continue;
+        }
 
+        sink = NULL;
+
+        if (SUCCEEDED(IMFStreamDescriptor_GetUnknown(sd, &_MF_CUSTOM_SINK, &IID_IUnknown, (void **)&sink)))
+        {
+            /* User sink is attached as-is. */
+        }
+        else if (IsEqualGUID(&major, &MFMediaType_Audio))
+        {
+            if (FAILED(hr = MFCreateAudioRendererActivate((IMFActivate **)&sink)))
+                WARN("Failed to create SAR activation object, hr %#x.\n", hr);
+        }
+        else if (IsEqualGUID(&major, &MFMediaType_Video) && player->output_window && !video_added)
+        {
+            if (FAILED(hr = MFCreateVideoRendererActivate(player->output_window, (IMFActivate **)&sink)))
+                WARN("Failed to create EVR activation object, hr %#x.\n", hr);
+            video_added = SUCCEEDED(hr);
+        }
+
+        if (sink)
+        {
+            hr = media_item_create_source_node(item, sd, &src_node);
+            if (SUCCEEDED(hr))
+                hr = media_item_create_sink_node(sink, &sink_node);
+
+            if (SUCCEEDED(hr))
+            {
                 IMFTopology_AddNode(topology, src_node);
-            }
-
-            if (SUCCEEDED(hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &sink_node)))
-            {
-                if (SUCCEEDED(MFCreateAudioRendererActivate(&sar_activate)))
-                {
-                    IMFTopologyNode_SetObject(sink_node, (IUnknown *)sar_activate);
-                    IMFActivate_Release(sar_activate);
-                }
-
                 IMFTopology_AddNode(topology, sink_node);
-            }
-
-            if (src_node && sink_node)
                 IMFTopologyNode_ConnectOutput(src_node, 0, sink_node, 0);
+            }
 
             if (src_node)
                 IMFTopologyNode_Release(src_node);
             if (sink_node)
                 IMFTopologyNode_Release(sink_node);
+
+            IUnknown_Release(sink);
         }
 
         IMFStreamDescriptor_Release(sd);
@@ -1156,48 +1243,115 @@ static HRESULT WINAPI media_player_SetMute(IMFPMediaPlayer *iface, BOOL mute)
 static HRESULT WINAPI media_player_GetNativeVideoSize(IMFPMediaPlayer *iface,
         SIZE *video, SIZE *arvideo)
 {
-    FIXME("%p, %p, %p.\n", iface, video, arvideo);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p, %p.\n", iface, video, arvideo);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_GetNativeVideoSize(display_control, video, arvideo);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_GetIdealVideoSize(IMFPMediaPlayer *iface,
         SIZE *min_size, SIZE *max_size)
 {
-    FIXME("%p, %p, %p.\n", iface, min_size, max_size);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p, %p.\n", iface, min_size, max_size);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_GetIdealVideoSize(display_control, min_size, max_size);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_SetVideoSourceRect(IMFPMediaPlayer *iface,
         MFVideoNormalizedRect const *rect)
 {
-    FIXME("%p, %p.\n", iface, rect);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, rect);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_SetVideoPosition(display_control, rect, NULL);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_GetVideoSourceRect(IMFPMediaPlayer *iface,
         MFVideoNormalizedRect *rect)
 {
-    FIXME("%p, %p.\n", iface, rect);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
+    RECT dest;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, rect);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_GetVideoPosition(display_control, rect, &dest);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_SetAspectRatioMode(IMFPMediaPlayer *iface, DWORD mode)
 {
-    FIXME("%p, %u.\n", iface, mode);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %u.\n", iface, mode);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_SetAspectRatioMode(display_control, mode);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_GetAspectRatioMode(IMFPMediaPlayer *iface,
         DWORD *mode)
 {
-    FIXME("%p, %p.\n", iface, mode);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, mode);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_GetAspectRatioMode(display_control, mode);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_GetVideoWindow(IMFPMediaPlayer *iface, HWND *window)
@@ -1220,16 +1374,38 @@ static HRESULT WINAPI media_player_UpdateVideo(IMFPMediaPlayer *iface)
 
 static HRESULT WINAPI media_player_SetBorderColor(IMFPMediaPlayer *iface, COLORREF color)
 {
-    FIXME("%p, %#x.\n", iface, color);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %#x.\n", iface, color);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_SetBorderColor(display_control, color);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_GetBorderColor(IMFPMediaPlayer *iface, COLORREF *color)
 {
-    FIXME("%p, %p.\n", iface, color);
+    struct media_player *player = impl_from_IMFPMediaPlayer(iface);
+    IMFVideoDisplayControl *display_control;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, color);
+
+    if (SUCCEEDED(hr = MFGetService((IUnknown *)player->session, &MR_VIDEO_RENDER_SERVICE,
+            &IID_IMFVideoDisplayControl, (void **)&display_control)))
+    {
+        hr = IMFVideoDisplayControl_GetBorderColor(display_control, color);
+        IMFVideoDisplayControl_Release(display_control);
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI media_player_InsertEffect(IMFPMediaPlayer *iface, IUnknown *effect,
@@ -1605,6 +1781,21 @@ static void media_player_create_forward_event(struct media_player *player, HRESU
     LeaveCriticalSection(&player->cs);
 }
 
+static void media_player_create_playback_ended_event(struct media_player *player, HRESULT event_status,
+        struct media_event **event)
+{
+    EnterCriticalSection(&player->cs);
+
+    if (SUCCEEDED(media_event_create(player, MFP_EVENT_TYPE_PLAYBACK_ENDED, event_status, player->item, event)))
+    {
+        if (player->item)
+            IMFPMediaItem_Release(player->item);
+        player->item = NULL;
+    }
+
+    LeaveCriticalSection(&player->cs);
+}
+
 static HRESULT WINAPI media_player_session_events_callback_Invoke(IMFAsyncCallback *iface,
         IMFAsyncResult *result)
 {
@@ -1616,6 +1807,7 @@ static HRESULT WINAPI media_player_session_events_callback_Invoke(IMFAsyncCallba
     HRESULT hr, event_status;
     IMFPMediaItem *item = NULL;
     IMFTopology *topology;
+    unsigned int status;
     PROPVARIANT value;
 
     if (FAILED(hr = IMFMediaSession_EndGetEvent(player->session, result, &session_event)))
@@ -1657,6 +1849,16 @@ static HRESULT WINAPI media_player_session_events_callback_Invoke(IMFAsyncCallba
                     IMFTopology_Release(topology);
                 }
                 PropVariantClear(&value);
+            }
+
+            break;
+
+        case MESessionTopologyStatus:
+
+            if (SUCCEEDED(IMFMediaEvent_GetUINT32(session_event, &MF_EVENT_TOPOLOGY_STATUS, &status)) &&
+                    status == MF_TOPOSTATUS_ENDED)
+            {
+                media_player_create_playback_ended_event(player, event_status, &event);
             }
 
             break;

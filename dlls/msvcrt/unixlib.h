@@ -57,16 +57,9 @@ struct unix_funcs
     float           (CDECL *frexpf)(float x, int *exp);
     double          (CDECL *hypot)(double x, double y);
     float           (CDECL *hypotf)(float x, float y);
-    double          (CDECL *j0)(double num);
-    double          (CDECL *j1)(double num);
-    double          (CDECL *jn)(int n, double num);
     double          (CDECL *ldexp)(double x, int exp);
     double          (CDECL *lgamma)(double x);
     float           (CDECL *lgammaf)(float x);
-    __int64         (CDECL *llrint)(double x);
-    __int64         (CDECL *llrintf)(float x);
-    __int64         (CDECL *llround)(double x);
-    __int64         (CDECL *llroundf)(float x);
     double          (CDECL *log)(double x);
     float           (CDECL *logf)(float x);
     double          (CDECL *log10)(double x);
@@ -77,10 +70,6 @@ struct unix_funcs
     float           (CDECL *log2f)(float x);
     double          (CDECL *logb)(double x);
     float           (CDECL *logbf)(float x);
-    int             (CDECL *lrint)(double x);
-    int             (CDECL *lrintf)(float x);
-    int             (CDECL *lround)(double x);
-    int             (CDECL *lroundf)(float x);
     double          (CDECL *modf)(double x, double *iptr);
     float           (CDECL *modff)(float x, float *iptr);
     double          (CDECL *nearbyint)(double num);
@@ -95,10 +84,6 @@ struct unix_funcs
     float           (CDECL *remainderf)(float x, float y);
     double          (CDECL *remquo)(double x, double y, int *quo);
     float           (CDECL *remquof)(float x, float y, int *quo);
-    double          (CDECL *rint)(double x);
-    float           (CDECL *rintf)(float x);
-    double          (CDECL *round)(double x);
-    float           (CDECL *roundf)(float x);
     double          (CDECL *sin)(double x);
     float           (CDECL *sinf)(float x);
     double          (CDECL *sinh)(double x);
@@ -111,9 +96,6 @@ struct unix_funcs
     float           (CDECL *tgammaf)(float x);
     double          (CDECL *trunc)(double x);
     float           (CDECL *truncf)(float x);
-    double          (CDECL *y0)(double num);
-    double          (CDECL *y1)(double num);
-    double          (CDECL *yn)(int order, double num);
 };
 
 #endif /* __UNIXLIB_H */

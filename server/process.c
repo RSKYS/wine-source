@@ -841,7 +841,7 @@ static void process_killed( struct process *process )
 
     assert( list_empty( &process->thread_list ));
     process->end_time = current_time;
-    if (!process->is_system) close_process_desktop( process );
+    close_process_desktop( process );
     process->winstation = 0;
     process->desktop = 0;
     cancel_process_asyncs( process );
@@ -1042,11 +1042,6 @@ DECL_HANDLER(new_process)
     if (shutdown_stage)
     {
         set_error( STATUS_SHUTDOWN_IN_PROGRESS );
-        close( socket_fd );
-        return;
-    }
-    if (!is_cpu_supported( req->cpu ))
-    {
         close( socket_fd );
         return;
     }
@@ -1317,7 +1312,7 @@ DECL_HANDLER(get_process_info)
         reply->peb              = process->peb;
         reply->start_time       = process->start_time;
         reply->end_time         = process->end_time;
-        reply->cpu              = process->cpu;
+        reply->machine          = process->machine;
         if (get_reply_max_size())
         {
             client_ptr_t base;
@@ -1503,6 +1498,7 @@ DECL_HANDLER(get_process_idle_event)
 DECL_HANDLER(make_process_system)
 {
     struct process *process = current->process;
+    struct thread *thread;
 
     if (!shutdown_event)
     {
@@ -1515,8 +1511,9 @@ DECL_HANDLER(make_process_system)
 
     if (!process->is_system)
     {
+        LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+            release_thread_desktop( thread, 0 );
         process->is_system = 1;
-        close_process_desktop( process );
         if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
             shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
     }

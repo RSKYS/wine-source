@@ -96,32 +96,6 @@
 #include "request.h"
 #include "user.h"
 
-/* From winsock.h */
-#define FD_MAX_EVENTS              10
-#define FD_READ_BIT                0
-#define FD_WRITE_BIT               1
-#define FD_OOB_BIT                 2
-#define FD_ACCEPT_BIT              3
-#define FD_CONNECT_BIT             4
-#define FD_CLOSE_BIT               5
-
-/*
- * Define flags to be used with the WSAAsyncSelect() call.
- */
-#define FD_READ                    0x00000001
-#define FD_WRITE                   0x00000002
-#define FD_OOB                     0x00000004
-#define FD_ACCEPT                  0x00000008
-#define FD_CONNECT                 0x00000010
-#define FD_CLOSE                   0x00000020
-
-/* internal per-socket flags */
-#define FD_WINE_LISTENING          0x10000000
-#define FD_WINE_NONBLOCKING        0x20000000
-#define FD_WINE_CONNECTED          0x40000000
-#define FD_WINE_RAW                0x80000000
-#define FD_WINE_INTERNAL           0xFFFF0000
-
 struct accept_req
 {
     struct list entry;
@@ -488,7 +462,7 @@ static void fill_accept_output( struct accept_req *req )
             return;
         }
 
-        set_win32_error( sock_get_error( errno ) );
+        set_error( sock_get_ntstatus( errno ) );
         free( out_data );
         return;
     }
@@ -507,7 +481,7 @@ static void fill_accept_output( struct accept_req *req )
         if (getsockname( fd, &unix_addr.addr, &unix_len ) < 0 ||
             (win_len = sockaddr_from_unix( &unix_addr, win_addr, req->local_len - sizeof(int) )) < 0)
         {
-            set_win32_error( sock_get_error( errno ) );
+            set_error( sock_get_ntstatus( errno ) );
             free( out_data );
             return;
         }
@@ -520,7 +494,7 @@ static void fill_accept_output( struct accept_req *req )
     if (getpeername( fd, &unix_addr.addr, &unix_len ) < 0 ||
         (win_len = sockaddr_from_unix( &unix_addr, win_addr, remote_len - sizeof(int) )) < 0)
     {
-        set_win32_error( sock_get_error( errno ) );
+        set_error( sock_get_ntstatus( errno ) );
         free( out_data );
         return;
     }
@@ -864,8 +838,10 @@ static void sock_reselect_async( struct fd *fd, struct async_queue *queue )
 {
     struct sock *sock = get_fd_user( fd );
 
-    /* ignore reselect on ifchange queue */
-    if (&sock->ifchange_q != queue)
+    /* Don't reselect the ifchange queue; we always ask for POLLIN.
+     * Don't reselect an uninitialized socket; we can't call set_fd_events() on
+     * a pseudo-fd. */
+    if (queue != &sock->ifchange_q && sock->type)
         sock_reselect( sock );
 }
 
@@ -988,7 +964,7 @@ static int get_unix_protocol( int protocol )
         case WS_IPPROTO_ICMP: return IPPROTO_ICMP;
         case WS_IPPROTO_IGMP: return IPPROTO_IGMP;
         case WS_IPPROTO_IP: return IPPROTO_IP;
-        case WS_IPPROTO_IPIP: return IPPROTO_IPIP;
+        case WS_IPPROTO_IPV4: return IPPROTO_IPIP;
         case WS_IPPROTO_IPV6: return IPPROTO_IPV6;
         case WS_IPPROTO_RAW: return IPPROTO_RAW;
         case WS_IPPROTO_TCP: return IPPROTO_TCP;
@@ -1113,7 +1089,6 @@ static int init_socket( struct sock *sock, int family, int type, int protocol, u
         return -1;
     }
     sock_reselect( sock );
-    clear_error();
     return 0;
 }
 
@@ -1131,7 +1106,7 @@ static int accept_new_fd( struct sock *sock )
     if (acceptfd != -1)
         fcntl( acceptfd, F_SETFL, O_NONBLOCK );
     else
-        set_win32_error( sock_get_error( errno ));
+        set_error( sock_get_ntstatus( errno ));
     return acceptfd;
 }
 
@@ -1247,8 +1222,8 @@ static unsigned int sock_get_error( int err )
         case EFAULT:            return WSAEFAULT;
         case EINVAL:            return WSAEINVAL;
         case EMFILE:            return WSAEMFILE;
+        case EINPROGRESS:
         case EWOULDBLOCK:       return WSAEWOULDBLOCK;
-        case EINPROGRESS:       return WSAEINPROGRESS;
         case EALREADY:          return WSAEALREADY;
         case ENOTSOCK:          return WSAENOTSOCK;
         case EDESTADDRREQ:      return WSAEDESTADDRREQ;
@@ -1312,12 +1287,12 @@ static int sock_get_ntstatus( int err )
         case EBUSY:             return STATUS_DEVICE_BUSY;
         case EPERM:
         case EACCES:            return STATUS_ACCESS_DENIED;
-        case EFAULT:            return STATUS_NO_MEMORY;
+        case EFAULT:            return STATUS_ACCESS_VIOLATION;
         case EINVAL:            return STATUS_INVALID_PARAMETER;
         case ENFILE:
         case EMFILE:            return STATUS_TOO_MANY_OPENED_FILES;
-        case EWOULDBLOCK:       return STATUS_CANT_WAIT;
-        case EINPROGRESS:       return STATUS_PENDING;
+        case EINPROGRESS:
+        case EWOULDBLOCK:       return STATUS_DEVICE_NOT_READY;
         case EALREADY:          return STATUS_NETWORK_BUSY;
         case ENOTSOCK:          return STATUS_OBJECT_TYPE_MISMATCH;
         case EDESTADDRREQ:      return STATUS_INVALID_PARAMETER;
@@ -1329,11 +1304,11 @@ static int sock_get_ntstatus( int err )
         case EPROTOTYPE:        return STATUS_NOT_SUPPORTED;
         case ENOPROTOOPT:       return STATUS_INVALID_PARAMETER;
         case EOPNOTSUPP:        return STATUS_NOT_SUPPORTED;
-        case EADDRINUSE:        return STATUS_ADDRESS_ALREADY_ASSOCIATED;
+        case EADDRINUSE:        return STATUS_SHARING_VIOLATION;
         case EADDRNOTAVAIL:     return STATUS_INVALID_PARAMETER;
         case ECONNREFUSED:      return STATUS_CONNECTION_REFUSED;
         case ESHUTDOWN:         return STATUS_PIPE_DISCONNECTED;
-        case ENOTCONN:          return STATUS_CONNECTION_DISCONNECTED;
+        case ENOTCONN:          return STATUS_INVALID_CONNECTION;
         case ETIMEDOUT:         return STATUS_IO_TIMEOUT;
         case ENETUNREACH:       return STATUS_NETWORK_UNREACHABLE;
         case EHOSTUNREACH:      return STATUS_HOST_UNREACHABLE;
@@ -1380,7 +1355,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
 
     assert( sock->obj.ops == &sock_ops );
 
-    if (get_unix_fd( fd ) == -1 && code != IOCTL_AFD_CREATE) return 0;
+    if (code != IOCTL_AFD_CREATE && get_unix_fd( fd ) < 0) return 0;
 
     switch(code)
     {
@@ -1413,7 +1388,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
             struct accept_req *req;
 
             if (sock->state & FD_WINE_NONBLOCKING) return 0;
-            if (get_error() != (0xc0010000 | WSAEWOULDBLOCK)) return 0;
+            if (get_error() != STATUS_DEVICE_NOT_READY) return 0;
 
             if (!(req = alloc_accept_req( sock, NULL, async, NULL ))) return 0;
             list_add_tail( &sock->accept_list, &req->entry );
@@ -1461,7 +1436,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
         if (acceptsock->accept_recv_req)
         {
             release_object( acceptsock );
-            set_win32_error( WSAEINVAL );
+            set_error( STATUS_INVALID_PARAMETER );
             return 0;
         }
 
@@ -1485,7 +1460,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
     case IOCTL_AFD_ADDRESS_LIST_CHANGE:
         if ((sock->state & FD_WINE_NONBLOCKING) && async_is_blocking( async ))
         {
-            set_win32_error( WSAEWOULDBLOCK );
+            set_error( STATUS_DEVICE_NOT_READY );
             return 0;
         }
         if (!sock_get_ifchange( sock )) return 0;
@@ -1656,7 +1631,7 @@ static void ifchange_poll_event( struct fd *fd, int event )
     unix_fd = socket( PF_NETLINK, SOCK_RAW, NETLINK_ROUTE );
     if (unix_fd == -1)
     {
-        set_win32_error( sock_get_error( errno ));
+        set_error( sock_get_ntstatus( errno ));
         return NULL;
     }
     fcntl( unix_fd, F_SETFL, O_NONBLOCK ); /* make socket nonblocking */
@@ -1667,7 +1642,7 @@ static void ifchange_poll_event( struct fd *fd, int event )
     if (bind( unix_fd, (struct sockaddr *)&addr, sizeof(addr) ) == -1)
     {
         close( unix_fd );
-        set_win32_error( sock_get_error( errno ));
+        set_error( sock_get_ntstatus( errno ));
         return NULL;
     }
     if (!(ifchange = alloc_object( &ifchange_ops )))

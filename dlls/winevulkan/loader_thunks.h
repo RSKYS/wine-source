@@ -67,6 +67,7 @@ struct unix_funcs
     void (WINAPI *p_vkCmdCopyImageToBuffer2KHR)(VkCommandBuffer, const VkCopyImageToBufferInfo2KHR *);
     void (WINAPI *p_vkCmdCopyMemoryToAccelerationStructureKHR)(VkCommandBuffer, const VkCopyMemoryToAccelerationStructureInfoKHR *);
     void (WINAPI *p_vkCmdCopyQueryPoolResults)(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t, VkBuffer, VkDeviceSize, VkDeviceSize, VkQueryResultFlags);
+    void (WINAPI *p_vkCmdCuLaunchKernelNVX)(VkCommandBuffer, const VkCuLaunchInfoNVX *);
     void (WINAPI *p_vkCmdDebugMarkerBeginEXT)(VkCommandBuffer, const VkDebugMarkerMarkerInfoEXT *);
     void (WINAPI *p_vkCmdDebugMarkerEndEXT)(VkCommandBuffer);
     void (WINAPI *p_vkCmdDebugMarkerInsertEXT)(VkCommandBuffer, const VkDebugMarkerMarkerInfoEXT *);
@@ -117,8 +118,10 @@ struct unix_funcs
     void (WINAPI *p_vkCmdSetBlendConstants)(VkCommandBuffer, const float[4]);
     void (WINAPI *p_vkCmdSetCheckpointNV)(VkCommandBuffer, const void *);
     void (WINAPI *p_vkCmdSetCoarseSampleOrderNV)(VkCommandBuffer, VkCoarseSampleOrderTypeNV, uint32_t, const VkCoarseSampleOrderCustomNV *);
+    void (WINAPI *p_vkCmdSetColorWriteEnableEXT)(VkCommandBuffer, uint32_t, const VkBool32 *);
     void (WINAPI *p_vkCmdSetCullModeEXT)(VkCommandBuffer, VkCullModeFlags);
     void (WINAPI *p_vkCmdSetDepthBias)(VkCommandBuffer, float, float, float);
+    void (WINAPI *p_vkCmdSetDepthBiasEnableEXT)(VkCommandBuffer, VkBool32);
     void (WINAPI *p_vkCmdSetDepthBounds)(VkCommandBuffer, float, float);
     void (WINAPI *p_vkCmdSetDepthBoundsTestEnableEXT)(VkCommandBuffer, VkBool32);
     void (WINAPI *p_vkCmdSetDepthCompareOpEXT)(VkCommandBuffer, VkCompareOp);
@@ -135,10 +138,14 @@ struct unix_funcs
     void (WINAPI *p_vkCmdSetFrontFaceEXT)(VkCommandBuffer, VkFrontFace);
     void (WINAPI *p_vkCmdSetLineStippleEXT)(VkCommandBuffer, uint32_t, uint16_t);
     void (WINAPI *p_vkCmdSetLineWidth)(VkCommandBuffer, float);
+    void (WINAPI *p_vkCmdSetLogicOpEXT)(VkCommandBuffer, VkLogicOp);
+    void (WINAPI *p_vkCmdSetPatchControlPointsEXT)(VkCommandBuffer, uint32_t);
     VkResult (WINAPI *p_vkCmdSetPerformanceMarkerINTEL)(VkCommandBuffer, const VkPerformanceMarkerInfoINTEL *);
     VkResult (WINAPI *p_vkCmdSetPerformanceOverrideINTEL)(VkCommandBuffer, const VkPerformanceOverrideInfoINTEL *);
     VkResult (WINAPI *p_vkCmdSetPerformanceStreamMarkerINTEL)(VkCommandBuffer, const VkPerformanceStreamMarkerInfoINTEL *);
+    void (WINAPI *p_vkCmdSetPrimitiveRestartEnableEXT)(VkCommandBuffer, VkBool32);
     void (WINAPI *p_vkCmdSetPrimitiveTopologyEXT)(VkCommandBuffer, VkPrimitiveTopology);
+    void (WINAPI *p_vkCmdSetRasterizerDiscardEnableEXT)(VkCommandBuffer, VkBool32);
     void (WINAPI *p_vkCmdSetRayTracingPipelineStackSizeKHR)(VkCommandBuffer, uint32_t);
     void (WINAPI *p_vkCmdSetSampleLocationsEXT)(VkCommandBuffer, const VkSampleLocationsInfoEXT *);
     void (WINAPI *p_vkCmdSetScissor)(VkCommandBuffer, uint32_t, uint32_t, const VkRect2D *);
@@ -148,6 +155,7 @@ struct unix_funcs
     void (WINAPI *p_vkCmdSetStencilReference)(VkCommandBuffer, VkStencilFaceFlags, uint32_t);
     void (WINAPI *p_vkCmdSetStencilTestEnableEXT)(VkCommandBuffer, VkBool32);
     void (WINAPI *p_vkCmdSetStencilWriteMask)(VkCommandBuffer, VkStencilFaceFlags, uint32_t);
+    void (WINAPI *p_vkCmdSetVertexInputEXT)(VkCommandBuffer, uint32_t, const VkVertexInputBindingDescription2EXT *, uint32_t, const VkVertexInputAttributeDescription2EXT *);
     void (WINAPI *p_vkCmdSetViewport)(VkCommandBuffer, uint32_t, uint32_t, const VkViewport *);
     void (WINAPI *p_vkCmdSetViewportShadingRatePaletteNV)(VkCommandBuffer, uint32_t, uint32_t, const VkShadingRatePaletteNV *);
     void (WINAPI *p_vkCmdSetViewportWScalingNV)(VkCommandBuffer, uint32_t, uint32_t, const VkViewportWScalingNV *);
@@ -174,6 +182,8 @@ struct unix_funcs
     VkResult (WINAPI *p_vkCreateBufferView)(VkDevice, const VkBufferViewCreateInfo *, const VkAllocationCallbacks *, VkBufferView *);
     VkResult (WINAPI *p_vkCreateCommandPool)(VkDevice, const VkCommandPoolCreateInfo *, const VkAllocationCallbacks *, VkCommandPool *);
     VkResult (WINAPI *p_vkCreateComputePipelines)(VkDevice, VkPipelineCache, uint32_t, const VkComputePipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
+    VkResult (WINAPI *p_vkCreateCuFunctionNVX)(VkDevice, const VkCuFunctionCreateInfoNVX *, const VkAllocationCallbacks *, VkCuFunctionNVX *);
+    VkResult (WINAPI *p_vkCreateCuModuleNVX)(VkDevice, const VkCuModuleCreateInfoNVX *, const VkAllocationCallbacks *, VkCuModuleNVX *);
     VkResult (WINAPI *p_vkCreateDebugReportCallbackEXT)(VkInstance, const VkDebugReportCallbackCreateInfoEXT *, const VkAllocationCallbacks *, VkDebugReportCallbackEXT *);
     VkResult (WINAPI *p_vkCreateDebugUtilsMessengerEXT)(VkInstance, const VkDebugUtilsMessengerCreateInfoEXT *, const VkAllocationCallbacks *, VkDebugUtilsMessengerEXT *);
     VkResult (WINAPI *p_vkCreateDeferredOperationKHR)(VkDevice, const VkAllocationCallbacks *, VkDeferredOperationKHR *);
@@ -216,6 +226,8 @@ struct unix_funcs
     void (WINAPI *p_vkDestroyBuffer)(VkDevice, VkBuffer, const VkAllocationCallbacks *);
     void (WINAPI *p_vkDestroyBufferView)(VkDevice, VkBufferView, const VkAllocationCallbacks *);
     void (WINAPI *p_vkDestroyCommandPool)(VkDevice, VkCommandPool, const VkAllocationCallbacks *);
+    void (WINAPI *p_vkDestroyCuFunctionNVX)(VkDevice, VkCuFunctionNVX, const VkAllocationCallbacks *);
+    void (WINAPI *p_vkDestroyCuModuleNVX)(VkDevice, VkCuModuleNVX, const VkAllocationCallbacks *);
     void (WINAPI *p_vkDestroyDebugReportCallbackEXT)(VkInstance, VkDebugReportCallbackEXT, const VkAllocationCallbacks *);
     void (WINAPI *p_vkDestroyDebugUtilsMessengerEXT)(VkInstance, VkDebugUtilsMessengerEXT, const VkAllocationCallbacks *);
     void (WINAPI *p_vkDestroyDeferredOperationKHR)(VkDevice, VkDeferredOperationKHR, const VkAllocationCallbacks *);
@@ -296,6 +308,8 @@ struct unix_funcs
     void (WINAPI *p_vkGetImageSparseMemoryRequirements2)(VkDevice, const VkImageSparseMemoryRequirementsInfo2 *, uint32_t *, VkSparseImageMemoryRequirements2 *);
     void (WINAPI *p_vkGetImageSparseMemoryRequirements2KHR)(VkDevice, const VkImageSparseMemoryRequirementsInfo2 *, uint32_t *, VkSparseImageMemoryRequirements2 *);
     void (WINAPI *p_vkGetImageSubresourceLayout)(VkDevice, VkImage, const VkImageSubresource *, VkSubresourceLayout *);
+    VkResult (WINAPI *p_vkGetImageViewAddressNVX)(VkDevice, VkImageView, VkImageViewAddressPropertiesNVX *);
+    uint32_t (WINAPI *p_vkGetImageViewHandleNVX)(VkDevice, const VkImageViewHandleInfoNVX *);
     VkResult (WINAPI *p_vkGetMemoryHostPointerPropertiesEXT)(VkDevice, VkExternalMemoryHandleTypeFlagBits, const void *, VkMemoryHostPointerPropertiesEXT *);
     VkResult (WINAPI *p_vkGetPerformanceParameterINTEL)(VkDevice, VkPerformanceParameterTypeINTEL, VkPerformanceValueINTEL *);
     VkResult (WINAPI *p_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)(VkPhysicalDevice, uint32_t *, VkTimeDomainEXT *);
@@ -400,15 +414,5 @@ struct unix_funcs
     VkResult (WINAPI *p_vkWaitSemaphoresKHR)(VkDevice, const VkSemaphoreWaitInfo *, uint64_t);
     VkResult (WINAPI *p_vkWriteAccelerationStructuresPropertiesKHR)(VkDevice, uint32_t, const VkAccelerationStructureKHR *, VkQueryType, size_t, void *, size_t);
 };
-
-/* Functions for which we have custom implementations outside of the thunks. */
-VkResult WINAPI wine_vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkInstance *pInstance);
-VkResult WINAPI wine_vkEnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPropertyCount, VkExtensionProperties *pProperties);
-VkResult WINAPI wine_vkEnumerateInstanceLayerProperties(uint32_t *pPropertyCount, VkLayerProperties *pProperties);
-VkResult WINAPI wine_vkEnumerateInstanceVersion(uint32_t *pApiVersion);
-PFN_vkVoidFunction WINAPI wine_vkGetDeviceProcAddr(VkDevice device, const char *pName);
-PFN_vkVoidFunction WINAPI wine_vkGetInstanceProcAddr(VkInstance instance, const char *pName);
-void WINAPI wine_vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties);
-void WINAPI wine_vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties);
 
 #endif /* __WINE_VULKAN_LOADER_THUNKS_H */

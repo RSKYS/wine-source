@@ -223,6 +223,7 @@
 @ stdcall -norelay -syscall NtGetContextThread(long ptr)
 @ stdcall -syscall NtGetCurrentProcessorNumber()
 # @ stub NtGetDevicePowerState
+@ stdcall -syscall NtGetNextThread(ptr ptr long long long ptr)
 @ stdcall -syscall NtGetNlsSectionPtr(long long long ptr ptr)
 @ stub NtGetPlugPlayEvent
 @ stdcall NtGetTickCount()
@@ -561,7 +562,7 @@
 @ stdcall RtlCreateUserProcess(ptr long ptr ptr ptr long long long long ptr)
 @ stub RtlCreateUserSecurityObject
 @ stdcall RtlCreateUserStack(long long long long long ptr)
-@ stdcall RtlCreateUserThread(long ptr long ptr long long ptr ptr ptr ptr)
+@ stdcall RtlCreateUserThread(long ptr long long long long ptr ptr ptr ptr)
 @ stdcall RtlCustomCPToUnicodeN(ptr ptr long ptr str long)
 @ stub RtlCutoverTimeToSystemTime
 @ stdcall RtlDeNormalizeProcessParams(ptr)
@@ -652,6 +653,7 @@
 @ stdcall RtlFindClearBits(ptr long long)
 @ stdcall RtlFindClearBitsAndSet(ptr long long)
 @ stdcall RtlFindClearRuns(ptr ptr long long)
+@ stdcall RtlFindExportedRoutineByName(ptr str)
 @ stdcall RtlFindLastBackwardRunClear(ptr long ptr)
 @ stdcall RtlFindLastBackwardRunSet(ptr long ptr)
 @ stdcall RtlFindLeastSignificantBit(int64)
@@ -897,6 +899,7 @@
 @ stdcall RtlQueryProcessDebugInformation(long long ptr)
 @ stub RtlQueryProcessHeapInformation
 @ stub RtlQueryProcessLockInformation
+@ stdcall RtlQueryProcessPlaceholderCompatibilityMode()
 @ stub RtlQueryProperties
 @ stub RtlQueryPropertyNames
 @ stub RtlQueryPropertySet
@@ -1067,7 +1070,10 @@
 @ stdcall RtlWalkHeap(long ptr)
 @ stdcall RtlWow64EnableFsRedirection(long)
 @ stdcall RtlWow64EnableFsRedirectionEx(long ptr)
+@ stdcall RtlWow64GetCurrentMachine()
+@ stdcall RtlWow64GetProcessMachines(long ptr ptr)
 @ stdcall -arch=x86_64 RtlWow64GetThreadContext(long ptr)
+@ stdcall RtlWow64IsWowGuestMachineSupported(long ptr)
 @ stdcall -arch=x86_64 RtlWow64SetThreadContext(long ptr)
 @ stub RtlWriteMemoryStream
 @ stdcall RtlWriteRegistryValue(long ptr ptr long ptr long)
