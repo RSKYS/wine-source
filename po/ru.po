@@ -14518,8 +14518,11 @@ msgid "reg: Unsupported registry data type [%1]\n"
 msgstr "reg: тип данных [%1] не поддерживается\n"
 
 #: programs/reg/reg.rc:122
-msgid "reg: The option [/d] must be followed by a valid integer\n"
-msgstr "reg: за опцией [/d] должно следовать целое число\n"
+#, fuzzy
+#| msgid "reg: The option [/d] must be followed by a valid hexadecimal value\n"
+msgid "reg: The option [/d] must be followed by a valid numeric value\n"
+msgstr ""
+"reg: за опцией [/d] должно следовать число в шестнадцатеричном формате\n"
 
 #: programs/reg/reg.rc:123
 msgid "reg: The option [/d] must be followed by a valid hexadecimal value\n"
@@ -14561,12 +14564,10 @@ msgid "reg: The option [/d] must be followed by a valid string\n"
 msgstr "reg: за опцией [/d] должна следовать строка\n"
 
 #: programs/reg/reg.rc:135
-msgid ""
-"reg: Unable to delete all registry values in '%1'. An unexpected error "
-"occurred.\n"
-msgstr ""
-"reg: не удалось удалить все значения в «%1». Произошла непредвиденная "
-"ошибка.\n"
+#, fuzzy
+#| msgid "regedit: Unable to delete the registry key '%1'.\n"
+msgid "reg: Unable to delete all registry values in '%1'\n"
+msgstr "regedit: не удалось удалить ключ «%1».\n"
 
 #: programs/reg/reg.rc:136
 msgid ""

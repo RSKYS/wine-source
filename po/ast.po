@@ -14118,8 +14118,10 @@ msgid "reg: Unsupported registry data type [%1]\n"
 msgstr ""
 
 #: programs/reg/reg.rc:122
-msgid "reg: The option [/d] must be followed by a valid integer\n"
-msgstr "reg: A la opción [/d] ha siguila un enteru válidu\n"
+#, fuzzy
+#| msgid "reg: The option [/d] must be followed by a valid hexadecimal value\n"
+msgid "reg: The option [/d] must be followed by a valid numeric value\n"
+msgstr "reg: A la opción [/d] ha siguila un valor hexadecimal válidu\n"
 
 #: programs/reg/reg.rc:123
 msgid "reg: The option [/d] must be followed by a valid hexadecimal value\n"
@@ -14160,10 +14162,10 @@ msgid "reg: The option [/d] must be followed by a valid string\n"
 msgstr "reg: A la opción [/d] ha siguila una cadena válida\n"
 
 #: programs/reg/reg.rc:135
-msgid ""
-"reg: Unable to delete all registry values in '%1'. An unexpected error "
-"occurred.\n"
-msgstr ""
+#, fuzzy
+#| msgid "reg: Invalid syntax. "
+msgid "reg: Unable to delete all registry values in '%1'\n"
+msgstr "reg: La sintaxis nun ye válida. "
 
 #: programs/reg/reg.rc:136
 msgid ""

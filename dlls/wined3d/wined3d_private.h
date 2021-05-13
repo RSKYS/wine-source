@@ -4750,19 +4750,13 @@ void wined3d_cs_emit_set_clip_plane(struct wined3d_cs *cs, UINT plane_idx,
         const struct wined3d_vec4 *plane) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_color_key(struct wined3d_cs *cs, struct wined3d_texture *texture,
         WORD flags, const struct wined3d_color_key *color_key) DECLSPEC_HIDDEN;
-void wined3d_cs_emit_set_feature_level(struct wined3d_cs *cs, enum wined3d_feature_level level) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_light(struct wined3d_cs *cs, const struct wined3d_light_info *light) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_light_enable(struct wined3d_cs *cs, unsigned int idx, BOOL enable) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_material(struct wined3d_cs *cs, const struct wined3d_material *material) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_render_state(struct wined3d_cs *cs,
         enum wined3d_render_state state, DWORD value) DECLSPEC_HIDDEN;
-void wined3d_cs_emit_set_sampler_state(struct wined3d_cs *cs, UINT sampler_idx,
-        enum wined3d_sampler_state state, DWORD value) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_stream_source_freq(struct wined3d_cs *cs, UINT stream_idx,
         UINT frequency, UINT flags) DECLSPEC_HIDDEN;
-void wined3d_cs_emit_set_texture(struct wined3d_cs *cs, UINT stage, struct wined3d_texture *texture) DECLSPEC_HIDDEN;
-void wined3d_cs_emit_set_texture_state(struct wined3d_cs *cs, UINT stage,
-        enum wined3d_texture_stage_state state, DWORD value) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_set_transform(struct wined3d_cs *cs, enum wined3d_transform_state state,
         const struct wined3d_matrix *matrix) DECLSPEC_HIDDEN;
 void wined3d_cs_emit_unload_resource(struct wined3d_cs *cs, struct wined3d_resource *resource) DECLSPEC_HIDDEN;
@@ -4774,10 +4768,10 @@ static inline void wined3d_cs_finish(struct wined3d_cs *cs, enum wined3d_cs_queu
     cs->c.ops->finish(&cs->c, queue_id);
 }
 
-static inline void wined3d_cs_push_constants(struct wined3d_cs *cs, enum wined3d_push_constants p,
-        unsigned int start_idx, unsigned int count, const void *constants)
+static inline void wined3d_device_context_push_constants(struct wined3d_device_context *context,
+        enum wined3d_push_constants p, unsigned int start_idx, unsigned int count, const void *constants)
 {
-    cs->c.ops->push_constants(&cs->c, p, start_idx, count, constants);
+    context->ops->push_constants(context, p, start_idx, count, constants);
 }
 
 void wined3d_device_context_emit_blt_sub_resource(struct wined3d_device_context *context,
@@ -4805,6 +4799,8 @@ void wined3d_device_context_emit_set_depth_stencil_state(struct wined3d_device_c
         struct wined3d_depth_stencil_state *state, unsigned int stencil_ref) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_depth_stencil_view(struct wined3d_device_context *context,
         struct wined3d_rendertarget_view *view) DECLSPEC_HIDDEN;
+void wined3d_device_context_emit_set_feature_level(struct wined3d_device_context *context,
+        enum wined3d_feature_level level) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_index_buffer(struct wined3d_device_context *context, struct wined3d_buffer *buffer,
         enum wined3d_format_id format_id, unsigned int offset) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_predication(struct wined3d_device_context *context,
@@ -4815,6 +4811,8 @@ void wined3d_device_context_emit_set_rendertarget_view(struct wined3d_device_con
         struct wined3d_rendertarget_view *view) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_sampler(struct wined3d_device_context *context, enum wined3d_shader_type type,
         unsigned int sampler_idx, struct wined3d_sampler *sampler) DECLSPEC_HIDDEN;
+void wined3d_device_context_emit_set_sampler_state(struct wined3d_device_context *context, unsigned int sampler_idx,
+        enum wined3d_sampler_state state, unsigned int value) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_scissor_rects(struct wined3d_device_context *context,
         unsigned int rect_count, const RECT *rects) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_shader(struct wined3d_device_context *context, enum wined3d_shader_type type,
@@ -4826,6 +4824,10 @@ void wined3d_device_context_emit_set_stream_output(struct wined3d_device_context
         struct wined3d_buffer *buffer, unsigned int offset) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_stream_source(struct wined3d_device_context *context, unsigned int stream_idx,
         struct wined3d_buffer *buffer, unsigned int offset, unsigned int stride) DECLSPEC_HIDDEN;
+void wined3d_device_context_emit_set_texture(struct wined3d_device_context *context, unsigned int stage,
+        struct wined3d_texture *texture) DECLSPEC_HIDDEN;
+void wined3d_device_context_emit_set_texture_state(struct wined3d_device_context *context, unsigned int stage,
+        enum wined3d_texture_stage_state state, unsigned int value) DECLSPEC_HIDDEN;
 void wined3d_device_context_emit_set_unordered_access_view(struct wined3d_device_context *context,
         enum wined3d_pipeline pipeline, unsigned int view_idx, struct wined3d_unordered_access_view *view,
         unsigned int initial_count) DECLSPEC_HIDDEN;

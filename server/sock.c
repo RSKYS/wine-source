@@ -112,8 +112,19 @@ struct sock
     struct fd          *fd;          /* socket file descriptor */
     unsigned int        state;       /* status bits */
     unsigned int        mask;        /* event mask */
-    unsigned int        hmask;       /* held (blocked) events */
-    unsigned int        pmask;       /* pending events */
+    /* pending FD_* events which have not yet been reported to the application */
+    unsigned int        pending_events;
+    /* FD_* events which have already been reported and should not be selected
+     * for again until reset by a relevant call.
+     *
+     * For example, if FD_READ is set here and not in pending_events, it has
+     * already been reported and consumed, and we should not report it again,
+     * even if POLLIN is signaled, until it is reset by e.g recv().
+     *
+     * If an event has been signaled and not consumed yet, it will be set in
+     * both pending_events and reported_events (as we should only ever report
+     * any event once until it is reset.) */
+    unsigned int        reported_events;
     unsigned int        flags;       /* socket flags */
     int                 polling;     /* is socket being polled? */
     unsigned short      proto;       /* socket protocol */
@@ -386,7 +397,7 @@ static int sock_reselect( struct sock *sock )
 /* wake anybody waiting on the socket event or send the associated message */
 static void sock_wake_up( struct sock *sock )
 {
-    unsigned int events = sock->pmask & sock->mask;
+    unsigned int events = sock->pending_events & sock->mask;
     int i;
 
     if ( !events ) return;
@@ -402,13 +413,13 @@ static void sock_wake_up( struct sock *sock )
         for (i = 0; i < FD_MAX_EVENTS; i++)
         {
             int event = event_bitorder[i];
-            if (sock->pmask & (1 << event))
+            if (sock->pending_events & (1 << event))
             {
                 lparam_t lparam = (1 << event) | (sock->errors[event] << 16);
                 post_message( sock->window, sock->message, sock->wparam, lparam );
             }
         }
-        sock->pmask = 0;
+        sock->pending_events = 0;
         sock_reselect( sock );
     }
 }
@@ -612,50 +623,40 @@ static int sock_dispatch_asyncs( struct sock *sock, int event, int error )
     return event;
 }
 
+static void post_socket_event( struct sock *sock, unsigned int event_bit, unsigned int error )
+{
+    unsigned int event = (1 << event_bit);
+
+    sock->pending_events |= event;
+    sock->reported_events |= event;
+    sock->errors[event_bit] = error;
+}
+
 static void sock_dispatch_events( struct sock *sock, int prevstate, int event, int error )
 {
     if (prevstate & FD_CONNECT)
     {
-        sock->pmask |= FD_CONNECT;
-        sock->hmask |= FD_CONNECT;
-        sock->errors[FD_CONNECT_BIT] = sock_get_error( error );
+        post_socket_event( sock, FD_CONNECT_BIT, sock_get_error( error ) );
         goto end;
     }
     if (prevstate & FD_WINE_LISTENING)
     {
-        sock->pmask |= FD_ACCEPT;
-        sock->hmask |= FD_ACCEPT;
-        sock->errors[FD_ACCEPT_BIT] = sock_get_error( error );
+        post_socket_event( sock, FD_ACCEPT_BIT, sock_get_error( error ) );
         goto end;
     }
 
     if (event & POLLIN)
-    {
-        sock->pmask |= FD_READ;
-        sock->hmask |= FD_READ;
-        sock->errors[FD_READ_BIT] = 0;
-    }
+        post_socket_event( sock, FD_READ_BIT, 0 );
 
     if (event & POLLOUT)
-    {
-        sock->pmask |= FD_WRITE;
-        sock->hmask |= FD_WRITE;
-        sock->errors[FD_WRITE_BIT] = 0;
-    }
+        post_socket_event( sock, FD_WRITE_BIT, 0 );
 
     if (event & POLLPRI)
-    {
-        sock->pmask |= FD_OOB;
-        sock->hmask |= FD_OOB;
-        sock->errors[FD_OOB_BIT] = 0;
-    }
+        post_socket_event( sock, FD_OOB_BIT, 0 );
 
     if (event & (POLLERR|POLLHUP))
-    {
-        sock->pmask |= FD_CLOSE;
-        sock->hmask |= FD_CLOSE;
-        sock->errors[FD_CLOSE_BIT] = sock_get_error( error );
-    }
+        post_socket_event( sock, FD_CLOSE_BIT, sock_get_error( error ) );
+
 end:
     sock_wake_up( sock );
 }
@@ -753,15 +754,15 @@ static void sock_dump( struct object *obj, int verbose )
 {
     struct sock *sock = (struct sock *)obj;
     assert( obj->ops == &sock_ops );
-    fprintf( stderr, "Socket fd=%p, state=%x, mask=%x, pending=%x, held=%x\n",
+    fprintf( stderr, "Socket fd=%p, state=%x, mask=%x, pending=%x, reported=%x\n",
             sock->fd, sock->state,
-            sock->mask, sock->pmask, sock->hmask );
+            sock->mask, sock->pending_events, sock->reported_events );
 }
 
 static int sock_get_poll_events( struct fd *fd )
 {
     struct sock *sock = get_fd_user( fd );
-    unsigned int mask = sock->mask & ~sock->hmask;
+    unsigned int mask = sock->mask & ~sock->reported_events;
     unsigned int smask = sock->state & mask;
     int ev = 0;
 
@@ -783,7 +784,7 @@ static int sock_get_poll_events( struct fd *fd )
         ev |= POLLIN | POLLPRI;
     /* We use POLLIN with 0 bytes recv() as FD_CLOSE indication for stream sockets. */
     else if (sock->type == WS_SOCK_STREAM && (sock->state & FD_READ) && (mask & FD_CLOSE) &&
-              !(sock->hmask & FD_READ))
+              !(sock->reported_events & FD_READ))
         ev |= POLLIN;
 
     if (async_queued( &sock->write_q ))
@@ -902,8 +903,8 @@ static struct sock *create_socket(void)
     sock->fd      = NULL;
     sock->state   = 0;
     sock->mask    = 0;
-    sock->hmask   = 0;
-    sock->pmask   = 0;
+    sock->pending_events = 0;
+    sock->reported_events = 0;
     sock->polling = 0;
     sock->flags   = 0;
     sock->proto   = 0;
@@ -1153,8 +1154,8 @@ static struct sock *accept_socket( struct sock *sock )
         }
     }
     clear_error();
-    sock->pmask &= ~FD_ACCEPT;
-    sock->hmask &= ~FD_ACCEPT;
+    sock->pending_events &= ~FD_ACCEPT;
+    sock->reported_events &= ~FD_ACCEPT;
     sock_reselect( sock );
     return acceptsock;
 }
@@ -1189,8 +1190,8 @@ static int accept_into_socket( struct sock *sock, struct sock *acceptsock )
     }
 
     acceptsock->state  |= FD_WINE_CONNECTED|FD_READ|FD_WRITE;
-    acceptsock->hmask   = 0;
-    acceptsock->pmask   = 0;
+    acceptsock->pending_events = 0;
+    acceptsock->reported_events = 0;
     acceptsock->polling = 0;
     acceptsock->proto   = sock->proto;
     acceptsock->type    = sock->type;
@@ -1203,8 +1204,8 @@ static int accept_into_socket( struct sock *sock, struct sock *acceptsock )
     acceptsock->fd = newfd;
 
     clear_error();
-    sock->pmask &= ~FD_ACCEPT;
-    sock->hmask &= ~FD_ACCEPT;
+    sock->pending_events &= ~FD_ACCEPT;
+    sock->reported_events &= ~FD_ACCEPT;
     sock_reselect( sock );
 
     return TRUE;
@@ -1779,7 +1780,7 @@ DECL_HANDLER(set_socket_event)
     if (get_unix_fd( sock->fd ) == -1) return;
     old_event = sock->event;
     sock->mask    = req->mask;
-    sock->hmask   &= ~req->mask; /* re-enable held events */
+    sock->reported_events &= ~req->mask; /* re-enable held events */
     sock->event   = NULL;
     sock->window  = req->window;
     sock->message = req->msg;
@@ -1811,7 +1812,7 @@ DECL_HANDLER(get_socket_event)
                                                 FILE_READ_ATTRIBUTES, &sock_ops ))) return;
     if (get_unix_fd( sock->fd ) == -1) return;
     reply->mask  = sock->mask;
-    reply->pmask = sock->pmask;
+    reply->pmask = sock->pending_events;
     reply->state = sock->state;
     set_reply_data( sock->errors, min( get_reply_max_size(), sizeof(sock->errors) ));
 
@@ -1827,7 +1828,7 @@ DECL_HANDLER(get_socket_event)
                 release_object( cevent );
             }
         }
-        sock->pmask = 0;
+        sock->pending_events = 0;
         sock_reselect( sock );
     }
     release_object( &sock->obj );
@@ -1845,9 +1846,9 @@ DECL_HANDLER(enable_socket_event)
     if (get_unix_fd( sock->fd ) == -1) return;
 
     /* for event-based notification, windows erases stale events */
-    sock->pmask &= ~req->mask;
+    sock->pending_events &= ~req->mask;
 
-    sock->hmask &= ~req->mask;
+    sock->reported_events &= ~req->mask;
     sock->state |= req->sstate;
     sock->state &= ~req->cstate;
     if (sock->type != WS_SOCK_STREAM) sock->state &= ~STREAM_FLAG_MASK;
