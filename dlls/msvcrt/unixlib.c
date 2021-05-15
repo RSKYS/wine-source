@@ -548,72 +548,6 @@ static float CDECL unix_modff( float x, float *iptr )
 }
 
 /*********************************************************************
- *      nearbyint
- */
-static double CDECL unix_nearbyint(double num)
-{
-#ifdef HAVE_NEARBYINT
-    return nearbyint(num);
-#else
-    return num >= 0 ? floor(num + 0.5) : ceil(num - 0.5);
-#endif
-}
-
-/*********************************************************************
- *      nearbyintf
- */
-static float CDECL unix_nearbyintf(float num)
-{
-#ifdef HAVE_NEARBYINTF
-    return nearbyintf(num);
-#else
-    return unix_nearbyint(num);
-#endif
-}
-
-/*********************************************************************
- *      nextafter
- */
-static double CDECL unix_nextafter(double num, double next)
-{
-  return nextafter(num,next);
-}
-
-/*********************************************************************
- *      nextafterf
- */
-static float CDECL unix_nextafterf(float num, float next)
-{
-  return nextafterf(num,next);
-}
-
-/*********************************************************************
- *      nexttoward
- */
-static double CDECL unix_nexttoward(double num, double next)
-{
-#ifdef HAVE_NEXTTOWARD
-    return nexttoward(num, next);
-#else
-    FIXME("not implemented\n");
-    return 0;
-#endif
-}
-
-/*********************************************************************
- *      nexttowardf
- */
-static float CDECL unix_nexttowardf(float num, double next)
-{
-#ifdef HAVE_NEXTTOWARDF
-    return nexttowardf(num, next);
-#else
-    FIXME("not implemented\n");
-    return 0;
-#endif
-}
-
-/*********************************************************************
  *      pow
  */
 static double CDECL unix_pow( double x, double y )
@@ -846,12 +780,6 @@ static const struct unix_funcs funcs =
     unix_logbf,
     unix_modf,
     unix_modff,
-    unix_nearbyint,
-    unix_nearbyintf,
-    unix_nextafter,
-    unix_nextafterf,
-    unix_nexttoward,
-    unix_nexttowardf,
     unix_pow,
     unix_powf,
     unix_remainder,

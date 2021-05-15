@@ -2110,14 +2110,14 @@ static NTSTATUS WS2_async_recv( void *user, IO_STATUS_BLOCK *iosb, NTSTATUS stat
         if (result >= 0)
         {
             status = STATUS_SUCCESS;
-            _enable_event( wsa->hSocket, FD_READ, 0, 0 );
+            _enable_event( wsa->hSocket, (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0 );
         }
         else
         {
             if (errno == EAGAIN)
             {
                 status = STATUS_PENDING;
-                _enable_event( wsa->hSocket, FD_READ, 0, 0 );
+                _enable_event( wsa->hSocket, (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0 );
             }
             else
             {
@@ -2341,7 +2341,7 @@ SOCKET WINAPI WS_accept( SOCKET s, struct WS_sockaddr *addr, int *len )
 
     if (!(sync_event = CreateEventW( NULL, TRUE, FALSE, NULL ))) return INVALID_SOCKET;
     status = NtDeviceIoControlFile( SOCKET2HANDLE(s), (HANDLE)((ULONG_PTR)sync_event | 0), NULL, NULL, &io,
-                                    IOCTL_AFD_ACCEPT, NULL, 0, &accept_handle, sizeof(accept_handle) );
+                                    IOCTL_AFD_WINE_ACCEPT, NULL, 0, &accept_handle, sizeof(accept_handle) );
     if (status == STATUS_PENDING)
     {
         if (WaitForSingleObject( sync_event, INFINITE ) == WAIT_FAILED)
@@ -2416,7 +2416,7 @@ static BOOL WINAPI WS2_AcceptEx( SOCKET listener, SOCKET acceptor, void *dest, D
     }
 
     status = NtDeviceIoControlFile( SOCKET2HANDLE(listener), overlapped->hEvent, NULL, cvalue,
-                                    (IO_STATUS_BLOCK *)overlapped, IOCTL_AFD_ACCEPT_INTO, &params, sizeof(params),
+                                    (IO_STATUS_BLOCK *)overlapped, IOCTL_AFD_WINE_ACCEPT_INTO, &params, sizeof(params),
                                     dest, recv_len + local_len + remote_len );
 
     if (ret_len) *ret_len = overlapped->InternalHigh;
@@ -4507,7 +4507,7 @@ INT WINAPI WSAIoctl(SOCKET s, DWORD code, LPVOID in_buff, DWORD in_size, LPVOID 
         SetLastError(WSAEOPNOTSUPP);
         return SOCKET_ERROR;
     case WS_SIO_ADDRESS_LIST_CHANGE:
-        code = IOCTL_AFD_ADDRESS_LIST_CHANGE;
+        code = IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE;
         status = WSAEOPNOTSUPP;
         break;
     default:
@@ -4566,36 +4566,35 @@ int WINAPI WS_ioctlsocket(SOCKET s, LONG cmd, WS_u_long *argp)
     return WSAIoctl( s, cmd, argp, sizeof(WS_u_long), argp, sizeof(WS_u_long), &ret_size, NULL, NULL );
 }
 
+
 /***********************************************************************
- *		listen		(WS2_32.13)
+ *      listen   (ws2_32.13)
  */
-int WINAPI WS_listen(SOCKET s, int backlog)
+int WINAPI WS_listen( SOCKET s, int backlog )
 {
-    int fd = get_sock_fd( s, FILE_READ_DATA, NULL ), ret = SOCKET_ERROR;
+    struct afd_listen_params params = {.backlog = backlog};
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+    int fd, bound;
 
-    TRACE("socket %04lx, backlog %d\n", s, backlog);
-    if (fd != -1)
+    TRACE( "socket %#lx, backlog %d\n", s, backlog );
+
+    if ((fd = get_sock_fd( s, FILE_READ_DATA, NULL )) == -1)
+        return -1;
+    bound = is_fd_bound( fd, NULL, NULL );
+    release_sock_fd( s, fd );
+    if (bound <= 0)
     {
-        int bound = is_fd_bound(fd, NULL, NULL);
-
-        if (bound <= 0)
-        {
-            SetLastError(bound == -1 ? wsaErrno() : WSAEINVAL);
-        }
-        else if (listen(fd, backlog) == 0)
-        {
-            _enable_event(SOCKET2HANDLE(s), FD_ACCEPT,
-                          FD_WINE_LISTENING,
-                          FD_CONNECT|FD_WINE_CONNECTED);
-            ret = 0;
-        }
-        else
-            SetLastError(wsaErrno());
-        release_sock_fd( s, fd );
+        SetLastError( bound ? wsaErrno() : WSAEINVAL );
+        return -1;
     }
 
-    return ret;
+    status = NtDeviceIoControlFile( SOCKET2HANDLE(s), NULL, NULL, NULL, &io,
+            IOCTL_AFD_LISTEN, &params, sizeof(params), NULL, 0 );
+    SetLastError( NtStatusToWSAError( status ) );
+    return status ? -1 : 0;
 }
+
 
 /***********************************************************************
  *		recv			(WS2_32.16)
@@ -5921,7 +5920,7 @@ SOCKET WINAPI WSASocketW(int af, int type, int protocol,
     create_params.protocol = protocol;
     create_params.flags = flags & ~(WSA_FLAG_NO_HANDLE_INHERIT | WSA_FLAG_OVERLAPPED);
     if ((status = NtDeviceIoControlFile(handle, NULL, NULL, NULL, &io,
-            IOCTL_AFD_CREATE, &create_params, sizeof(create_params), NULL, 0)))
+            IOCTL_AFD_WINE_CREATE, &create_params, sizeof(create_params), NULL, 0)))
     {
         WARN("Failed to initialize socket, status %#x.\n", status);
         err = RtlNtStatusToDosError( status );
@@ -6180,7 +6179,7 @@ static int WS2_recv_base( SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
             }
             else NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)ws2_async_apc,
                                    (ULONG_PTR)wsa, (ULONG_PTR)iosb, 0 );
-            _enable_event(SOCKET2HANDLE(s), FD_READ, 0, 0);
+            _enable_event(SOCKET2HANDLE(s), (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0);
             return 0;
         }
 
@@ -6209,13 +6208,13 @@ static int WS2_recv_base( SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
             {
                 err = WSAETIMEDOUT;
                 /* a timeout is not fatal */
-                _enable_event(SOCKET2HANDLE(s), FD_READ, 0, 0);
+                _enable_event(SOCKET2HANDLE(s), (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0);
                 goto error;
             }
         }
         else
         {
-            _enable_event(SOCKET2HANDLE(s), FD_READ, 0, 0);
+            _enable_event(SOCKET2HANDLE(s), (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0);
             err = WSAEWOULDBLOCK;
             goto error;
         }
@@ -6224,7 +6223,7 @@ static int WS2_recv_base( SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
     TRACE(" -> %i bytes\n", n);
     if (wsa != &localwsa) HeapFree( GetProcessHeap(), 0, wsa );
     release_sock_fd( s, fd );
-    _enable_event(SOCKET2HANDLE(s), FD_READ, 0, 0);
+    _enable_event(SOCKET2HANDLE(s), (wsa->flags & WS_MSG_OOB) ? FD_OOB : FD_READ, 0, 0);
     SetLastError(ERROR_SUCCESS);
 
     return 0;

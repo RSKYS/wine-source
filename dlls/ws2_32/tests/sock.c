@@ -2641,9 +2641,8 @@ static void test_WSAEnumNetworkEvents(void)
                 }
                 else
                 {
-                    todo_wine_if (i != 0) /* Remove when fixed */
-                        ok (net_events.lNetworkEvents == 0, "Test[%d]: expected 0, got %d\n",
-                            i, net_events.lNetworkEvents);
+                    ok (net_events.lNetworkEvents == 0, "Test[%d]: expected 0, got %d\n",
+                        i, net_events.lNetworkEvents);
                 }
                 for (k = 0; k < FD_MAX_EVENTS; k++)
                 {
@@ -3990,12 +3989,12 @@ static void test_accept_events(struct event_test_ctx *ctx)
     select_events(ctx, listener, FD_CONNECT | FD_READ | FD_OOB | FD_ACCEPT);
     if (ctx->is_message)
         check_events(ctx, FD_ACCEPT, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
     select_events(ctx, listener, 0);
     select_events(ctx, listener, FD_CONNECT | FD_READ | FD_OOB | FD_ACCEPT);
     if (ctx->is_message)
         check_events(ctx, FD_ACCEPT, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
 
     client2 = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     ok(client2 != -1, "failed to create socket, error %u\n", WSAGetLastError());
@@ -4134,7 +4133,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
     select_events(ctx, client, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ | FD_WRITE);
     if (ctx->is_message)
         check_events(ctx, FD_WRITE, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
 
     server = accept(listener, NULL, NULL);
     ok(server != -1, "failed to accept, error %u\n", WSAGetLastError());
@@ -4178,7 +4177,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
     server = accept(listener, NULL, NULL);
     ok(server != -1, "failed to accept, error %u\n", WSAGetLastError());
 
-    check_events_todo_msg(ctx, FD_WRITE, 0, 200);
+    check_events(ctx, FD_WRITE, 0, 200);
 
     select_events(ctx, client, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ | FD_WRITE);
 
@@ -4235,12 +4234,12 @@ static void test_write_events(struct event_test_ctx *ctx)
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ | FD_WRITE);
     if (ctx->is_message)
         check_events(ctx, FD_WRITE, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
     select_events(ctx, server, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ | FD_WRITE);
     if (ctx->is_message)
         check_events(ctx, FD_WRITE, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
 
     ret = send(server, "data", 5, 0);
     ok(ret == 5, "got %d\n", ret);
@@ -4268,7 +4267,7 @@ static void test_write_events(struct event_test_ctx *ctx)
         select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ | FD_WRITE);
         if (ctx->is_message)
             check_events(ctx, FD_WRITE, 0, 200);
-        check_events_todo_event(ctx, 0, 0, 0);
+        check_events(ctx, 0, 0, 0);
     }
 
     closesocket(server);
@@ -4313,12 +4312,12 @@ static void test_read_events(struct event_test_ctx *ctx)
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
         check_events(ctx, FD_READ, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
     select_events(ctx, server, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
         check_events(ctx, FD_READ, 0, 200);
-    check_events_todo_event(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
 
     ret = send(client, "data", 5, 0);
     ok(ret == 5, "got %d\n", ret);
@@ -4392,35 +4391,35 @@ static void test_oob_events(struct event_test_ctx *ctx)
     ret = send(client, "a", 1, MSG_OOB);
     ok(ret == 1, "got %d\n", ret);
 
-    check_events_todo_msg(ctx, FD_OOB, 0, 200);
-    check_events_todo(ctx, 0, 0, 0);
+    check_events(ctx, FD_OOB, 0, 200);
+    check_events(ctx, 0, 0, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
-        check_events_todo_msg(ctx, FD_OOB, 0, 200);
-    check_events_todo(ctx, 0, 0, 0);
+        check_events(ctx, FD_OOB, 0, 200);
+    check_events(ctx, 0, 0, 0);
     select_events(ctx, server, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
-        check_events_todo_msg(ctx, FD_OOB, 0, 200);
-    check_events_todo(ctx, 0, 0, 0);
+        check_events(ctx, FD_OOB, 0, 200);
+    check_events(ctx, 0, 0, 0);
 
     ret = send(client, "b", 1, MSG_OOB);
     ok(ret == 1, "got %d\n", ret);
 
     if (!ctx->is_message)
-        check_events(ctx, FD_OOB, 0, 200);
-    check_events_todo(ctx, 0, 0, 0);
+        check_events_todo_event(ctx, FD_OOB, 0, 200);
+    check_events(ctx, 0, 0, 0);
 
     ret = recv(server, buffer, 1, MSG_OOB);
     ok(ret == 1, "got %d\n", ret);
 
-    check_events_todo_msg(ctx, FD_OOB, 0, 200);
-    check_events_todo_msg(ctx, 0, 0, 0);
+    check_events_todo(ctx, FD_OOB, 0, 200);
+    check_events(ctx, 0, 0, 0);
 
     ret = recv(server, buffer, 1, MSG_OOB);
     todo_wine ok(ret == 1, "got %d\n", ret);
 
-    check_events_todo_msg(ctx, 0, 0, 0);
+    check_events(ctx, 0, 0, 0);
 
     /* Send data while we're not selecting. */
 
@@ -4429,7 +4428,7 @@ static void test_oob_events(struct event_test_ctx *ctx)
     ok(ret == 1, "got %d\n", ret);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
 
-    check_events_todo_msg(ctx, FD_OOB, 0, 200);
+    check_events(ctx, FD_OOB, 0, 200);
 
     ret = recv(server, buffer, 1, MSG_OOB);
     ok(ret == 1, "got %d\n", ret);
@@ -4456,12 +4455,17 @@ static void test_close_events(struct event_test_ctx *ctx)
     check_events(ctx, 0, 0, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
-        check_events_todo_msg(ctx, FD_CLOSE, 0, 200);
+        check_events(ctx, FD_CLOSE, 0, 200);
     check_events(ctx, 0, 0, 0);
     select_events(ctx, server, 0);
     select_events(ctx, server, FD_ACCEPT | FD_CLOSE | FD_CONNECT | FD_OOB | FD_READ);
     if (ctx->is_message)
-        check_events_todo_msg(ctx, FD_CLOSE, 0, 200);
+        check_events(ctx, FD_CLOSE, 0, 200);
+    check_events(ctx, 0, 0, 0);
+
+    ret = recv(server, buffer, 5, 0);
+    ok(!ret, "got %d\n", ret);
+
     check_events(ctx, 0, 0, 0);
 
     closesocket(server);

@@ -1330,7 +1330,7 @@ static void wined3d_device_set_transform(struct wined3d_device *device,
     }
 
     device->cs->c.state->transforms[state] = *matrix;
-    wined3d_cs_emit_set_transform(device->cs, state, matrix);
+    wined3d_device_context_emit_set_transform(&device->cs->c, state, matrix);
 }
 
 static void wined3d_device_get_transform(const struct wined3d_device *device,
@@ -1445,7 +1445,7 @@ static void wined3d_device_set_light(struct wined3d_device *device,
             FIXME("Unrecognized light type %#x.\n", light->type);
     }
 
-    wined3d_cs_emit_set_light(device->cs, object);
+    wined3d_device_context_emit_set_light(&device->cs->c, object);
 }
 
 static void wined3d_device_set_light_enable(struct wined3d_device *device, UINT light_idx, BOOL enable)
@@ -1469,7 +1469,7 @@ static void wined3d_device_set_light_enable(struct wined3d_device *device, UINT 
     }
 
     wined3d_light_state_enable_light(light_state, &device->adapter->d3d_info, light_info, enable);
-    wined3d_cs_emit_set_light_enable(device->cs, light_idx, enable);
+    wined3d_device_context_emit_set_light_enable(&device->cs->c, light_idx, enable);
 }
 
 static HRESULT wined3d_device_set_clip_plane(struct wined3d_device *device,
@@ -1493,7 +1493,7 @@ static HRESULT wined3d_device_set_clip_plane(struct wined3d_device *device,
 
     clip_planes[plane_idx] = *plane;
 
-    wined3d_cs_emit_set_clip_plane(device->cs, plane_idx, plane);
+    wined3d_device_context_emit_set_clip_plane(&device->cs->c, plane_idx, plane);
 
     return WINED3D_OK;
 }
@@ -1525,7 +1525,7 @@ static void wined3d_device_set_material(struct wined3d_device *device, const str
     TRACE("device %p, material %p.\n", device, material);
 
     device->cs->c.state->material = *material;
-    wined3d_cs_emit_set_material(device->cs, material);
+    wined3d_device_context_emit_set_material(&device->cs->c, material);
 }
 
 void CDECL wined3d_device_set_index_buffer(struct wined3d_device *device,
@@ -1832,15 +1832,15 @@ void CDECL wined3d_device_set_state(struct wined3d_device *device, struct wined3
 
     for (i = 0; i < WINED3D_HIGHEST_TRANSFORM_STATE + 1; ++i)
     {
-        wined3d_cs_emit_set_transform(device->cs, i, state->transforms + i);
+        wined3d_device_context_emit_set_transform(context, i, state->transforms + i);
     }
 
     for (i = 0; i < WINED3D_MAX_CLIP_DISTANCES; ++i)
     {
-        wined3d_cs_emit_set_clip_plane(device->cs, i, state->clip_planes + i);
+        wined3d_device_context_emit_set_clip_plane(context, i, state->clip_planes + i);
     }
 
-    wined3d_cs_emit_set_material(device->cs, &state->material);
+    wined3d_device_context_emit_set_material(context, &state->material);
 
     wined3d_device_context_emit_set_viewports(context, state->viewport_count, state->viewports);
     wined3d_device_context_emit_set_scissor_rects(context, state->scissor_rect_count, state->scissor_rects);
@@ -1850,7 +1850,7 @@ void CDECL wined3d_device_set_state(struct wined3d_device *device, struct wined3
         LIST_FOR_EACH_ENTRY(light, &state->light_state.light_map[i], struct wined3d_light_info, entry)
         {
             wined3d_device_set_light(device, light->OriginalIndex, &light->OriginalParms);
-            wined3d_cs_emit_set_light_enable(device->cs, light->OriginalIndex, light->glIndex != -1);
+            wined3d_device_context_emit_set_light_enable(context, light->OriginalIndex, light->glIndex != -1);
         }
     }
 

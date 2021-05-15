@@ -1001,8 +1001,13 @@ void enum_processes( int (*cb)(struct process*, void*), void *user )
 int set_process_debug_flag( struct process *process, int flag )
 {
     char data = (flag != 0);
+    client_ptr_t peb32 = 0;
+
+    if (!is_machine_64bit( process->machine ) && is_machine_64bit( supported_machines[0] ))
+        peb32 = process->peb + 0x1000;
 
     /* BeingDebugged flag is the byte at offset 2 in the PEB */
+    if (peb32 && !write_process_memory( process, peb32 + 2, 1, &data )) return 0;
     return write_process_memory( process, process->peb + 2, 1, &data );
 }
 
@@ -1253,6 +1258,10 @@ DECL_HANDLER(init_process_done)
         return;
     }
     if (!(image_info = get_view_image_info( view, &base ))) return;
+
+    current->teb      = req->teb;
+    process->peb      = req->peb;
+    process->ldt_copy = req->ldt_copy;
 
     process->start_time = current_time;
     current->entry_point = image_info->entry_point;

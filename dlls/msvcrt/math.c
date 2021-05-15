@@ -87,13 +87,11 @@ static inline float fp_barrierf(float x)
     return y;
 }
 
-#if _MSVCR_VER>=120
 static inline double fp_barrier(double x)
 {
     volatile double y = x;
     return y;
 }
-#endif
 
 static inline double CDECL ret_nan( BOOL update_sw )
 {
@@ -236,11 +234,45 @@ float CDECL _copysignf( float x, float y )
 
 /*********************************************************************
  *      _nextafterf (MSVCRT.@)
+ *
+ * Copied from musl: src/math/nextafterf.c
  */
-float CDECL _nextafterf( float num, float next )
+float CDECL _nextafterf( float x, float y )
 {
-    if (!isfinite(num) || !isfinite(next)) *_errno() = EDOM;
-    return unix_funcs->nextafterf( num, next );
+    unsigned int ix = *(unsigned int*)&x;
+    unsigned int iy = *(unsigned int*)&y;
+    unsigned int ax, ay, e;
+
+    if (isnan(x) || isnan(y))
+        return x + y;
+    if (x == y) {
+        if (_fpclassf(y) & (_FPCLASS_ND | _FPCLASS_PD | _FPCLASS_NZ | _FPCLASS_PZ ))
+            *_errno() = ERANGE;
+        return y;
+    }
+    ax = ix & 0x7fffffff;
+    ay = iy & 0x7fffffff;
+    if (ax == 0) {
+        if (ay == 0)
+            return y;
+        ix = (iy & 0x80000000) | 1;
+    } else if (ax > ay || ((ix ^ iy) & 0x80000000))
+        ix--;
+    else
+        ix++;
+    e = ix & 0x7f800000;
+    /* raise overflow if ix is infinite and x is finite */
+    if (e == 0x7f800000) {
+        fp_barrierf(x + x);
+        *_errno() = ERANGE;
+    }
+    /* raise underflow if ix is subnormal or zero */
+    y = *(float*)&ix;
+    if (e == 0) {
+        fp_barrierf(x * x + y * y);
+        *_errno() = ERANGE;
+    }
+    return y;
 }
 
 /*********************************************************************
@@ -2214,16 +2246,137 @@ int CDECL _controlfp_s(unsigned int *cur, unsigned int newval, unsigned int mask
     return 0;
 }
 
+#if _MSVCR_VER >= 140
+enum fenv_masks
+{
+    FENV_X_INVALID = 0x00100010,
+    FENV_X_DENORMAL = 0x00200020,
+    FENV_X_ZERODIVIDE = 0x00080008,
+    FENV_X_OVERFLOW = 0x00040004,
+    FENV_X_UNDERFLOW = 0x00020002,
+    FENV_X_INEXACT = 0x00010001,
+    FENV_X_AFFINE = 0x00004000,
+    FENV_X_UP = 0x00800200,
+    FENV_X_DOWN = 0x00400100,
+    FENV_X_24 = 0x00002000,
+    FENV_X_53 = 0x00001000,
+    FENV_Y_INVALID = 0x10000010,
+    FENV_Y_DENORMAL = 0x20000020,
+    FENV_Y_ZERODIVIDE = 0x08000008,
+    FENV_Y_OVERFLOW = 0x04000004,
+    FENV_Y_UNDERFLOW = 0x02000002,
+    FENV_Y_INEXACT = 0x01000001,
+    FENV_Y_UP = 0x80000200,
+    FENV_Y_DOWN = 0x40000100,
+    FENV_Y_FLUSH = 0x00000400,
+    FENV_Y_FLUSH_SAVE = 0x00000800
+};
+
+/* encodes x87/sse control/status word in ulong */
+static __msvcrt_ulong fenv_encode(unsigned int x, unsigned int y)
+{
+    __msvcrt_ulong ret = 0;
+
+    if (x & _EM_INVALID) ret |= FENV_X_INVALID;
+    if (x & _EM_DENORMAL) ret |= FENV_X_DENORMAL;
+    if (x & _EM_ZERODIVIDE) ret |= FENV_X_ZERODIVIDE;
+    if (x & _EM_OVERFLOW) ret |= FENV_X_OVERFLOW;
+    if (x & _EM_UNDERFLOW) ret |= FENV_X_UNDERFLOW;
+    if (x & _EM_INEXACT) ret |= FENV_X_INEXACT;
+    if (x & _IC_AFFINE) ret |= FENV_X_AFFINE;
+    if (x & _RC_UP) ret |= FENV_X_UP;
+    if (x & _RC_DOWN) ret |= FENV_X_DOWN;
+    if (x & _PC_24) ret |= FENV_X_24;
+    if (x & _PC_53) ret |= FENV_X_53;
+    x &= ~(_MCW_EM | _MCW_IC | _MCW_RC | _MCW_PC);
+
+    if (y & _EM_INVALID) ret |= FENV_Y_INVALID;
+    if (y & _EM_DENORMAL) ret |= FENV_Y_DENORMAL;
+    if (y & _EM_ZERODIVIDE) ret |= FENV_Y_ZERODIVIDE;
+    if (y & _EM_OVERFLOW) ret |= FENV_Y_OVERFLOW;
+    if (y & _EM_UNDERFLOW) ret |= FENV_Y_UNDERFLOW;
+    if (y & _EM_INEXACT) ret |= FENV_Y_INEXACT;
+    if (y & _RC_UP) ret |= FENV_Y_UP;
+    if (y & _RC_DOWN) ret |= FENV_Y_DOWN;
+    if (y & _DN_FLUSH) ret |= FENV_Y_FLUSH;
+    if (y & _DN_FLUSH_OPERANDS_SAVE_RESULTS) ret |= FENV_Y_FLUSH_SAVE;
+    y &= ~(_MCW_EM | _MCW_IC | _MCW_RC | _MCW_DN);
+
+    if(x || y) FIXME("unsupported flags: %x, %x\n", x, y);
+    return ret;
+}
+
+/* decodes x87/sse control/status word, returns FALSE on error */
+#if (defined(__i386__) || defined(__x86_64__))
+static BOOL fenv_decode(__msvcrt_ulong enc, unsigned int *x, unsigned int *y)
+{
+    *x = *y = 0;
+    if ((enc & FENV_X_INVALID) == FENV_X_INVALID) *x |= _EM_INVALID;
+    if ((enc & FENV_X_DENORMAL) == FENV_X_DENORMAL) *x |= _EM_DENORMAL;
+    if ((enc & FENV_X_ZERODIVIDE) == FENV_X_ZERODIVIDE) *x |= _EM_ZERODIVIDE;
+    if ((enc & FENV_X_OVERFLOW) == FENV_X_OVERFLOW) *x |= _EM_OVERFLOW;
+    if ((enc & FENV_X_UNDERFLOW) == FENV_X_UNDERFLOW) *x |= _EM_UNDERFLOW;
+    if ((enc & FENV_X_INEXACT) == FENV_X_INEXACT) *x |= _EM_INEXACT;
+    if ((enc & FENV_X_AFFINE) == FENV_X_AFFINE) *x |= _IC_AFFINE;
+    if ((enc & FENV_X_UP) == FENV_X_UP) *x |= _RC_UP;
+    if ((enc & FENV_X_DOWN) == FENV_X_DOWN) *x |= _RC_DOWN;
+    if ((enc & FENV_X_24) == FENV_X_24) *x |= _PC_24;
+    if ((enc & FENV_X_53) == FENV_X_53) *x |= _PC_53;
+
+    if ((enc & FENV_Y_INVALID) == FENV_Y_INVALID) *y |= _EM_INVALID;
+    if ((enc & FENV_Y_DENORMAL) == FENV_Y_DENORMAL) *y |= _EM_DENORMAL;
+    if ((enc & FENV_Y_ZERODIVIDE) == FENV_Y_ZERODIVIDE) *y |= _EM_ZERODIVIDE;
+    if ((enc & FENV_Y_OVERFLOW) == FENV_Y_OVERFLOW) *y |= _EM_OVERFLOW;
+    if ((enc & FENV_Y_UNDERFLOW) == FENV_Y_UNDERFLOW) *y |= _EM_UNDERFLOW;
+    if ((enc & FENV_Y_INEXACT) == FENV_Y_INEXACT) *y |= _EM_INEXACT;
+    if ((enc & FENV_Y_UP) == FENV_Y_UP) *y |= _RC_UP;
+    if ((enc & FENV_Y_DOWN) == FENV_Y_DOWN) *y |= _RC_DOWN;
+    if ((enc & FENV_Y_FLUSH) == FENV_Y_FLUSH) *y |= _DN_FLUSH;
+    if ((enc & FENV_Y_FLUSH_SAVE) == FENV_Y_FLUSH_SAVE) *y |= _DN_FLUSH_OPERANDS_SAVE_RESULTS;
+
+    if (fenv_encode(*x, *y) != enc)
+    {
+        WARN("can't decode: %lx\n", enc);
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif
+#endif
+
 #if _MSVCR_VER>=120
 /*********************************************************************
  *		fegetenv (MSVCR120.@)
  */
 int CDECL fegetenv(fenv_t *env)
 {
+#if _MSVCR_VER>=140 && defined(__i386__)
+    unsigned int x87, sse;
+    __control87_2(0, 0, &x87, &sse);
+    env->_Fe_ctl = fenv_encode(x87, sse);
+    _statusfp2(&x87, &sse);
+    env->_Fe_stat = fenv_encode(x87, sse);
+#elif _MSVCR_VER>=140
+    env->_Fe_ctl = fenv_encode(0, _control87(0, 0));
+    env->_Fe_stat = fenv_encode(0, _statusfp());
+#else
     env->_Fe_ctl = _controlfp(0, 0) & (_EM_INEXACT | _EM_UNDERFLOW |
             _EM_OVERFLOW | _EM_ZERODIVIDE | _EM_INVALID | _RC_CHOP);
     env->_Fe_stat = _statusfp();
+#endif
     return 0;
+}
+
+/*********************************************************************
+ *		feupdateenv (MSVCR120.@)
+ */
+int CDECL feupdateenv(const fenv_t *env)
+{
+    fenv_t set;
+    fegetenv(&set);
+    set._Fe_ctl = env->_Fe_ctl;
+    set._Fe_stat |= env->_Fe_stat;
+    return fesetenv(&set);
 }
 
 /*********************************************************************
@@ -2241,13 +2394,40 @@ int CDECL fesetexceptflag(const fexcept_t *status, int excepts)
 {
     fenv_t env;
 
+    excepts &= FE_ALL_EXCEPT;
     if(!excepts)
         return 0;
 
     fegetenv(&env);
-    excepts &= FE_ALL_EXCEPT;
+#if _MSVCR_VER>=140 && (defined(__i386__) || defined(__x86_64__))
+    env._Fe_stat &= ~fenv_encode(excepts, excepts);
+    env._Fe_stat |= *status & fenv_encode(excepts, excepts);
+#elif _MSVCR_VER>=140
+    env._Fe_stat &= ~fenv_encode(0, excepts);
+    env._Fe_stat |= *status & fenv_encode(0, excepts);
+#else
     env._Fe_stat &= ~excepts;
-    env._Fe_stat |= (*status & excepts);
+    env._Fe_stat |= *status & excepts;
+#endif
+    return fesetenv(&env);
+}
+
+/*********************************************************************
+ *      feraiseexcept (MSVCR120.@)
+ */
+int CDECL feraiseexcept(int flags)
+{
+    fenv_t env;
+
+    flags &= FE_ALL_EXCEPT;
+    fegetenv(&env);
+#if _MSVCR_VER>=140 && defined(__i386__)
+    env._Fe_stat |= fenv_encode(flags, flags);
+#elif _MSVCR_VER>=140
+    env._Fe_stat |= fenv_encode(0, flags);
+#else
+    env._Fe_stat |= flags;
+#endif
     return fesetenv(&env);
 }
 
@@ -2259,7 +2439,12 @@ int CDECL feclearexcept(int flags)
     fenv_t env;
 
     fegetenv(&env);
-    env._Fe_stat &= ~(flags & FE_ALL_EXCEPT);
+    flags &= FE_ALL_EXCEPT;
+#if _MSVCR_VER>=140
+    env._Fe_stat &= ~fenv_encode(flags, flags);
+#else
+    env._Fe_stat &= ~flags;
+#endif
     return fesetenv(&env);
 }
 
@@ -2268,7 +2453,15 @@ int CDECL feclearexcept(int flags)
  */
 int CDECL fegetexceptflag(fexcept_t *status, int excepts)
 {
+#if _MSVCR_VER>=140 && defined(__i386__)
+    unsigned int x87, sse;
+    _statusfp2(&x87, &sse);
+    *status = fenv_encode(x87 & excepts, sse & excepts);
+#elif _MSVCR_VER>=140
+    *status = fenv_encode(0, _statusfp() & excepts);
+#else
     *status = _statusfp() & excepts;
+#endif
     return 0;
 }
 #endif
@@ -2362,6 +2555,7 @@ void CDECL _fpreset(void)
 int CDECL fesetenv(const fenv_t *env)
 {
 #if (defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(__x86_64__))
+    unsigned int x87_cw, sse_cw, x87_stat, sse_stat;
     struct {
         WORD control_word;
         WORD unused1;
@@ -2384,27 +2578,51 @@ int CDECL fesetenv(const fenv_t *env)
         return 0;
     }
 
+#if _MSVCR_VER>=140
+    if (!fenv_decode(env->_Fe_ctl, &x87_cw, &sse_cw))
+        return 1;
+    if (!fenv_decode(env->_Fe_stat, &x87_stat, &sse_stat))
+        return 1;
+#else
+    x87_cw = sse_cw = env->_Fe_ctl;
+    x87_stat = sse_stat = env->_Fe_stat;
+#endif
+
     __asm__ __volatile__( "fnstenv %0" : "=m" (fenv) );
 
     fenv.control_word &= ~0xc3d;
-    if (env->_Fe_ctl & _EM_INVALID) fenv.control_word |= 0x1;
-    if (env->_Fe_ctl & _EM_ZERODIVIDE) fenv.control_word |= 0x4;
-    if (env->_Fe_ctl & _EM_OVERFLOW) fenv.control_word |= 0x8;
-    if (env->_Fe_ctl & _EM_UNDERFLOW) fenv.control_word |= 0x10;
-    if (env->_Fe_ctl & _EM_INEXACT) fenv.control_word |= 0x20;
-    switch (env->_Fe_ctl & _MCW_RC)
+#if _MSVCR_VER>=140
+    fenv.control_word &= ~0x1302;
+#endif
+    if (x87_cw & _EM_INVALID) fenv.control_word |= 0x1;
+    if (x87_cw & _EM_ZERODIVIDE) fenv.control_word |= 0x4;
+    if (x87_cw & _EM_OVERFLOW) fenv.control_word |= 0x8;
+    if (x87_cw & _EM_UNDERFLOW) fenv.control_word |= 0x10;
+    if (x87_cw & _EM_INEXACT) fenv.control_word |= 0x20;
+    switch (x87_cw & _MCW_RC)
     {
         case _RC_UP|_RC_DOWN:   fenv.control_word |= 0xc00; break;
         case _RC_UP:            fenv.control_word |= 0x800; break;
         case _RC_DOWN:          fenv.control_word |= 0x400; break;
     }
+#if _MSVCR_VER>=140
+    if (x87_cw & _EM_DENORMAL) fenv.control_word |= 0x2;
+    switch (x87_cw & _MCW_PC)
+    {
+        case _PC_64: fenv.control_word |= 0x300; break;
+        case _PC_53: fenv.control_word |= 0x200; break;
+        case _PC_24: fenv.control_word |= 0x0; break;
+    }
+    if (x87_cw & _IC_AFFINE) fenv.control_word |= 0x1000;
+#endif
 
-    fenv.status_word &= ~0x3d;
-    if (env->_Fe_stat & FE_INVALID) fenv.status_word |= 0x1;
-    if (env->_Fe_stat & FE_DIVBYZERO) fenv.status_word |= 0x4;
-    if (env->_Fe_stat & FE_OVERFLOW) fenv.status_word |= 0x8;
-    if (env->_Fe_stat & FE_UNDERFLOW) fenv.status_word |= 0x10;
-    if (env->_Fe_stat & FE_INEXACT) fenv.status_word |= 0x20;
+    fenv.status_word &= ~0x3f;
+    if (x87_stat & _SW_INVALID) fenv.status_word |= 0x1;
+    if (x87_stat & _SW_DENORMAL) fenv.status_word |= 0x2;
+    if (x87_stat & _SW_ZERODIVIDE) fenv.status_word |= 0x4;
+    if (x87_stat & _SW_OVERFLOW) fenv.status_word |= 0x8;
+    if (x87_stat & _SW_UNDERFLOW) fenv.status_word |= 0x10;
+    if (x87_stat & _SW_INEXACT) fenv.status_word |= 0x20;
 
     __asm__ __volatile__( "fldenv %0" : : "m" (fenv) : "st", "st(1)",
             "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)" );
@@ -2413,18 +2631,36 @@ int CDECL fesetenv(const fenv_t *env)
     {
         DWORD fpword;
         __asm__ __volatile__( "stmxcsr %0" : "=m" (fpword) );
-        fpword &= ~0x7e80;
-        if (env->_Fe_ctl & _EM_INVALID) fpword |= 0x80;
-        if (env->_Fe_ctl & _EM_ZERODIVIDE) fpword |= 0x200;
-        if (env->_Fe_ctl & _EM_OVERFLOW) fpword |= 0x400;
-        if (env->_Fe_ctl & _EM_UNDERFLOW) fpword |= 0x800;
-        if (env->_Fe_ctl & _EM_INEXACT) fpword |= 0x1000;
-        switch (env->_Fe_ctl & _MCW_RC)
+        fpword &= ~0x7ebf;
+#if _MSVCR_VER>=140
+        fpword &= ~0x8140;
+#endif
+        if (sse_cw & _EM_INVALID) fpword |= 0x80;
+        if (sse_cw & _EM_ZERODIVIDE) fpword |= 0x200;
+        if (sse_cw & _EM_OVERFLOW) fpword |= 0x400;
+        if (sse_cw & _EM_UNDERFLOW) fpword |= 0x800;
+        if (sse_cw & _EM_INEXACT) fpword |= 0x1000;
+        switch (sse_cw & _MCW_RC)
         {
             case _RC_CHOP: fpword |= 0x6000; break;
             case _RC_UP:   fpword |= 0x4000; break;
             case _RC_DOWN: fpword |= 0x2000; break;
         }
+        if (sse_stat & _SW_INVALID) fpword |= 0x1;
+        if (sse_stat & _SW_DENORMAL) fpword |= 0x2;
+        if (sse_stat & _SW_ZERODIVIDE) fpword |= 0x4;
+        if (sse_stat & _SW_OVERFLOW) fpword |= 0x8;
+        if (sse_stat & _SW_UNDERFLOW) fpword |= 0x10;
+        if (sse_stat & _SW_INEXACT) fpword |= 0x20;
+#if _MSVCR_VER>=140
+        if (sse_cw & _EM_DENORMAL) fpword |= 0x100;
+        switch (sse_cw & _MCW_DN)
+        {
+            case _DN_FLUSH_OPERANDS_SAVE_RESULTS: fpword |= 0x0040; break;
+            case _DN_SAVE_OPERANDS_FLUSH_RESULTS: fpword |= 0x8000; break;
+            case _DN_FLUSH:                       fpword |= 0x8040; break;
+        }
+#endif
         __asm__ __volatile__( "ldmxcsr %0" : : "m" (fpword) );
     }
 
@@ -3214,18 +3450,36 @@ double CDECL _yn(int n, double x)
 
 /*********************************************************************
  *		_nearbyint (MSVCR120.@)
+ *
+ * Based on musl: src/math/nearbyteint.c
  */
-double CDECL nearbyint(double num)
+double CDECL nearbyint(double x)
 {
-    return unix_funcs->nearbyint( num );
+    fenv_t env;
+
+    fegetenv(&env);
+    _control87(_MCW_EM, _MCW_EM);
+    x = rint(x);
+    feclearexcept(FE_INEXACT);
+    feupdateenv(&env);
+    return x;
 }
 
 /*********************************************************************
  *		_nearbyintf (MSVCR120.@)
+ *
+ * Based on musl: src/math/nearbyteintf.c
  */
-float CDECL nearbyintf(float num)
+float CDECL nearbyintf(float x)
 {
-    return unix_funcs->nearbyintf( num );
+    fenv_t env;
+
+    fegetenv(&env);
+    _control87(_MCW_EM, _MCW_EM);
+    x = rintf(x);
+    feclearexcept(FE_INEXACT);
+    feupdateenv(&env);
+    return x;
 }
 
 /*********************************************************************
@@ -3233,24 +3487,49 @@ float CDECL nearbyintf(float num)
  */
 double CDECL MSVCRT_nexttoward(double num, double next)
 {
-    double ret = unix_funcs->nexttoward(num, next);
-    if (!(_fpclass(ret) & (_FPCLASS_PN | _FPCLASS_NN
-            | _FPCLASS_SNAN | _FPCLASS_QNAN)) && !isinf(num))
-    {
-        *_errno() = ERANGE;
-    }
-    return ret;
+    return _nextafter(num, next);
 }
 
 /*********************************************************************
  *              nexttowardf (MSVCR120.@)
+ *
+ * Copied from musl: src/math/nexttowardf.c
  */
-float CDECL MSVCRT_nexttowardf(float num, double next)
+float CDECL MSVCRT_nexttowardf(float x, double y)
 {
-    float ret = unix_funcs->nexttowardf( num, next );
-    if (!(_fpclass(ret) & (_FPCLASS_PN | _FPCLASS_NN
-            | _FPCLASS_SNAN | _FPCLASS_QNAN)) && !isinf(num))
-    {
+    unsigned int ix = *(unsigned int*)&x;
+    unsigned int e;
+    float ret;
+
+    if (isnan(x) || isnan(y))
+        return x + y;
+    if (x == y)
+        return y;
+    if (x == 0) {
+        ix = 1;
+        if (signbit(y))
+            ix |= 0x80000000;
+    } else if (x < y) {
+        if (signbit(x))
+            ix--;
+        else
+            ix++;
+    } else {
+        if (signbit(x))
+            ix++;
+        else
+            ix--;
+    }
+    e = ix & 0x7f800000;
+    /* raise overflow if ix is infinite and x is finite */
+    if (e == 0x7f800000) {
+        fp_barrierf(x + x);
+        *_errno() = ERANGE;
+    }
+    ret = *(float*)&ix;
+    /* raise underflow if ret is subnormal or zero */
+    if (e == 0) {
+        fp_barrierf(x * x + ret * ret);
         *_errno() = ERANGE;
     }
     return ret;
@@ -3260,13 +3539,46 @@ float CDECL MSVCRT_nexttowardf(float num, double next)
 
 /*********************************************************************
  *		_nextafter (MSVCRT.@)
+ *
+ * Copied from musl: src/math/nextafter.c
  */
-double CDECL _nextafter(double num, double next)
+double CDECL _nextafter(double x, double y)
 {
-  double retval;
-  if (!isfinite(num) || !isfinite(next)) *_errno() = EDOM;
-  retval = unix_funcs->nextafter(num,next);
-  return retval;
+    ULONGLONG llx = *(ULONGLONG*)&x;
+    ULONGLONG lly = *(ULONGLONG*)&y;
+    ULONGLONG ax, ay;
+    int e;
+
+    if (isnan(x) || isnan(y))
+        return x + y;
+    if (llx == lly) {
+        if (_fpclass(y) & (_FPCLASS_ND | _FPCLASS_PD | _FPCLASS_NZ | _FPCLASS_PZ ))
+            *_errno() = ERANGE;
+        return y;
+    }
+    ax = llx & -1ULL / 2;
+    ay = lly & -1ULL / 2;
+    if (ax == 0) {
+        if (ay == 0)
+            return y;
+        llx = (lly & 1ULL << 63) | 1;
+    } else if (ax > ay || ((llx ^ lly) & 1ULL << 63))
+        llx--;
+    else
+        llx++;
+    e = llx >> 52 & 0x7ff;
+    /* raise overflow if llx is infinite and x is finite */
+    if (e == 0x7ff) {
+        fp_barrier(x + x);
+        *_errno() = ERANGE;
+    }
+    /* raise underflow if llx is subnormal or zero */
+    y = *(double*)&llx;
+    if (e == 0) {
+        fp_barrier(x * x + y * y);
+        *_errno() = ERANGE;
+    }
+    return y;
 }
 
 /*********************************************************************
@@ -4721,12 +5033,8 @@ double CDECL acosh(double x)
 {
     if (x < 1)
     {
-        fenv_t env;
-
         *_errno() = EDOM;
-        fegetenv(&env);
-        env._Fe_stat |= FE_INVALID;
-        fesetenv(&env);
+        feraiseexcept(FE_INVALID);
         return NAN;
     }
     return unix_funcs->acosh( x );
@@ -4739,12 +5047,8 @@ float CDECL acoshf(float x)
 {
     if (x < 1)
     {
-        fenv_t env;
-
         *_errno() = EDOM;
-        fegetenv(&env);
-        env._Fe_stat |= FE_INVALID;
-        fesetenv(&env);
+        feraiseexcept(FE_INVALID);
         return NAN;
     }
     return unix_funcs->acoshf( x );
@@ -4758,14 +5062,9 @@ double CDECL atanh(double x)
     double ret;
 
     if (x > 1 || x < -1) {
-        fenv_t env;
-
         *_errno() = EDOM;
-
         /* on Linux atanh returns -NAN in this case */
-        fegetenv(&env);
-        env._Fe_stat |= FE_INVALID;
-        fesetenv(&env);
+        feraiseexcept(FE_INVALID);
         return NAN;
     }
     ret = unix_funcs->atanh( x );
@@ -4782,13 +5081,8 @@ float CDECL atanhf(float x)
     float ret;
 
     if (x > 1 || x < -1) {
-        fenv_t env;
-
         *_errno() = EDOM;
-
-        fegetenv(&env);
-        env._Fe_stat |= FE_INVALID;
-        fesetenv(&env);
+        feraiseexcept(FE_INVALID);
         return NAN;
     }
 
@@ -4923,9 +5217,9 @@ double CDECL _except1(DWORD fpe, _FP_OPERATION_CODE op, double arg, double res, 
 {
     ULONG_PTR exception_arg;
     DWORD exception = 0;
-    fenv_t env;
     DWORD fpword = 0;
     WORD operation;
+    int raise = 0;
 
     TRACE("(%x %x %lf %lf %x %p)\n", fpe, op, arg, res, cw, unk);
 
@@ -4935,49 +5229,47 @@ double CDECL _except1(DWORD fpe, _FP_OPERATION_CODE op, double arg, double res, 
     operation = op << 5;
     exception_arg = (ULONG_PTR)&operation;
 
-    fegetenv(&env);
-
     if (fpe & 0x1) { /* overflow */
         if ((fpe == 0x1 && (cw & 0x8)) || (fpe==0x11 && (cw & 0x28))) {
             /* 32-bit version also sets SW_INEXACT here */
-            env._Fe_stat |= FE_OVERFLOW;
-            if (fpe & 0x10) env._Fe_stat |= FE_INEXACT;
+            raise |= FE_OVERFLOW;
+            if (fpe & 0x10) raise |= FE_INEXACT;
             res = signbit(res) ? -INFINITY : INFINITY;
         } else {
             exception = EXCEPTION_FLT_OVERFLOW;
         }
     } else if (fpe & 0x2) { /* underflow */
         if ((fpe == 0x2 && (cw & 0x10)) || (fpe==0x12 && (cw & 0x30))) {
-            env._Fe_stat |= FE_UNDERFLOW;
-            if (fpe & 0x10) env._Fe_stat |= FE_INEXACT;
+            raise |= FE_UNDERFLOW;
+            if (fpe & 0x10) raise |= FE_INEXACT;
             res = signbit(res) ? -0.0 : 0.0;
         } else {
             exception = EXCEPTION_FLT_UNDERFLOW;
         }
     } else if (fpe & 0x4) { /* zerodivide */
         if ((fpe == 0x4 && (cw & 0x4)) || (fpe==0x14 && (cw & 0x24))) {
-            env._Fe_stat |= FE_DIVBYZERO;
-            if (fpe & 0x10) env._Fe_stat |= FE_INEXACT;
+            raise |= FE_DIVBYZERO;
+            if (fpe & 0x10) raise |= FE_INEXACT;
         } else {
             exception = EXCEPTION_FLT_DIVIDE_BY_ZERO;
         }
     } else if (fpe & 0x8) { /* invalid */
         if (fpe == 0x8 && (cw & 0x1)) {
-            env._Fe_stat |= FE_INVALID;
+            raise |= FE_INVALID;
         } else {
             exception = EXCEPTION_FLT_INVALID_OPERATION;
         }
     } else if (fpe & 0x10) { /* inexact */
         if (fpe == 0x10 && (cw & 0x20)) {
-            env._Fe_stat |= FE_INEXACT;
+            raise |= FE_INEXACT;
         } else {
             exception = EXCEPTION_FLT_INEXACT_RESULT;
         }
     }
 
     if (exception)
-        env._Fe_stat = 0;
-    fesetenv(&env);
+        raise = 0;
+    feraiseexcept(raise);
     if (exception)
         RaiseException(exception, 0, 1, &exception_arg);
 

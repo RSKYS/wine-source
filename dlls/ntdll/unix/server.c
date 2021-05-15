@@ -1457,11 +1457,8 @@ static void init_teb64( TEB *teb )
     TEB64 *teb64 = (TEB64 *)((char *)teb - teb_offset);
 
     if (!is_wow64) return;
-    teb->GdiBatchCount = PtrToUlong( teb64 );
-    teb->WowTebOffset  = -teb_offset;
     teb64->ClientId.UniqueProcess = PtrToUlong( teb->ClientId.UniqueProcess );
     teb64->ClientId.UniqueThread  = PtrToUlong( teb->ClientId.UniqueThread );
-    teb64->WowTebOffset           = teb_offset;
 #endif
 }
 
@@ -1556,11 +1553,6 @@ size_t server_init_process(void)
     {
         req->unix_pid    = getpid();
         req->unix_tid    = get_unix_tid();
-        req->teb         = wine_server_client_ptr( NtCurrentTeb() );
-        req->peb         = wine_server_client_ptr( NtCurrentTeb()->Peb );
-#ifdef __i386__
-        req->ldt_copy    = wine_server_client_ptr( &__wine_ldt_copy );
-#endif
         req->reply_fd    = reply_pipe;
         req->wait_fd     = ntdll_get_thread_data()->wait_fd[1];
         req->debug_level = (TRACE_ON(server) != 0);
@@ -1589,6 +1581,8 @@ size_t server_init_process(void)
         if (!is_win64)
         {
             is_wow64 = TRUE;
+            NtCurrentTeb()->GdiBatchCount = PtrToUlong( (char *)NtCurrentTeb() - teb_offset );
+            NtCurrentTeb()->WowTebOffset  = -teb_offset;
             init_teb64( NtCurrentTeb() );
         }
     }
@@ -1613,7 +1607,7 @@ size_t server_init_process(void)
 void server_init_process_done(void)
 {
     PEB *peb = NtCurrentTeb()->Peb;
-    void *entry;
+    void *entry, *teb;
     NTSTATUS status;
     int suspend, needs_close, unixdir;
 
@@ -1637,9 +1631,17 @@ void server_init_process_done(void)
      * is sent by init_process_done */
     signal_init_process();
 
+    /* always send the native TEB */
+    if (!(teb = NtCurrentTeb64())) teb = NtCurrentTeb();
+
     /* Signal the parent process to continue */
     SERVER_START_REQ( init_process_done )
     {
+        req->teb      = wine_server_client_ptr( teb );
+        req->peb      = NtCurrentTeb64() ? NtCurrentTeb64()->Peb : wine_server_client_ptr( peb );
+#ifdef __i386__
+        req->ldt_copy = wine_server_client_ptr( &__wine_ldt_copy );
+#endif
         status = wine_server_call( req );
         suspend = reply->suspend;
         entry = wine_server_get_ptr( reply->entry );
@@ -1658,12 +1660,16 @@ void server_init_process_done(void)
  */
 void server_init_thread( void *entry_point, BOOL *suspend )
 {
+    void *teb;
     int reply_pipe = init_thread_pipe();
+
+    /* always send the native TEB */
+    if (!(teb = NtCurrentTeb64())) teb = NtCurrentTeb();
 
     SERVER_START_REQ( init_thread )
     {
         req->unix_tid  = get_unix_tid();
-        req->teb       = wine_server_client_ptr( NtCurrentTeb() );
+        req->teb       = wine_server_client_ptr( teb );
         req->entry     = wine_server_client_ptr( entry_point );
         req->reply_fd  = reply_pipe;
         req->wait_fd   = ntdll_get_thread_data()->wait_fd[1];

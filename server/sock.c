@@ -400,12 +400,11 @@ static void sock_wake_up( struct sock *sock )
     unsigned int events = sock->pending_events & sock->mask;
     int i;
 
-    if ( !events ) return;
-
     if (sock->event)
     {
         if (debug_level) fprintf(stderr, "signalling events %x ptr %p\n", events, sock->event );
-        set_event( sock->event );
+        if (events)
+            set_event( sock->event );
     }
     if (sock->window)
     {
@@ -413,7 +412,7 @@ static void sock_wake_up( struct sock *sock )
         for (i = 0; i < FD_MAX_EVENTS; i++)
         {
             int event = event_bitorder[i];
-            if (sock->pending_events & (1 << event))
+            if (events & (1 << event))
             {
                 lparam_t lparam = (1 << event) | (sock->errors[event] << 16);
                 post_message( sock->window, sock->message, sock->wparam, lparam );
@@ -627,9 +626,12 @@ static void post_socket_event( struct sock *sock, unsigned int event_bit, unsign
 {
     unsigned int event = (1 << event_bit);
 
-    sock->pending_events |= event;
-    sock->reported_events |= event;
-    sock->errors[event_bit] = error;
+    if (!(sock->reported_events & event))
+    {
+        sock->pending_events |= event;
+        sock->reported_events |= event;
+        sock->errors[event_bit] = error;
+    }
 }
 
 static void sock_dispatch_events( struct sock *sock, int prevstate, int event, int error )
@@ -783,8 +785,7 @@ static int sock_get_poll_events( struct fd *fd )
     else if (smask & FD_READ || (sock->state & FD_WINE_LISTENING && mask & FD_ACCEPT))
         ev |= POLLIN | POLLPRI;
     /* We use POLLIN with 0 bytes recv() as FD_CLOSE indication for stream sockets. */
-    else if (sock->type == WS_SOCK_STREAM && (sock->state & FD_READ) && (mask & FD_CLOSE) &&
-              !(sock->reported_events & FD_READ))
+    else if (sock->type == WS_SOCK_STREAM && (mask & FD_CLOSE) && !(sock->reported_events & FD_READ))
         ev |= POLLIN;
 
     if (async_queued( &sock->write_q ))
@@ -1353,14 +1354,15 @@ static struct accept_req *alloc_accept_req( struct sock *sock, struct sock *acce
 static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
 {
     struct sock *sock = get_fd_user( fd );
+    int unix_fd;
 
     assert( sock->obj.ops == &sock_ops );
 
-    if (code != IOCTL_AFD_CREATE && get_unix_fd( fd ) < 0) return 0;
+    if (code != IOCTL_AFD_WINE_CREATE && (unix_fd = get_unix_fd( fd )) < 0) return 0;
 
     switch(code)
     {
-    case IOCTL_AFD_CREATE:
+    case IOCTL_AFD_WINE_CREATE:
     {
         const struct afd_create_params *params = get_req_data();
 
@@ -1373,7 +1375,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
         return 0;
     }
 
-    case IOCTL_AFD_ACCEPT:
+    case IOCTL_AFD_WINE_ACCEPT:
     {
         struct sock *acceptsock;
         obj_handle_t handle;
@@ -1408,7 +1410,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
         return 0;
     }
 
-    case IOCTL_AFD_ACCEPT_INTO:
+    case IOCTL_AFD_WINE_ACCEPT_INTO:
     {
         static const int access = FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | FILE_READ_DATA;
         const struct afd_accept_into_params *params = get_req_data();
@@ -1458,7 +1460,33 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
         return 1;
     }
 
-    case IOCTL_AFD_ADDRESS_LIST_CHANGE:
+    case IOCTL_AFD_LISTEN:
+    {
+        const struct afd_listen_params *params = get_req_data();
+
+        if (get_req_data_size() < sizeof(*params))
+        {
+            set_error( STATUS_INVALID_PARAMETER );
+            return 0;
+        }
+
+        if (listen( unix_fd, params->backlog ) < 0)
+        {
+            set_error( sock_get_ntstatus( errno ) );
+            return 0;
+        }
+
+        sock->pending_events &= ~FD_ACCEPT;
+        sock->reported_events &= ~FD_ACCEPT;
+        sock->state |= FD_WINE_LISTENING;
+        sock->state &= ~(FD_CONNECT | FD_WINE_CONNECTED);
+
+        /* we may already be selecting for FD_ACCEPT */
+        sock_reselect( sock );
+        return 0;
+    }
+
+    case IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE:
         if ((sock->state & FD_WINE_NONBLOCKING) && async_is_blocking( async ))
         {
             set_error( STATUS_DEVICE_NOT_READY );
@@ -1780,7 +1808,8 @@ DECL_HANDLER(set_socket_event)
     if (get_unix_fd( sock->fd ) == -1) return;
     old_event = sock->event;
     sock->mask    = req->mask;
-    sock->reported_events &= ~req->mask; /* re-enable held events */
+    if (req->window)
+        sock->reported_events &= ~req->mask; /* re-enable held events */
     sock->event   = NULL;
     sock->window  = req->window;
     sock->message = req->msg;
