@@ -124,6 +124,22 @@ CPPFLAGS=$ac_save_CPPFLAGS
 AS_VAR_POPDEF([ac_libs])dnl
 AS_VAR_POPDEF([ac_cflags])])dnl
 
+dnl **** Get flags for an external lib program ****
+dnl
+dnl Usage: WINE_EXTLIB_FLAGS(var,pkg-name,default-libs,default-cflags)
+dnl
+AC_DEFUN([WINE_EXTLIB_FLAGS],
+[AS_VAR_PUSHDEF([ac_cflags],[[$1]_PE_CFLAGS])dnl
+AS_VAR_PUSHDEF([ac_libs],[[$1]_PE_LIBS])dnl
+AC_ARG_VAR(ac_cflags, [C compiler flags for the PE $2, overriding the bundled version])dnl
+AC_ARG_VAR(ac_libs, [Linker flags for the PE $2, overriding the bundled version])dnl
+AS_VAR_IF([ac_cflags],[],[ac_cflags=$4],[enable_$2=no])
+AS_VAR_IF([ac_libs],[],[ac_libs=$3],[enable_$2=no])
+AS_ECHO(["$as_me:${as_lineno-$LINENO}: $2 cflags: $ac_cflags"]) >&AS_MESSAGE_LOG_FD
+AS_ECHO(["$as_me:${as_lineno-$LINENO}: $2 libs: $ac_libs"]) >&AS_MESSAGE_LOG_FD
+AS_VAR_POPDEF([ac_libs])dnl
+AS_VAR_POPDEF([ac_cflags])])dnl
+
 dnl **** Link C code with an assembly file ****
 dnl
 dnl Usage: WINE_TRY_ASM_LINK(asm-code,includes,function,[action-if-found,[action-if-not-found]])
@@ -218,18 +234,18 @@ dnl
 AC_DEFUN([WINE_CHECK_MINGW_PROG],
 [case "$host_cpu" in
   aarch64*)
-    ac_prefix_list="aarch64-w64-mingw32-clang aarch64-w64-mingw32-gcc" ;;
+    ac_prefix_list="aarch64-w64-mingw32-clang aarch64-w64-mingw32-gcc clang" ;;
   arm*)
-    ac_prefix_list="armv7-w64-mingw32-clang armv7-w64-mingw32-gcc" ;;
+    ac_prefix_list="armv7-w64-mingw32-clang armv7-w64-mingw32-gcc clang" ;;
   i[[3456789]]86*)
     ac_prefix_list="m4_foreach([ac_wine_prefix],[w64-mingw32, pc-mingw32, mingw32msvc, mingw32],
                         m4_foreach([ac_wine_cpu],[i686,i586,i486,i386],[ac_wine_cpu-ac_wine_prefix-gcc ]))
                      m4_foreach([ac_wine_cpu],[i686,i586,i486,i386],[ac_wine_cpu-w64-mingw32-clang ])
-                     mingw32-gcc" ;;
+                     mingw32-gcc clang" ;;
   x86_64)
     ac_prefix_list="m4_foreach([ac_wine_prefix],[pc-mingw32, w64-mingw32, mingw32msvc],
                         m4_foreach([ac_wine_cpu],[x86_64,amd64],[ac_wine_cpu-ac_wine_prefix-gcc ]))
-                    m4_foreach([ac_wine_cpu],[x86_64,amd64],[ac_wine_cpu-w64-mingw32-clang ])" ;;
+                    m4_foreach([ac_wine_cpu],[x86_64,amd64],[ac_wine_cpu-w64-mingw32-clang ]) clang" ;;
   *)
     ac_prefix_list="" ;;
 esac

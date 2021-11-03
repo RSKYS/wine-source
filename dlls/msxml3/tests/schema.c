@@ -37,6 +37,21 @@
 #define EXPECT_HR(hr,hr_exp) \
     ok(hr == hr_exp, "got 0x%08x, expected 0x%08x\n", hr, hr_exp)
 
+#define check_interface(a, b, c) check_interface_(__LINE__, a, b, c)
+static void check_interface_(unsigned int line, void *iface_ptr, REFIID iid, BOOL supported)
+{
+    IUnknown *iface = iface_ptr;
+    HRESULT hr, expected_hr;
+    IUnknown *unk;
+
+    expected_hr = supported ? S_OK : E_NOINTERFACE;
+
+    hr = IUnknown_QueryInterface(iface, iid, (void **)&unk);
+    ok_(__FILE__, line)(hr == expected_hr, "Got hr %#x, expected %#x.\n", hr, expected_hr);
+    if (SUCCEEDED(hr))
+        IUnknown_Release(unk);
+}
+
 static const CHAR xdr_schema1_uri[] = "x-schema:test1.xdr";
 static const CHAR xdr_schema1_xml[] =
 "<?xml version='1.0'?>"
@@ -1012,6 +1027,161 @@ static void test_collection_content(void)
     free_bstrs();
 }
 
+static HRESULT validate_regex_document(IXMLDOMDocument2 *doc, IXMLDOMDocument2 *schema, IXMLDOMSchemaCollection* cache,
+    const WCHAR *regex, const WCHAR *input)
+{
+    static const WCHAR regex_doc[] =
+L""
+"<?xml version='1.0'?>"
+"<root xmlns='urn:test'>%s</root>";
+
+    static const WCHAR regex_schema[] =
+L"<?xml version='1.0'?>"
+"<schema xmlns='http://www.w3.org/2001/XMLSchema'"
+"            targetNamespace='urn:test'>"
+"    <element name='root'>"
+"        <simpleType>"
+"            <restriction base='string'>"
+"                <pattern value='%s'/>"
+"            </restriction>"
+"        </simpleType>"
+"    </element>"
+"</schema>";
+
+    WCHAR buffer[1024];
+    IXMLDOMParseError* err;
+    VARIANT v;
+    VARIANT_BOOL b;
+    BSTR namespace;
+    BSTR bstr;
+    HRESULT hr;
+
+    VariantInit(&v);
+
+    swprintf(buffer, ARRAY_SIZE(buffer), regex_doc, input);
+    bstr = SysAllocString(buffer);
+    ole_check(IXMLDOMDocument2_loadXML(doc, bstr, &b));
+    ok(b == VARIANT_TRUE, "failed to load XML\n");
+    SysFreeString(bstr);
+
+    swprintf(buffer, ARRAY_SIZE(buffer), regex_schema, regex);
+    bstr = SysAllocString(buffer);
+    ole_check(IXMLDOMDocument2_loadXML(schema, bstr, &b));
+    ok(b == VARIANT_TRUE, "failed to load XML\n");
+    SysFreeString(bstr);
+
+    /* add the schema to the cache */
+    V_VT(&v) = VT_DISPATCH;
+    V_DISPATCH(&v) = NULL;
+    ole_check(IXMLDOMDocument2_QueryInterface(schema, &IID_IDispatch, (void**)&V_DISPATCH(&v)));
+    ok(V_DISPATCH(&v) != NULL, "failed to get IDispatch interface\n");
+    namespace = alloc_str_from_narrow("urn:test");
+    hr = IXMLDOMSchemaCollection_add(cache, namespace, v);
+    SysFreeString(namespace);
+    VariantClear(&v);
+    if (FAILED(hr))
+        return hr;
+
+    /* associate the cache to the doc */
+    V_VT(&v) = VT_DISPATCH;
+    V_DISPATCH(&v) = NULL;
+    ole_check(IXMLDOMSchemaCollection_QueryInterface(cache, &IID_IDispatch, (void**)&V_DISPATCH(&v)));
+    ok(V_DISPATCH(&v) != NULL, "failed to get IDispatch interface\n");
+    ole_check(IXMLDOMDocument2_putref_schemas(doc, v));
+    VariantClear(&v);
+
+    /* validate the doc
+     * only declared elements in the declared order
+     * this is fine */
+    err = NULL;
+    bstr = NULL;
+    hr = IXMLDOMDocument2_validate(doc, &err);
+    ok(err != NULL, "domdoc_validate() should always set err\n");
+    if (IXMLDOMParseError_get_reason(err, &bstr) != S_FALSE)
+        trace("got error: %s\n", wine_dbgstr_w(bstr));
+    SysFreeString(bstr);
+    IXMLDOMParseError_Release(err);
+
+    return hr;
+}
+
+static void test_regex(void)
+{
+    struct regex_test {
+        const WCHAR *regex;
+        const WCHAR *input;
+        BOOL todo;
+    };
+
+    struct regex_test tests[] = {
+        { L"\\!", L"!", TRUE },
+        { L"\\\"", L"\"", TRUE },
+        { L"\\#", L"#", TRUE },
+        { L"\\$", L"$", TRUE },
+        { L"\\%", L"%", TRUE },
+        { L"\\,", L",", TRUE },
+        { L"\\/", L"/", TRUE },
+        { L"\\:", L":", TRUE },
+        { L"\\;", L";", TRUE },
+        { L"\\=", L"=", TRUE },
+        { L"\\>", L">", TRUE },
+        { L"\\@", L"@", TRUE },
+        { L"\\`", L"`", TRUE },
+        { L"\\~", L"~", TRUE },
+        { L"\\uCAFE", L"\xCAFE", TRUE },
+        /* non-BMP character in surrogate pairs: */
+        { L"\\uD83D\\uDE00", L"\xD83D\xDE00", TRUE },
+        /* "x{,2}" is non-standard and only works on libxml2 <= v2.9.10 */
+        { L"x{0,2}", L"x", FALSE }
+    };
+
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        IXMLDOMDocument2 *doc40, *doc60;
+        IXMLDOMDocument2 *schema40, *schema60;
+        IXMLDOMSchemaCollection *cache40, *cache60;
+
+        doc40 = create_document_version(40, &IID_IXMLDOMDocument2);
+        doc60 = create_document_version(60, &IID_IXMLDOMDocument2);
+        schema40 = create_document_version(40, &IID_IXMLDOMDocument2);
+        schema60 = create_document_version(60, &IID_IXMLDOMDocument2);
+        cache40 = create_cache_version(40, &IID_IXMLDOMSchemaCollection);
+        cache60 = create_cache_version(60, &IID_IXMLDOMSchemaCollection);
+
+        if (doc60 && schema60 && cache60)
+        {
+            HRESULT hr = validate_regex_document(doc60, schema60, cache60, tests[i].regex, tests[i].input);
+            todo_wine_if(tests[i].todo)
+                ok(hr == S_OK, "got 0x%08x for version 60 regex %s input %s\n",
+                    hr, wine_dbgstr_w(tests[i].regex), wine_dbgstr_w(tests[i].input));
+            if (doc40 && schema40 && cache40)
+            {
+                hr = validate_regex_document(doc40, schema40, cache40, tests[i].regex, tests[i].input);
+                todo_wine_if(tests[i].todo)
+                    ok(hr == S_OK, "got 0x%08x for version 40 regex %s input %s\n",
+                        hr, wine_dbgstr_w(tests[i].regex), wine_dbgstr_w(tests[i].input));
+            }
+        }
+        else
+            ok(0, "out of memory\n");
+
+        if (doc40)
+            IXMLDOMDocument2_Release(doc40);
+        if (doc60)
+            IXMLDOMDocument2_Release(doc60);
+        if (schema40)
+            IXMLDOMDocument2_Release(schema40);
+        if (schema60)
+            IXMLDOMDocument2_Release(schema60);
+        if (cache40)
+            IXMLDOMSchemaCollection_Release(cache40);
+        if (cache60)
+            IXMLDOMSchemaCollection_Release(cache60);
+    }
+}
+
 static void test_XDR_schemas(void)
 {
     IXMLDOMDocument2 *doc, *schema;
@@ -1653,8 +1823,13 @@ static void test_ifaces(void)
     hr = IXMLDOMSchemaCollection2_QueryInterface(cache, &CLSID_XMLSchemaCache60, (void**)&unk);
     ok (hr == S_OK, "Could not get CLSID_XMLSchemaCache60 iface: %08x\n", hr);
     ok (unk == (IUnknown*)cache, "unk != cache\n");
-
     IUnknown_Release(unk);
+
+    check_interface(cache, &IID_IXMLDOMSchemaCollection, TRUE);
+    check_interface(cache, &IID_IXMLDOMSchemaCollection2, TRUE);
+    check_interface(cache, &IID_IDispatch, TRUE);
+    check_interface(cache, &IID_IDispatchEx, TRUE);
+
     IXMLDOMSchemaCollection2_Release(cache);
 }
 
@@ -1669,6 +1844,7 @@ START_TEST(schema)
     test_collection_refs();
     test_length();
     test_collection_content();
+    test_regex();
     test_XDR_schemas();
     test_XDR_datatypes();
     test_validate_on_load();

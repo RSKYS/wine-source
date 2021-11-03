@@ -48,6 +48,21 @@ static void _expect_ref(IUnknown* obj, ULONG ref, int line)
     ok_(__FILE__, line)(rc == ref, "expected refcount %d, got %d\n", ref, rc);
 }
 
+#define check_interface(a, b, c) check_interface_(__LINE__, a, b, c)
+static void check_interface_(unsigned int line, void *iface_ptr, REFIID iid, BOOL supported)
+{
+    IUnknown *iface = iface_ptr;
+    HRESULT hr, expected_hr;
+    IUnknown *unk;
+
+    expected_hr = supported ? S_OK : E_NOINTERFACE;
+
+    hr = IUnknown_QueryInterface(iface, iid, (void **)&unk);
+    ok_(__FILE__, line)(hr == expected_hr, "Got hr %#x, expected %#x.\n", hr, expected_hr);
+    if (SUCCEEDED(hr))
+        IUnknown_Release(unk);
+}
+
 static LONG get_refcount(void *iface)
 {
     IUnknown *unk = iface;
@@ -2310,6 +2325,22 @@ static void test_saxreader(void)
         WriteFile(file, testXML, sizeof(testXML)-1, &written, NULL);
         CloseHandle(file);
 
+        /* crashes on newer versions */
+        if (IsEqualGUID(table->clsid, &CLSID_SAXXMLReader) ||
+            IsEqualGUID(table->clsid, &CLSID_SAXXMLReader30))
+        {
+            IVBSAXXMLReader *vb_reader;
+
+            hr = ISAXXMLReader_parseURL(reader, NULL);
+            ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+            hr = ISAXXMLReader_QueryInterface(reader, &IID_IVBSAXXMLReader, (void **)&vb_reader);
+            ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+            hr = IVBSAXXMLReader_parseURL(vb_reader, NULL);
+            ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+            IVBSAXXMLReader_Release(vb_reader);
+        }
+
         if (IsEqualGUID(table->clsid, &CLSID_SAXXMLReader40) ||
             IsEqualGUID(table->clsid, &CLSID_SAXXMLReader60))
             test_seq = content_handler_test1_alternate;
@@ -3824,8 +3855,10 @@ static void test_mxwriter_startendelement_batch2(const struct writer_startendele
 static void test_mxwriter_startendelement(void)
 {
     ISAXContentHandler *content;
+    IVBSAXContentHandler *vb_content;
     IMXWriter *writer;
     VARIANT dest;
+    BSTR bstr_null = NULL, bstr_empty, bstr_a, bstr_b, bstr_ab;
     HRESULT hr;
 
     test_mxwriter_startendelement_batch(writer_startendelement);
@@ -3835,10 +3868,87 @@ static void test_mxwriter_startendelement(void)
             &IID_IMXWriter, (void**)&writer);
     ok(hr == S_OK, "Expected S_OK, got %08x\n", hr);
 
-    hr = IMXWriter_QueryInterface(writer, &IID_ISAXContentHandler, (void**)&content);
+    hr = IMXWriter_put_omitXMLDeclaration(writer, VARIANT_TRUE);
     ok(hr == S_OK, "got %08x\n", hr);
 
+    hr = IMXWriter_QueryInterface(writer, &IID_IVBSAXContentHandler, (void**)&vb_content);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_startDocument(vb_content);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    bstr_empty = SysAllocString(L"");
+    bstr_a = SysAllocString(L"a");
+    bstr_b = SysAllocString(L"b");
+    bstr_ab = SysAllocString(L"a:b");
+
+    hr = IVBSAXContentHandler_startElement(vb_content, &bstr_null, &bstr_empty, &bstr_b, NULL);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_startElement(vb_content, &bstr_empty, &bstr_b, &bstr_empty, NULL);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    V_VT(&dest) = VT_EMPTY;
+    hr = IMXWriter_get_output(writer, &dest);
+    ok(hr == S_OK, "got %08x\n", hr);
+    ok(V_VT(&dest) == VT_BSTR, "got %d\n", V_VT(&dest));
+    ok(!lstrcmpW(L"<>", V_BSTR(&dest)), "got wrong content %s\n", wine_dbgstr_w(V_BSTR(&dest)));
+    VariantClear(&dest);
+
+    hr = IVBSAXContentHandler_startElement(vb_content, &bstr_empty, &bstr_empty, &bstr_b, NULL);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    V_VT(&dest) = VT_EMPTY;
+    hr = IMXWriter_get_output(writer, &dest);
+    ok(hr == S_OK, "got %08x\n", hr);
+    ok(V_VT(&dest) == VT_BSTR, "got %d\n", V_VT(&dest));
+    ok(!lstrcmpW(L"<><b>", V_BSTR(&dest)), "got wrong content %s\n", wine_dbgstr_w(V_BSTR(&dest)));
+    VariantClear(&dest);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_null, &bstr_null, &bstr_b);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_null, &bstr_a, &bstr_b);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_a, &bstr_b, &bstr_null);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_empty, &bstr_null, &bstr_b);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_empty, &bstr_b, &bstr_null);
+    ok(hr == E_INVALIDARG, "got %08x\n", hr);
+
+    hr = IVBSAXContentHandler_endElement(vb_content, &bstr_empty, &bstr_empty, &bstr_b);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    V_VT(&dest) = VT_EMPTY;
+    hr = IMXWriter_get_output(writer, &dest);
+    ok(hr == S_OK, "got %08x\n", hr);
+    ok(V_VT(&dest) == VT_BSTR, "got %d\n", V_VT(&dest));
+    ok(!lstrcmpW(L"<><b></b>", V_BSTR(&dest)), "got wrong content %s\n", wine_dbgstr_w(V_BSTR(&dest)));
+    VariantClear(&dest);
+
+    SysFreeString(bstr_empty);
+    SysFreeString(bstr_a);
+    SysFreeString(bstr_b);
+    SysFreeString(bstr_ab);
+
+    hr = IVBSAXContentHandler_endDocument(vb_content);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    IVBSAXContentHandler_Release(vb_content);
+    IMXWriter_Release(writer);
+
+    hr = CoCreateInstance(&CLSID_MXXMLWriter, NULL, CLSCTX_INPROC_SERVER,
+            &IID_IMXWriter, (void**)&writer);
+    ok(hr == S_OK, "Expected S_OK, got %08x\n", hr);
+
     hr = IMXWriter_put_omitXMLDeclaration(writer, VARIANT_TRUE);
+    ok(hr == S_OK, "got %08x\n", hr);
+
+    hr = IMXWriter_QueryInterface(writer, &IID_ISAXContentHandler, (void**)&content);
     ok(hr == S_OK, "got %08x\n", hr);
 
     hr = ISAXContentHandler_startDocument(content);
@@ -4781,6 +4891,11 @@ static void test_saxreader_dispex(void)
     hr = CoCreateInstance(&CLSID_SAXXMLReader, NULL, CLSCTX_INPROC_SERVER,
                 &IID_ISAXXMLReader, (void**)&reader);
     EXPECT_HR(hr, S_OK);
+
+    check_interface(reader, &IID_ISAXXMLReader, TRUE);
+    check_interface(reader, &IID_IVBSAXXMLReader, TRUE);
+    check_interface(reader, &IID_IDispatch, TRUE);
+    check_interface(reader, &IID_IDispatchEx, TRUE);
 
     hr = ISAXXMLReader_QueryInterface(reader, &IID_IUnknown, (void**)&unk);
     EXPECT_HR(hr, S_OK);
@@ -5732,40 +5847,20 @@ static void test_mxattr_dispex(void)
 
 static void test_mxattr_qi(void)
 {
-    IVBSAXAttributes *vbsaxattr, *vbsaxattr2;
-    ISAXAttributes *saxattr;
     IMXAttributes *mxattr;
     HRESULT hr;
 
     hr = CoCreateInstance(&CLSID_SAXAttributes, NULL, CLSCTX_INPROC_SERVER,
-            &IID_IMXAttributes, (void**)&mxattr);
+            &IID_IMXAttributes, (void **)&mxattr);
     EXPECT_HR(hr, S_OK);
 
-    EXPECT_REF(mxattr, 1);
-    hr = IMXAttributes_QueryInterface(mxattr, &IID_ISAXAttributes, (void**)&saxattr);
-    EXPECT_HR(hr, S_OK);
-
-    EXPECT_REF(mxattr, 2);
-    EXPECT_REF(saxattr, 2);
-
-    hr = IMXAttributes_QueryInterface(mxattr, &IID_IVBSAXAttributes, (void**)&vbsaxattr);
-    EXPECT_HR(hr, S_OK);
-
-    EXPECT_REF(vbsaxattr, 3);
-    EXPECT_REF(mxattr, 3);
-    EXPECT_REF(saxattr, 3);
-
-    hr = ISAXAttributes_QueryInterface(saxattr, &IID_IVBSAXAttributes, (void**)&vbsaxattr2);
-    EXPECT_HR(hr, S_OK);
-
-    EXPECT_REF(vbsaxattr, 4);
-    EXPECT_REF(mxattr, 4);
-    EXPECT_REF(saxattr, 4);
+    check_interface(mxattr, &IID_IMXAttributes, TRUE);
+    check_interface(mxattr, &IID_ISAXAttributes, TRUE);
+    check_interface(mxattr, &IID_IVBSAXAttributes, TRUE);
+    check_interface(mxattr, &IID_IDispatch, TRUE);
+    check_interface(mxattr, &IID_IDispatchEx, TRUE);
 
     IMXAttributes_Release(mxattr);
-    ISAXAttributes_Release(saxattr);
-    IVBSAXAttributes_Release(vbsaxattr);
-    IVBSAXAttributes_Release(vbsaxattr2);
 }
 
 static struct msxmlsupported_data_t saxattr_support_data[] =

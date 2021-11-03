@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 
 #define COBJMACROS
 
@@ -731,6 +730,7 @@ static const tid_t HTMLImgElement_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLImgElement_dispex = {
+    L"HTMLImageElement",
     NULL,
     DispHTMLImg_tid,
     HTMLImgElement_iface_tids,
@@ -975,6 +975,7 @@ static const dispex_static_data_vtbl_t HTMLImageElementFactory_dispex_vtbl = {
 };
 
 static dispex_static_data_t HTMLImageElementFactory_dispex = {
+    L"Function",
     &HTMLImageElementFactory_dispex_vtbl,
     IHTMLImageElementFactory_tid,
     HTMLImageElementFactory_iface_tids

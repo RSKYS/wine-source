@@ -48,6 +48,11 @@ extern LONG call_vectored_handlers( EXCEPTION_RECORD *rec, CONTEXT *context ) DE
 extern void DECLSPEC_NORETURN raise_status( NTSTATUS status, EXCEPTION_RECORD *rec ) DECLSPEC_HIDDEN;
 extern LONG WINAPI call_unhandled_exception_filter( PEXCEPTION_POINTERS eptr ) DECLSPEC_HIDDEN;
 
+extern void WINAPI LdrInitializeThunk(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR) DECLSPEC_HIDDEN;
+extern NTSTATUS WINAPI KiUserExceptionDispatcher(EXCEPTION_RECORD*,CONTEXT*) DECLSPEC_HIDDEN;
+extern void WINAPI KiUserApcDispatcher(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PNTAPCFUNC) DECLSPEC_HIDDEN;
+extern void WINAPI KiUserCallbackDispatcher(ULONG,void*,ULONG) DECLSPEC_HIDDEN;
+
 #if defined(__x86_64__) || defined(__arm__) || defined(__aarch64__)
 extern RUNTIME_FUNCTION *lookup_function_info( ULONG_PTR pc, ULONG_PTR *base, LDR_DATA_TABLE_ENTRY **module ) DECLSPEC_HIDDEN;
 #endif
@@ -60,7 +65,6 @@ extern const char *debugstr_exception_code( DWORD code ) DECLSPEC_HIDDEN;
 extern void version_init(void) DECLSPEC_HIDDEN;
 extern void debug_init(void) DECLSPEC_HIDDEN;
 extern void actctx_init(void) DECLSPEC_HIDDEN;
-extern void heap_set_debug_flags( HANDLE handle ) DECLSPEC_HIDDEN;
 extern void init_user_process_params(void) DECLSPEC_HIDDEN;
 extern void CDECL DECLSPEC_NORETURN signal_start_thread( CONTEXT *ctx ) DECLSPEC_HIDDEN;
 
@@ -74,7 +78,6 @@ extern void RELAY_SetupDLL( HMODULE hmod ) DECLSPEC_HIDDEN;
 extern void SNOOP_SetupDLL( HMODULE hmod ) DECLSPEC_HIDDEN;
 extern const WCHAR windows_dir[] DECLSPEC_HIDDEN;
 extern const WCHAR system_dir[] DECLSPEC_HIDDEN;
-extern const WCHAR syswow64_dir[] DECLSPEC_HIDDEN;
 extern HMODULE kernel32_handle DECLSPEC_HIDDEN;
 
 extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) DECLSPEC_HIDDEN;
@@ -82,8 +85,8 @@ extern const struct unix_funcs *unix_funcs DECLSPEC_HIDDEN;
 
 extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
 
-extern int CDECL NTDLL__vsnprintf( char *str, SIZE_T len, const char *format, __ms_va_list args ) DECLSPEC_HIDDEN;
-extern int CDECL NTDLL__vsnwprintf( WCHAR *str, SIZE_T len, const WCHAR *format, __ms_va_list args ) DECLSPEC_HIDDEN;
+extern int CDECL NTDLL__vsnprintf( char *str, SIZE_T len, const char *format, va_list args ) DECLSPEC_HIDDEN;
+extern int CDECL NTDLL__vsnwprintf( WCHAR *str, SIZE_T len, const WCHAR *format, va_list args ) DECLSPEC_HIDDEN;
 
 struct dllredirect_data
 {

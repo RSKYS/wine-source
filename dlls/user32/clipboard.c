@@ -81,8 +81,11 @@ struct metafile_pict
 static const char *debugstr_format( UINT id )
 {
     WCHAR buffer[256];
+    DWORD le = GetLastError();
+    BOOL r = GetClipboardFormatNameW( id, buffer, 256 );
+    SetLastError(le);
 
-    if (GetClipboardFormatNameW( id, buffer, 256 ))
+    if (r)
         return wine_dbg_sprintf( "%04x %s", id, debugstr_w(buffer) );
 
     switch (id)
@@ -1067,6 +1070,7 @@ HANDLE WINAPI GetClipboardData( UINT format )
         GlobalFree( data );
 
         if (status == STATUS_BUFFER_OVERFLOW) continue;  /* retry with the new size */
+        if (status == STATUS_OBJECT_NAME_NOT_FOUND) return 0; /* no such format */
         if (status)
         {
             SetLastError( RtlNtStatusToDosError( status ));

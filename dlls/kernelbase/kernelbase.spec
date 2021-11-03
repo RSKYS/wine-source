@@ -463,7 +463,7 @@
 @ stdcall GetCurrentPackageFullName(ptr ptr)
 @ stdcall GetCurrentPackageId(ptr ptr)
 # @ stub GetCurrentPackageInfo
-# @ stub GetCurrentPackagePath
+@ stdcall GetCurrentPackagePath(ptr ptr)
 # @ stub GetCurrentPackageResourcesContext
 # @ stub GetCurrentPackageSecurityContext
 @ stdcall -norelay GetCurrentProcess() kernelbase_GetCurrentProcess
@@ -623,7 +623,7 @@
 @ stdcall GetProcAddress(long str)
 # @ stub GetProcAddressForCaller
 # @ stub GetProcessDefaultCpuSets
-# @ stub GetProcessGroupAffinity
+@ stdcall GetProcessGroupAffinity(long ptr ptr)
 @ stdcall GetProcessHandleCount(long ptr)
 @ stdcall -norelay GetProcessHeap() kernelbase_GetProcessHeap
 @ stdcall -import GetProcessHeaps(long ptr) RtlGetProcessHeaps
@@ -1460,7 +1460,7 @@
 @ stdcall SetPrivateObjectSecurityEx(long ptr ptr long ptr long)
 @ stdcall SetProcessAffinityUpdateMode(long long)
 # @ stub SetProcessDefaultCpuSets
-# @ stub SetProcessGroupAffinity
+@ stdcall SetProcessGroupAffinity(long ptr ptr)
 # @ stub SetProcessInformation
 @ stdcall SetProcessMitigationPolicy(long ptr long)
 @ stdcall SetProcessPreferredUILanguages(long ptr ptr)

@@ -20,7 +20,7 @@
 #include "vfw.h"
 #include "aviriff.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(qcap);
+WINE_DEFAULT_DEBUG_CHANNEL(quartz);
 
 #define MAX_PIN_NO 128
 #define AVISUPERINDEX_ENTRIES 2000
@@ -131,7 +131,6 @@ static void avi_mux_destroy(struct strmbase_filter *iface)
     free(filter->idx1);
     strmbase_filter_cleanup(&filter->filter);
     free(filter);
-    ObjectRefCount(FALSE);
 }
 
 static HRESULT avi_mux_query_interface(struct strmbase_filter *iface, REFIID iid, void **out)
@@ -1851,7 +1850,6 @@ HRESULT avi_mux_create(IUnknown *outer, IUnknown **out)
     avimux->interleave = 10000000;
 
     TRACE("Created AVI mux %p.\n", avimux);
-    ObjectRefCount(TRUE);
     *out = &avimux->filter.IUnknown_inner;
     return S_OK;
 }

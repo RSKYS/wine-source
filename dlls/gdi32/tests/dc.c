@@ -40,7 +40,7 @@ static void test_dc_values(void)
 {
     HDC hdc = CreateDCA("DISPLAY", NULL, NULL, NULL);
     COLORREF color;
-    int extra;
+    int extra, attr;
 
     ok( hdc != NULL, "CreateDC failed\n" );
     color = SetBkColor( hdc, 0x12345678 );
@@ -80,6 +80,19 @@ static void test_dc_values(void)
     SetMapMode( hdc, MM_TEXT );
     extra = GetTextCharacterExtra( hdc );
     ok( extra == 123, "initial extra %d\n", extra );
+
+    SetLastError(0xdeadbeef);
+    attr = SetBkMode(ULongToHandle(0xdeadbeef), OPAQUE);
+    ok(!attr, "attr = %x\n", attr);
+    ok(GetLastError() == ERROR_INVALID_HANDLE, "GetLastError() = %u\n", GetLastError());
+
+    attr = GetBkColor(ULongToHandle(0xdeadbeef));
+    ok(attr == CLR_INVALID, "attr = %x\n", attr);
+
+    SetLastError(0xdeadbeef);
+    attr = GetDeviceCaps(ULongToHandle(0xdeadbeef), TECHNOLOGY);
+    ok(!attr, "GetDeviceCaps rets %d\n", attr);
+    ok(GetLastError() == ERROR_INVALID_HANDLE, "GetLastError() = %u\n", GetLastError());
 
     DeleteDC( hdc );
 }
@@ -226,6 +239,11 @@ static void test_savedc(void)
        "ret = %d\n", ret);
 
     DeleteDC(hdc);
+
+    SetLastError(0xdeadbeef);
+    ret = SaveDC(ULongToHandle(0xdeadbeef));
+    ok(!ret, "SaveDC returned %u\n", ret);
+    ok(GetLastError() == ERROR_INVALID_HANDLE, "GetLastError() = %u\n", GetLastError());
 }
 
 static void test_GdiConvertToDevmodeW(void)
@@ -1672,6 +1690,15 @@ static void test_clip_box(void)
     DeleteObject(bitmap);
 }
 
+static void test_SetPixel(void)
+{
+    COLORREF c;
+
+    c = SetPixel((HDC)0xdeadbeef, 0, 0, 0);
+    ok(c == ~0, "SetPixel returned: %x\n", c);
+}
+
+
 START_TEST(dc)
 {
     test_dc_values();
@@ -1688,4 +1715,5 @@ START_TEST(dc)
     test_printer_dc();
     test_pscript_printer_dc();
     test_clip_box();
+    test_SetPixel();
 }

@@ -1,4 +1,6 @@
 MODULE    = ctapi32.dll
 IMPORTS   = advapi32
 
-C_SRCS = ctapi32.c
+C_SRCS = \
+	ctapi32.c \
+	unixlib.c

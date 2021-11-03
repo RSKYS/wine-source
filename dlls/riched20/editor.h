@@ -23,7 +23,6 @@
 struct _RTF_Info;
 
 extern HINSTANCE dll_instance DECLSPEC_HIDDEN;
-extern HANDLE me_heap DECLSPEC_HIDDEN;
 
 #define RUN_IS_HIDDEN(run) ((run)->style->fmt.dwMask & CFM_HIDDEN \
                              && (run)->style->fmt.dwEffects & CFE_HIDDEN)
@@ -188,7 +187,7 @@ int ME_GetSelection(ME_TextEditor *editor, ME_Cursor **from, ME_Cursor **to) DEC
 BOOL ME_IsSelection(ME_TextEditor *editor) DECLSPEC_HIDDEN;
 void ME_DeleteSelection(ME_TextEditor *editor) DECLSPEC_HIDDEN;
 void ME_SendSelChange(ME_TextEditor *editor) DECLSPEC_HIDDEN;
-void ME_InsertOLEFromCursor(ME_TextEditor *editor, const REOBJECT* reo, int nCursor) DECLSPEC_HIDDEN;
+void editor_insert_oleobj( ME_TextEditor *editor, const REOBJECT *reo ) DECLSPEC_HIDDEN;
 BOOL ME_InternalDeleteText(ME_TextEditor *editor, ME_Cursor *start, int nChars, BOOL bForce) DECLSPEC_HIDDEN;
 int ME_GetTextLength(ME_TextEditor *editor) DECLSPEC_HIDDEN;
 int ME_GetTextLengthEx(ME_TextEditor *editor, const GETTEXTLENGTHEX *how) DECLSPEC_HIDDEN;

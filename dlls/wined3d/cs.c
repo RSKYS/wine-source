@@ -26,6 +26,103 @@ WINE_DECLARE_DEBUG_CHANNEL(fps);
 
 #define WINED3D_INITIAL_CS_SIZE 4096
 
+struct wined3d_deferred_upload
+{
+    struct wined3d_resource *resource;
+    unsigned int sub_resource_idx;
+    uint8_t *sysmem;
+    struct wined3d_box box;
+    uint32_t upload_flags;
+};
+
+struct wined3d_deferred_query_issue
+{
+    struct wined3d_query *query;
+    unsigned int flags;
+};
+
+struct wined3d_command_list
+{
+    LONG refcount;
+
+    struct wined3d_device *device;
+
+    SIZE_T data_size;
+    void *data;
+
+    SIZE_T resource_count;
+    struct wined3d_resource **resources;
+
+    SIZE_T upload_count;
+    struct wined3d_deferred_upload *uploads;
+
+    /* List of command lists queued for execution on this command list. We might
+     * be the only thing holding a pointer to another command list, so we need
+     * to hold a reference here (and in wined3d_deferred_context) as well. */
+    SIZE_T command_list_count;
+    struct wined3d_command_list **command_lists;
+
+    SIZE_T query_count;
+    struct wined3d_deferred_query_issue *queries;
+};
+
+static void wined3d_command_list_destroy_object(void *object)
+{
+    struct wined3d_command_list *list = object;
+    SIZE_T i;
+
+    TRACE("list %p.\n", list);
+
+    for (i = 0; i < list->upload_count; ++i)
+        heap_free(list->uploads[i].sysmem);
+
+    heap_free(list);
+}
+
+ULONG CDECL wined3d_command_list_incref(struct wined3d_command_list *list)
+{
+    ULONG refcount = InterlockedIncrement(&list->refcount);
+
+    TRACE("%p increasing refcount to %u.\n", list, refcount);
+
+    return refcount;
+}
+
+ULONG CDECL wined3d_command_list_decref(struct wined3d_command_list *list)
+{
+    ULONG refcount = InterlockedDecrement(&list->refcount);
+    struct wined3d_device *device = list->device;
+
+    TRACE("%p decreasing refcount to %u.\n", list, refcount);
+
+    if (!refcount)
+    {
+        SIZE_T i;
+
+        for (i = 0; i < list->command_list_count; ++i)
+            wined3d_command_list_decref(list->command_lists[i]);
+        for (i = 0; i < list->resource_count; ++i)
+            wined3d_resource_decref(list->resources[i]);
+        for (i = 0; i < list->upload_count; ++i)
+            wined3d_resource_decref(list->uploads[i].resource);
+        for (i = 0; i < list->query_count; ++i)
+            wined3d_query_decref(list->queries[i].query);
+
+        wined3d_mutex_lock();
+        wined3d_cs_destroy_object(device->cs, wined3d_command_list_destroy_object, list);
+        wined3d_mutex_unlock();
+    }
+
+    return refcount;
+}
+
+static void invalidate_client_address(struct wined3d_resource *resource)
+{
+    struct wined3d_client_resource *client = &resource->client;
+
+    memset(&client->addr, 0, sizeof(client->addr));
+}
+
 enum wined3d_cs_op
 {
     WINED3D_CS_OP_NOP,
@@ -37,18 +134,17 @@ enum wined3d_cs_op
     WINED3D_CS_OP_SET_PREDICATION,
     WINED3D_CS_OP_SET_VIEWPORTS,
     WINED3D_CS_OP_SET_SCISSOR_RECTS,
-    WINED3D_CS_OP_SET_RENDERTARGET_VIEW,
+    WINED3D_CS_OP_SET_RENDERTARGET_VIEWS,
     WINED3D_CS_OP_SET_DEPTH_STENCIL_VIEW,
     WINED3D_CS_OP_SET_VERTEX_DECLARATION,
-    WINED3D_CS_OP_SET_STREAM_SOURCE,
-    WINED3D_CS_OP_SET_STREAM_SOURCE_FREQ,
-    WINED3D_CS_OP_SET_STREAM_OUTPUT,
+    WINED3D_CS_OP_SET_STREAM_SOURCES,
+    WINED3D_CS_OP_SET_STREAM_OUTPUTS,
     WINED3D_CS_OP_SET_INDEX_BUFFER,
-    WINED3D_CS_OP_SET_CONSTANT_BUFFER,
+    WINED3D_CS_OP_SET_CONSTANT_BUFFERS,
     WINED3D_CS_OP_SET_TEXTURE,
-    WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEW,
-    WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEW,
-    WINED3D_CS_OP_SET_SAMPLER,
+    WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEWS,
+    WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEWS,
+    WINED3D_CS_OP_SET_SAMPLERS,
     WINED3D_CS_OP_SET_SHADER,
     WINED3D_CS_OP_SET_BLEND_STATE,
     WINED3D_CS_OP_SET_DEPTH_STENCIL_STATE,
@@ -77,6 +173,7 @@ enum wined3d_cs_op
     WINED3D_CS_OP_CLEAR_UNORDERED_ACCESS_VIEW,
     WINED3D_CS_OP_COPY_UAV_COUNTER,
     WINED3D_CS_OP_GENERATE_MIPMAPS,
+    WINED3D_CS_OP_EXECUTE_COMMAND_LIST,
     WINED3D_CS_OP_STOP,
 };
 
@@ -107,7 +204,7 @@ struct wined3d_cs_clear
     enum wined3d_cs_op opcode;
     DWORD flags;
     unsigned int rt_count;
-    struct wined3d_fb_state *fb;
+    struct wined3d_fb_state fb;
     RECT draw_rect;
     struct wined3d_color color;
     float depth;
@@ -156,11 +253,12 @@ struct wined3d_cs_set_scissor_rects
     RECT rects[1];
 };
 
-struct wined3d_cs_set_rendertarget_view
+struct wined3d_cs_set_rendertarget_views
 {
     enum wined3d_cs_op opcode;
-    unsigned int view_idx;
-    struct wined3d_rendertarget_view *view;
+    unsigned int start_idx;
+    unsigned int count;
+    struct wined3d_rendertarget_view *views[1];
 };
 
 struct wined3d_cs_set_depth_stencil_view
@@ -175,29 +273,18 @@ struct wined3d_cs_set_vertex_declaration
     struct wined3d_vertex_declaration *declaration;
 };
 
-struct wined3d_cs_set_stream_source
+struct wined3d_cs_set_stream_sources
 {
     enum wined3d_cs_op opcode;
-    UINT stream_idx;
-    struct wined3d_buffer *buffer;
-    UINT offset;
-    UINT stride;
+    unsigned int start_idx;
+    unsigned int count;
+    struct wined3d_stream_state streams[1];
 };
 
-struct wined3d_cs_set_stream_source_freq
+struct wined3d_cs_set_stream_outputs
 {
     enum wined3d_cs_op opcode;
-    UINT stream_idx;
-    UINT frequency;
-    UINT flags;
-};
-
-struct wined3d_cs_set_stream_output
-{
-    enum wined3d_cs_op opcode;
-    UINT stream_idx;
-    struct wined3d_buffer *buffer;
-    UINT offset;
+    struct wined3d_stream_output outputs[WINED3D_MAX_STREAM_OUTPUT_BUFFERS];
 };
 
 struct wined3d_cs_set_index_buffer
@@ -208,12 +295,13 @@ struct wined3d_cs_set_index_buffer
     unsigned int offset;
 };
 
-struct wined3d_cs_set_constant_buffer
+struct wined3d_cs_set_constant_buffers
 {
     enum wined3d_cs_op opcode;
     enum wined3d_shader_type type;
-    UINT cb_idx;
-    struct wined3d_buffer *buffer;
+    unsigned int start_idx;
+    unsigned int count;
+    struct wined3d_constant_buffer_state buffers[1];
 };
 
 struct wined3d_cs_set_texture
@@ -232,29 +320,35 @@ struct wined3d_cs_set_color_key
     struct wined3d_color_key color_key;
 };
 
-struct wined3d_cs_set_shader_resource_view
+struct wined3d_cs_set_shader_resource_views
 {
     enum wined3d_cs_op opcode;
     enum wined3d_shader_type type;
-    UINT view_idx;
-    struct wined3d_shader_resource_view *view;
+    unsigned int start_idx;
+    unsigned int count;
+    struct wined3d_shader_resource_view *views[1];
 };
 
-struct wined3d_cs_set_unordered_access_view
+struct wined3d_cs_set_unordered_access_views
 {
     enum wined3d_cs_op opcode;
     enum wined3d_pipeline pipeline;
-    unsigned int view_idx;
-    struct wined3d_unordered_access_view *view;
-    unsigned int initial_count;
+    unsigned int start_idx;
+    unsigned int count;
+    struct
+    {
+        struct wined3d_unordered_access_view *view;
+        unsigned int initial_count;
+    } uavs[1];
 };
 
-struct wined3d_cs_set_sampler
+struct wined3d_cs_set_samplers
 {
     enum wined3d_cs_op opcode;
     enum wined3d_shader_type type;
-    UINT sampler_idx;
-    struct wined3d_sampler *sampler;
+    unsigned int start_idx;
+    unsigned int count;
+    struct wined3d_sampler *samplers[1];
 };
 
 struct wined3d_cs_set_shader
@@ -359,6 +453,7 @@ struct wined3d_cs_push_constants
 struct wined3d_cs_reset_state
 {
     enum wined3d_cs_op opcode;
+    bool invalidate;
 };
 
 struct wined3d_cs_callback
@@ -392,7 +487,7 @@ struct wined3d_cs_map
     enum wined3d_cs_op opcode;
     struct wined3d_resource *resource;
     unsigned int sub_resource_idx;
-    struct wined3d_map_desc *map_desc;
+    void **map_ptr;
     const struct wined3d_box *box;
     DWORD flags;
     HRESULT *hr;
@@ -426,7 +521,8 @@ struct wined3d_cs_update_sub_resource
     struct wined3d_resource *resource;
     unsigned int sub_resource_idx;
     struct wined3d_box box;
-    struct wined3d_sub_resource_data data;
+    struct upload_bo bo;
+    unsigned int row_pitch, slice_pitch;
 };
 
 struct wined3d_cs_add_dirty_texture_region
@@ -441,6 +537,7 @@ struct wined3d_cs_clear_unordered_access_view
     enum wined3d_cs_op opcode;
     struct wined3d_unordered_access_view *view;
     struct wined3d_uvec4 clear_value;
+    bool fp;
 };
 
 struct wined3d_cs_copy_uav_counter
@@ -455,6 +552,12 @@ struct wined3d_cs_generate_mipmaps
 {
     enum wined3d_cs_op opcode;
     struct wined3d_shader_resource_view *view;
+};
+
+struct wined3d_cs_execute_command_list
+{
+    enum wined3d_cs_op opcode;
+    struct wined3d_command_list *list;
 };
 
 struct wined3d_cs_stop
@@ -505,18 +608,17 @@ static const char *debug_cs_op(enum wined3d_cs_op op)
         WINED3D_TO_STR(WINED3D_CS_OP_SET_PREDICATION);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_VIEWPORTS);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_SCISSOR_RECTS);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_RENDERTARGET_VIEW);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_RENDERTARGET_VIEWS);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_DEPTH_STENCIL_VIEW);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_VERTEX_DECLARATION);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_STREAM_SOURCE);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_STREAM_SOURCE_FREQ);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_STREAM_OUTPUT);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_STREAM_SOURCES);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_STREAM_OUTPUTS);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_INDEX_BUFFER);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_CONSTANT_BUFFER);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_CONSTANT_BUFFERS);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_TEXTURE);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEW);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEW);
-        WINED3D_TO_STR(WINED3D_CS_OP_SET_SAMPLER);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEWS);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEWS);
+        WINED3D_TO_STR(WINED3D_CS_OP_SET_SAMPLERS);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_SHADER);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_BLEND_STATE);
         WINED3D_TO_STR(WINED3D_CS_OP_SET_DEPTH_STENCIL_STATE);
@@ -545,6 +647,7 @@ static const char *debug_cs_op(enum wined3d_cs_op op)
         WINED3D_TO_STR(WINED3D_CS_OP_CLEAR_UNORDERED_ACCESS_VIEW);
         WINED3D_TO_STR(WINED3D_CS_OP_COPY_UAV_COUNTER);
         WINED3D_TO_STR(WINED3D_CS_OP_GENERATE_MIPMAPS);
+        WINED3D_TO_STR(WINED3D_CS_OP_EXECUTE_COMMAND_LIST);
         WINED3D_TO_STR(WINED3D_CS_OP_STOP);
 #undef WINED3D_TO_STR
     }
@@ -684,19 +787,19 @@ static void wined3d_cs_exec_clear(struct wined3d_cs *cs, const void *data)
     const struct wined3d_cs_clear *op = data;
     unsigned int i;
 
-    device->blitter->ops->blitter_clear(device->blitter, device, op->rt_count, op->fb,
+    device->blitter->ops->blitter_clear(device->blitter, device, op->rt_count, &op->fb,
             op->rect_count, op->rects, &op->draw_rect, op->flags, &op->color, op->depth, op->stencil);
 
     if (op->flags & WINED3DCLEAR_TARGET)
     {
         for (i = 0; i < op->rt_count; ++i)
         {
-            if (op->fb->render_targets[i])
-                wined3d_resource_release(op->fb->render_targets[i]->resource);
+            if (op->fb.render_targets[i])
+                wined3d_resource_release(op->fb.render_targets[i]->resource);
         }
     }
     if (op->flags & (WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL))
-        wined3d_resource_release(op->fb->depth_stencil->resource);
+        wined3d_resource_release(op->fb.depth_stencil->resource);
 }
 
 void wined3d_cs_emit_clear(struct wined3d_cs *cs, DWORD rect_count, const RECT *rects,
@@ -715,7 +818,7 @@ void wined3d_cs_emit_clear(struct wined3d_cs *cs, DWORD rect_count, const RECT *
     op->opcode = WINED3D_CS_OP_CLEAR;
     op->flags = flags & (WINED3DCLEAR_TARGET | WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL);
     op->rt_count = rt_count;
-    op->fb = &cs->state.fb;
+    op->fb = state->fb;
     SetRect(&op->draw_rect, vp->x, vp->y, vp->x + vp->width, vp->y + vp->height);
     if (state->rasterizer_state && state->rasterizer_state->desc.scissor)
         IntersectRect(&op->draw_rect, &op->draw_rect, &state->scissor_rects[0]);
@@ -746,24 +849,23 @@ void wined3d_device_context_emit_clear_rendertarget_view(struct wined3d_device_c
     struct wined3d_cs_clear *op;
     size_t size;
 
-    size = FIELD_OFFSET(struct wined3d_cs_clear, rects[1]) + sizeof(struct wined3d_fb_state);
+    size = FIELD_OFFSET(struct wined3d_cs_clear, rects[1]);
     op = wined3d_device_context_require_space(context, size, WINED3D_CS_QUEUE_DEFAULT);
-    op->fb = (void *)&op->rects[1];
 
     op->opcode = WINED3D_CS_OP_CLEAR;
     op->flags = flags & (WINED3DCLEAR_TARGET | WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL);
     if (flags & WINED3DCLEAR_TARGET)
     {
         op->rt_count = 1;
-        op->fb->render_targets[0] = view;
-        op->fb->depth_stencil = NULL;
+        op->fb.render_targets[0] = view;
+        op->fb.depth_stencil = NULL;
         op->color = *color;
     }
     else
     {
         op->rt_count = 0;
-        op->fb->render_targets[0] = NULL;
-        op->fb->depth_stencil = view;
+        op->fb.render_targets[0] = NULL;
+        op->fb.depth_stencil = view;
         op->depth = depth;
         op->stencil = stencil;
     }
@@ -796,8 +898,8 @@ static void acquire_shader_resources(struct wined3d_device_context *context, uns
 
         for (j = 0; j < WINED3D_MAX_CBS; ++j)
         {
-            if (state->cb[i][j])
-                wined3d_device_context_acquire_resource(context, &state->cb[i][j]->resource);
+            if (state->cb[i][j].buffer)
+                wined3d_device_context_acquire_resource(context, &state->cb[i][j].buffer->resource);
         }
 
         for (j = 0; j < shader->reg_maps.sampler_map.count; ++j)
@@ -829,8 +931,8 @@ static void release_shader_resources(const struct wined3d_state *state, unsigned
 
         for (j = 0; j < WINED3D_MAX_CBS; ++j)
         {
-            if (state->cb[i][j])
-                wined3d_resource_release(&state->cb[i][j]->resource);
+            if (state->cb[i][j].buffer)
+                wined3d_resource_release(&state->cb[i][j].buffer->resource);
         }
 
         for (j = 0; j < shader->reg_maps.sampler_map.count; ++j)
@@ -917,6 +1019,7 @@ void CDECL wined3d_device_context_dispatch(struct wined3d_device_context *contex
 {
     struct wined3d_cs_dispatch *op;
 
+    wined3d_device_context_lock(context);
     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_DISPATCH;
     op->parameters.indirect = FALSE;
@@ -927,6 +1030,7 @@ void CDECL wined3d_device_context_dispatch(struct wined3d_device_context *contex
     acquire_compute_pipeline_resources(context);
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+    wined3d_device_context_unlock(context);
 }
 
 void CDECL wined3d_device_context_dispatch_indirect(struct wined3d_device_context *context,
@@ -934,6 +1038,7 @@ void CDECL wined3d_device_context_dispatch_indirect(struct wined3d_device_contex
 {
     struct wined3d_cs_dispatch *op;
 
+    wined3d_device_context_lock(context);
     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_DISPATCH;
     op->parameters.indirect = TRUE;
@@ -944,6 +1049,7 @@ void CDECL wined3d_device_context_dispatch_indirect(struct wined3d_device_contex
     wined3d_device_context_acquire_resource(context, &buffer->resource);
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+    wined3d_device_context_unlock(context);
 }
 
 static void wined3d_cs_exec_draw(struct wined3d_cs *cs, const void *data)
@@ -1100,6 +1206,7 @@ void CDECL wined3d_device_context_draw_indirect(struct wined3d_device_context *c
     const struct wined3d_state *state = context->state;
     struct wined3d_cs_draw *op;
 
+    wined3d_device_context_lock(context);
     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_DRAW;
     op->primitive_type = state->primitive_type;
@@ -1113,6 +1220,7 @@ void CDECL wined3d_device_context_draw_indirect(struct wined3d_device_context *c
     wined3d_device_context_acquire_resource(context, &buffer->resource);
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+    wined3d_device_context_unlock(context);
 }
 
 static void wined3d_cs_exec_flush(struct wined3d_cs *cs, const void *data)
@@ -1209,43 +1317,50 @@ void wined3d_device_context_emit_set_scissor_rects(struct wined3d_device_context
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_rendertarget_view(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_rendertarget_views(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_rendertarget_view *op = data;
-    bool prev_alpha_swizzle, curr_alpha_swizzle;
-    struct wined3d_rendertarget_view *prev;
-    bool prev_srgb_write, curr_srgb_write;
-    struct wined3d_device *device;
+    const struct wined3d_cs_set_rendertarget_views *op = data;
+    struct wined3d_device *device = cs->c.device;
+    unsigned int i;
 
-    device = cs->c.device;
-    prev = cs->state.fb.render_targets[op->view_idx];
-    cs->state.fb.render_targets[op->view_idx] = op->view;
-    device_invalidate_state(device, STATE_FRAMEBUFFER);
-
-    prev_alpha_swizzle = prev && prev->format->id == WINED3DFMT_A8_UNORM;
-    curr_alpha_swizzle = op->view && op->view->format->id == WINED3DFMT_A8_UNORM;
-    if (prev_alpha_swizzle != curr_alpha_swizzle)
-        device_invalidate_state(device, STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL));
-
-    if (!(device->adapter->d3d_info.wined3d_creation_flags & WINED3D_SRGB_READ_WRITE_CONTROL)
-            || cs->state.render_states[WINED3D_RS_SRGBWRITEENABLE])
+    for (i = 0; i < op->count; ++i)
     {
-        prev_srgb_write = prev && prev->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
-        curr_srgb_write = op->view && op->view->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
-        if (prev_srgb_write != curr_srgb_write)
-            device_invalidate_state(device, STATE_RENDER(WINED3D_RS_SRGBWRITEENABLE));
+        struct wined3d_rendertarget_view *prev = cs->state.fb.render_targets[op->start_idx + i];
+        struct wined3d_rendertarget_view *view = op->views[i];
+        bool prev_alpha_swizzle, curr_alpha_swizzle;
+        bool prev_srgb_write, curr_srgb_write;
+
+        cs->state.fb.render_targets[op->start_idx + i] = view;
+
+        prev_alpha_swizzle = prev && prev->format->id == WINED3DFMT_A8_UNORM;
+        curr_alpha_swizzle = view && view->format->id == WINED3DFMT_A8_UNORM;
+        if (prev_alpha_swizzle != curr_alpha_swizzle)
+            device_invalidate_state(device, STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL));
+
+        if (!(device->adapter->d3d_info.wined3d_creation_flags & WINED3D_SRGB_READ_WRITE_CONTROL)
+                || cs->state.render_states[WINED3D_RS_SRGBWRITEENABLE])
+        {
+            prev_srgb_write = prev && prev->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
+            curr_srgb_write = view && view->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
+            if (prev_srgb_write != curr_srgb_write)
+                device_invalidate_state(device, STATE_RENDER(WINED3D_RS_SRGBWRITEENABLE));
+        }
     }
+
+    device_invalidate_state(device, STATE_FRAMEBUFFER);
 }
 
-void wined3d_device_context_emit_set_rendertarget_view(struct wined3d_device_context *context, unsigned int view_idx,
-        struct wined3d_rendertarget_view *view)
+void wined3d_device_context_emit_set_rendertarget_views(struct wined3d_device_context *context,
+        unsigned int start_idx, unsigned int count, struct wined3d_rendertarget_view *const *views)
 {
-    struct wined3d_cs_set_rendertarget_view *op;
+    struct wined3d_cs_set_rendertarget_views *op;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_RENDERTARGET_VIEW;
-    op->view_idx = view_idx;
-    op->view = view;
+    op = wined3d_device_context_require_space(context,
+            offsetof(struct wined3d_cs_set_rendertarget_views, views[count]), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_RENDERTARGET_VIEWS;
+    op->start_idx = start_idx;
+    op->count = count;
+    memcpy(op->views, views, count * sizeof(*views));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -1318,95 +1433,69 @@ void wined3d_device_context_emit_set_vertex_declaration(struct wined3d_device_co
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_stream_source(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_stream_sources(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_stream_source *op = data;
-    struct wined3d_stream_state *stream;
-    struct wined3d_buffer *prev;
+    const struct wined3d_cs_set_stream_sources *op = data;
+    unsigned int i;
 
-    stream = &cs->state.streams[op->stream_idx];
-    prev = stream->buffer;
-    stream->buffer = op->buffer;
-    stream->offset = op->offset;
-    stream->stride = op->stride;
+    for (i = 0; i < op->count; ++i)
+    {
+        struct wined3d_buffer *prev = cs->state.streams[op->start_idx + i].buffer;
+        struct wined3d_buffer *buffer = op->streams[i].buffer;
 
-    if (op->buffer)
-        InterlockedIncrement(&op->buffer->resource.bind_count);
-    if (prev)
-        InterlockedDecrement(&prev->resource.bind_count);
+        if (buffer)
+            InterlockedIncrement(&buffer->resource.bind_count);
+        if (prev)
+            InterlockedDecrement(&prev->resource.bind_count);
+    }
 
+    memcpy(&cs->state.streams[op->start_idx], op->streams, op->count * sizeof(*op->streams));
     device_invalidate_state(cs->c.device, STATE_STREAMSRC);
 }
 
-void wined3d_device_context_emit_set_stream_source(struct wined3d_device_context *context, unsigned int stream_idx,
-        struct wined3d_buffer *buffer, unsigned int offset, unsigned int stride)
+void wined3d_device_context_emit_set_stream_sources(struct wined3d_device_context *context,
+        unsigned int start_idx, unsigned int count, const struct wined3d_stream_state *streams)
 {
-    struct wined3d_cs_set_stream_source *op;
+    struct wined3d_cs_set_stream_sources *op;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_STREAM_SOURCE;
-    op->stream_idx = stream_idx;
-    op->buffer = buffer;
-    op->offset = offset;
-    op->stride = stride;
+    op = wined3d_device_context_require_space(context,
+            offsetof(struct wined3d_cs_set_stream_sources, streams[count]), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_STREAM_SOURCES;
+    op->start_idx = start_idx;
+    op->count = count;
+    memcpy(op->streams, streams, count * sizeof(*streams));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_stream_source_freq(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_stream_outputs(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_stream_source_freq *op = data;
-    struct wined3d_stream_state *stream;
+    const struct wined3d_cs_set_stream_outputs *op = data;
+    unsigned int i;
 
-    stream = &cs->state.streams[op->stream_idx];
-    stream->frequency = op->frequency;
-    stream->flags = op->flags;
+    for (i = 0; i < WINED3D_MAX_STREAM_OUTPUT_BUFFERS; ++i)
+    {
+        struct wined3d_buffer *prev = cs->state.stream_output[i].buffer;
+        struct wined3d_buffer *buffer = op->outputs[i].buffer;
 
-    device_invalidate_state(cs->c.device, STATE_STREAMSRC);
-}
+        if (buffer)
+            InterlockedIncrement(&buffer->resource.bind_count);
+        if (prev)
+            InterlockedDecrement(&prev->resource.bind_count);
+    }
 
-void wined3d_cs_emit_set_stream_source_freq(struct wined3d_cs *cs, UINT stream_idx, UINT frequency, UINT flags)
-{
-    struct wined3d_cs_set_stream_source_freq *op;
-
-    op = wined3d_device_context_require_space(&cs->c, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_STREAM_SOURCE_FREQ;
-    op->stream_idx = stream_idx;
-    op->frequency = frequency;
-    op->flags = flags;
-
-    wined3d_device_context_submit(&cs->c, WINED3D_CS_QUEUE_DEFAULT);
-}
-
-static void wined3d_cs_exec_set_stream_output(struct wined3d_cs *cs, const void *data)
-{
-    const struct wined3d_cs_set_stream_output *op = data;
-    struct wined3d_stream_output *stream;
-    struct wined3d_buffer *prev;
-
-    stream = &cs->state.stream_output[op->stream_idx];
-    prev = stream->buffer;
-    stream->buffer = op->buffer;
-    stream->offset = op->offset;
-
-    if (op->buffer)
-        InterlockedIncrement(&op->buffer->resource.bind_count);
-    if (prev)
-        InterlockedDecrement(&prev->resource.bind_count);
-
+    memcpy(cs->state.stream_output, op->outputs, sizeof(op->outputs));
     device_invalidate_state(cs->c.device, STATE_STREAM_OUTPUT);
 }
 
-void wined3d_device_context_emit_set_stream_output(struct wined3d_device_context *context, unsigned int stream_idx,
-        struct wined3d_buffer *buffer, unsigned int offset)
+void wined3d_device_context_emit_set_stream_outputs(struct wined3d_device_context *context,
+        const struct wined3d_stream_output outputs[WINED3D_MAX_STREAM_OUTPUT_BUFFERS])
 {
-    struct wined3d_cs_set_stream_output *op;
+    struct wined3d_cs_set_stream_outputs *op;
 
     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_STREAM_OUTPUT;
-    op->stream_idx = stream_idx;
-    op->buffer = buffer;
-    op->offset = offset;
+    op->opcode = WINED3D_CS_OP_SET_STREAM_OUTPUTS;
+    memcpy(op->outputs, outputs, sizeof(op->outputs));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -1443,32 +1532,40 @@ void wined3d_device_context_emit_set_index_buffer(struct wined3d_device_context 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_constant_buffer(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_constant_buffers(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_constant_buffer *op = data;
-    struct wined3d_buffer *prev;
+    const struct wined3d_cs_set_constant_buffers *op = data;
+    unsigned int i;
 
-    prev = cs->state.cb[op->type][op->cb_idx];
-    cs->state.cb[op->type][op->cb_idx] = op->buffer;
+    for (i = 0; i < op->count; ++i)
+    {
+        struct wined3d_buffer *prev = cs->state.cb[op->type][op->start_idx + i].buffer;
+        struct wined3d_buffer *buffer = op->buffers[i].buffer;
 
-    if (op->buffer)
-        InterlockedIncrement(&op->buffer->resource.bind_count);
-    if (prev)
-        InterlockedDecrement(&prev->resource.bind_count);
+        cs->state.cb[op->type][op->start_idx + i] = op->buffers[i];
+
+        if (buffer)
+            InterlockedIncrement(&buffer->resource.bind_count);
+        if (prev)
+            InterlockedDecrement(&prev->resource.bind_count);
+    }
 
     device_invalidate_state(cs->c.device, STATE_CONSTANT_BUFFER(op->type));
 }
 
-void wined3d_device_context_emit_set_constant_buffer(struct wined3d_device_context *context,
-        enum wined3d_shader_type type, UINT cb_idx, struct wined3d_buffer *buffer)
+void wined3d_device_context_emit_set_constant_buffers(struct wined3d_device_context *context,
+        enum wined3d_shader_type type, unsigned int start_idx, unsigned int count,
+        const struct wined3d_constant_buffer_state *buffers)
 {
-    struct wined3d_cs_set_constant_buffer *op;
+    struct wined3d_cs_set_constant_buffers *op;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_CONSTANT_BUFFER;
+    op = wined3d_device_context_require_space(context, offsetof(struct wined3d_cs_set_constant_buffers, buffers[count]),
+            WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_CONSTANT_BUFFERS;
     op->type = type;
-    op->cb_idx = cb_idx;
-    op->buffer = buffer;
+    op->start_idx = start_idx;
+    op->count = count;
+    memcpy(op->buffers, buffers, count * sizeof(*buffers));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -1564,18 +1661,23 @@ void wined3d_device_context_emit_set_texture(struct wined3d_device_context *cont
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_shader_resource_view(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_shader_resource_views(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_shader_resource_view *op = data;
-    struct wined3d_shader_resource_view *prev;
+    const struct wined3d_cs_set_shader_resource_views *op = data;
+    unsigned int i;
 
-    prev = cs->state.shader_resource_view[op->type][op->view_idx];
-    cs->state.shader_resource_view[op->type][op->view_idx] = op->view;
+    for (i = 0; i < op->count; ++i)
+    {
+        struct wined3d_shader_resource_view *prev = cs->state.shader_resource_view[op->type][op->start_idx + i];
+        struct wined3d_shader_resource_view *view = op->views[i];
 
-    if (op->view)
-        InterlockedIncrement(&op->view->resource->bind_count);
-    if (prev)
-        InterlockedDecrement(&prev->resource->bind_count);
+        cs->state.shader_resource_view[op->type][op->start_idx + i] = view;
+
+        if (view)
+            InterlockedIncrement(&view->resource->bind_count);
+        if (prev)
+            InterlockedDecrement(&prev->resource->bind_count);
+    }
 
     if (op->type != WINED3D_SHADER_TYPE_COMPUTE)
         device_invalidate_state(cs->c.device, STATE_GRAPHICS_SHADER_RESOURCE_BINDING);
@@ -1583,76 +1685,96 @@ static void wined3d_cs_exec_set_shader_resource_view(struct wined3d_cs *cs, cons
         device_invalidate_state(cs->c.device, STATE_COMPUTE_SHADER_RESOURCE_BINDING);
 }
 
-void wined3d_device_context_emit_set_shader_resource_view(struct wined3d_device_context *context,
-        enum wined3d_shader_type type, unsigned int view_idx, struct wined3d_shader_resource_view *view)
+void wined3d_device_context_emit_set_shader_resource_views(struct wined3d_device_context *context,
+        enum wined3d_shader_type type, unsigned int start_idx, unsigned int count,
+        struct wined3d_shader_resource_view *const *views)
 {
-    struct wined3d_cs_set_shader_resource_view *op;
+    struct wined3d_cs_set_shader_resource_views *op;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEW;
+    op = wined3d_device_context_require_space(context,
+            offsetof(struct wined3d_cs_set_shader_resource_views, views[count]), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEWS;
     op->type = type;
-    op->view_idx = view_idx;
-    op->view = view;
+    op->start_idx = start_idx;
+    op->count = count;
+    memcpy(op->views, views, count * sizeof(*views));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_unordered_access_view(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_unordered_access_views(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_unordered_access_view *op = data;
-    struct wined3d_unordered_access_view *prev;
+    const struct wined3d_cs_set_unordered_access_views *op = data;
+    unsigned int i;
 
-    prev = cs->state.unordered_access_view[op->pipeline][op->view_idx];
-    cs->state.unordered_access_view[op->pipeline][op->view_idx] = op->view;
+    for (i = 0; i < op->count; ++i)
+    {
+        struct wined3d_unordered_access_view *prev = cs->state.unordered_access_view[op->pipeline][op->start_idx + i];
+        struct wined3d_unordered_access_view *view = op->uavs[i].view;
+        unsigned int initial_count = op->uavs[i].initial_count;
 
-    if (op->view)
-        InterlockedIncrement(&op->view->resource->bind_count);
-    if (prev)
-        InterlockedDecrement(&prev->resource->bind_count);
+        cs->state.unordered_access_view[op->pipeline][op->start_idx + i] = view;
 
-    if (op->view && op->initial_count != ~0u)
-        wined3d_unordered_access_view_set_counter(op->view, op->initial_count);
+        if (view)
+            InterlockedIncrement(&view->resource->bind_count);
+        if (prev)
+            InterlockedDecrement(&prev->resource->bind_count);
+
+        if (view && initial_count != ~0u)
+            wined3d_unordered_access_view_set_counter(view, initial_count);
+    }
 
     device_invalidate_state(cs->c.device, STATE_UNORDERED_ACCESS_VIEW_BINDING(op->pipeline));
 }
 
-void wined3d_device_context_emit_set_unordered_access_view(struct wined3d_device_context *context,
-        enum wined3d_pipeline pipeline, unsigned int view_idx, struct wined3d_unordered_access_view *view,
-        unsigned int initial_count)
+void wined3d_device_context_emit_set_unordered_access_views(struct wined3d_device_context *context,
+        enum wined3d_pipeline pipeline, unsigned int start_idx, unsigned int count,
+        struct wined3d_unordered_access_view *const *views, const unsigned int *initial_counts)
 {
-    struct wined3d_cs_set_unordered_access_view *op;
+    struct wined3d_cs_set_unordered_access_views *op;
+    unsigned int i;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEW;
+    op = wined3d_device_context_require_space(context,
+            offsetof(struct wined3d_cs_set_unordered_access_views, uavs[count]), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEWS;
     op->pipeline = pipeline;
-    op->view_idx = view_idx;
-    op->view = view;
-    op->initial_count = initial_count;
+    op->start_idx = start_idx;
+    op->count = count;
+    for (i = 0; i < count; ++i)
+    {
+        op->uavs[i].view = views[i];
+        op->uavs[i].initial_count = initial_counts ? initial_counts[i] : ~0u;
+    }
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
-static void wined3d_cs_exec_set_sampler(struct wined3d_cs *cs, const void *data)
+static void wined3d_cs_exec_set_samplers(struct wined3d_cs *cs, const void *data)
 {
-    const struct wined3d_cs_set_sampler *op = data;
+    const struct wined3d_cs_set_samplers *op = data;
+    unsigned int i;
 
-    cs->state.sampler[op->type][op->sampler_idx] = op->sampler;
+    for (i = 0; i < op->count; ++i)
+        cs->state.sampler[op->type][op->start_idx + i] = op->samplers[i];
+
     if (op->type != WINED3D_SHADER_TYPE_COMPUTE)
         device_invalidate_state(cs->c.device, STATE_GRAPHICS_SHADER_RESOURCE_BINDING);
     else
         device_invalidate_state(cs->c.device, STATE_COMPUTE_SHADER_RESOURCE_BINDING);
 }
 
-void wined3d_device_context_emit_set_sampler(struct wined3d_device_context *context, enum wined3d_shader_type type,
-        unsigned int sampler_idx, struct wined3d_sampler *sampler)
+void wined3d_device_context_emit_set_samplers(struct wined3d_device_context *context, enum wined3d_shader_type type,
+        unsigned int start_idx, unsigned int count, struct wined3d_sampler *const *samplers)
 {
-    struct wined3d_cs_set_sampler *op;
+    struct wined3d_cs_set_samplers *op;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
-    op->opcode = WINED3D_CS_OP_SET_SAMPLER;
+    op = wined3d_device_context_require_space(context, offsetof(struct wined3d_cs_set_samplers, samplers[count]),
+            WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_SET_SAMPLERS;
     op->type = type;
-    op->sampler_idx = sampler_idx;
-    op->sampler = sampler;
+    op->start_idx = start_idx;
+    op->count = count;
+    memcpy(op->samplers, samplers, count * sizeof(*samplers));
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -1767,16 +1889,17 @@ static void wined3d_cs_exec_set_render_state(struct wined3d_cs *cs, const void *
     device_invalidate_state(cs->c.device, STATE_RENDER(op->state));
 }
 
-void wined3d_cs_emit_set_render_state(struct wined3d_cs *cs, enum wined3d_render_state state, DWORD value)
+void wined3d_device_context_emit_set_render_state(struct wined3d_device_context *context,
+        enum wined3d_render_state state, unsigned int value)
 {
     struct wined3d_cs_set_render_state *op;
 
-    op = wined3d_device_context_require_space(&cs->c, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_SET_RENDER_STATE;
     op->state = state;
     op->value = value;
 
-    wined3d_device_context_submit(&cs->c, WINED3D_CS_QUEUE_DEFAULT);
+    wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
 static void wined3d_cs_exec_set_texture_state(struct wined3d_cs *cs, const void *data)
@@ -2143,18 +2266,33 @@ static void wined3d_cs_mt_push_constants(struct wined3d_device_context *context,
 
 static void wined3d_cs_exec_reset_state(struct wined3d_cs *cs, const void *data)
 {
+    const struct wined3d_device *device = cs->c.device;
+    const struct wined3d_cs_reset_state *op = data;
+    const struct wined3d_state_entry *state_table;
+    unsigned int state;
+
     state_cleanup(&cs->state);
-    wined3d_state_reset(&cs->state, &cs->c.device->adapter->d3d_info);
+    wined3d_state_reset(&cs->state, &device->adapter->d3d_info);
+    if (op->invalidate)
+    {
+        state_table = device->state_table;
+        for (state = 0; state <= STATE_HIGHEST; ++state)
+        {
+            if (state_table[state].representative)
+                device_invalidate_state(device, state);
+        }
+    }
 }
 
-void wined3d_cs_emit_reset_state(struct wined3d_cs *cs)
+void wined3d_device_context_emit_reset_state(struct wined3d_device_context *context, bool invalidate)
 {
     struct wined3d_cs_reset_state *op;
 
-    op = wined3d_device_context_require_space(&cs->c, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_RESET_STATE;
+    op->invalidate = invalidate;
 
-    wined3d_device_context_submit(&cs->c, WINED3D_CS_QUEUE_DEFAULT);
+    wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
 }
 
 static void wined3d_cs_exec_callback(struct wined3d_cs *cs, const void *data)
@@ -2251,6 +2389,39 @@ static void wined3d_cs_issue_query(struct wined3d_device_context *context,
         query->state = QUERY_SIGNALLED;
 }
 
+static void wined3d_cs_acquire_command_list(struct wined3d_device_context *context, struct wined3d_command_list *list)
+{
+    struct wined3d_cs *cs = wined3d_cs_from_context(context);
+    SIZE_T i;
+
+    if (list->query_count)
+    {
+        cs->queries_flushed = FALSE;
+
+        for (i = 0; i < list->query_count; ++i)
+        {
+            if (list->queries[i].flags & WINED3DISSUE_END)
+            {
+                list->queries[i].query->counter_main++;
+                list->queries[i].query->state = QUERY_SIGNALLED;
+            }
+            else
+            {
+                list->queries[i].query->state = QUERY_BUILDING;
+            }
+        }
+    }
+
+    for (i = 0; i < list->resource_count; ++i)
+        wined3d_resource_acquire(list->resources[i]);
+
+    for (i = 0; i < list->command_list_count; ++i)
+        wined3d_cs_acquire_command_list(context, list->command_lists[i]);
+
+    for (i = 0; i < list->upload_count; ++i)
+        invalidate_client_address(list->uploads[i].resource);
+}
+
 static void wined3d_cs_exec_preload_resource(struct wined3d_cs *cs, const void *data)
 {
     const struct wined3d_cs_preload_resource *op = data;
@@ -2286,6 +2457,8 @@ void wined3d_cs_emit_unload_resource(struct wined3d_cs *cs, struct wined3d_resou
 {
     struct wined3d_cs_unload_resource *op;
 
+    invalidate_client_address(resource);
+
     op = wined3d_device_context_require_space(&cs->c, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_UNLOAD_RESOURCE;
     op->resource = resource;
@@ -2295,41 +2468,79 @@ void wined3d_cs_emit_unload_resource(struct wined3d_cs *cs, struct wined3d_resou
     wined3d_device_context_submit(&cs->c, WINED3D_CS_QUEUE_DEFAULT);
 }
 
+static void wined3d_device_context_upload_bo(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
+        const struct upload_bo *bo, unsigned int row_pitch, unsigned int slice_pitch)
+{
+    struct wined3d_cs_update_sub_resource *op;
+
+    TRACE("context %p, resource %p, sub_resource_idx %u, box %s, bo %s, flags %#x, row_pitch %u, slice_pitch %u.\n",
+            context, resource, sub_resource_idx, debug_box(box),
+            debug_const_bo_address(&bo->addr), bo->flags, row_pitch, slice_pitch);
+
+    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_UPDATE_SUB_RESOURCE;
+    op->resource = resource;
+    op->sub_resource_idx = sub_resource_idx;
+    op->box = *box;
+    op->bo = *bo;
+    op->row_pitch = row_pitch;
+    op->slice_pitch = slice_pitch;
+
+    wined3d_device_context_acquire_resource(context, resource);
+
+    wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+}
+
 static void wined3d_cs_exec_map(struct wined3d_cs *cs, const void *data)
 {
     const struct wined3d_cs_map *op = data;
     struct wined3d_resource *resource = op->resource;
 
     *op->hr = resource->resource_ops->resource_sub_resource_map(resource,
-            op->sub_resource_idx, op->map_desc, op->box, op->flags);
+            op->sub_resource_idx, op->map_ptr, op->box, op->flags);
 }
 
-static HRESULT wined3d_cs_map(struct wined3d_device_context *context, struct wined3d_resource *resource,
-        unsigned int sub_resource_idx, struct wined3d_map_desc *map_desc, const struct wined3d_box *box,
-        unsigned int flags)
+HRESULT wined3d_device_context_emit_map(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx,
+        struct wined3d_map_desc *map_desc, const struct wined3d_box *box, unsigned int flags)
 {
-    struct wined3d_cs *cs = wined3d_cs_from_context(context);
     struct wined3d_cs_map *op;
     HRESULT hr;
 
     /* Mapping resources from the worker thread isn't an issue by itself, but
      * increasing the map count would be visible to applications. */
-    wined3d_not_from_cs(cs);
+    wined3d_not_from_cs(context->device->cs);
+
+    if ((flags & (WINED3D_MAP_DISCARD | WINED3D_MAP_NOOVERWRITE))
+            && context->ops->map_upload_bo(context, resource, sub_resource_idx, map_desc, box, flags))
+    {
+        TRACE("Returning map pointer %p, row pitch %u, slice pitch %u.\n",
+                map_desc->data, map_desc->row_pitch, map_desc->slice_pitch);
+        return WINED3D_OK;
+    }
 
     wined3d_resource_wait_idle(resource);
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_MAP);
+    /* We might end up invalidating the resource on the CS thread. */
+    invalidate_client_address(resource);
+
+    if (!(op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_MAP)))
+        return E_OUTOFMEMORY;
     op->opcode = WINED3D_CS_OP_MAP;
     op->resource = resource;
     op->sub_resource_idx = sub_resource_idx;
-    op->map_desc = map_desc;
+    op->map_ptr = &map_desc->data;
     op->box = box;
     op->flags = flags;
     op->hr = &hr;
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_MAP);
-    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_MAP);
+    wined3d_device_context_finish(context, WINED3D_CS_QUEUE_MAP);
 
+    if (SUCCEEDED(hr))
+        wined3d_resource_get_sub_resource_map_pitch(resource, sub_resource_idx,
+                &map_desc->row_pitch, &map_desc->slice_pitch);
     return hr;
 }
 
@@ -2341,23 +2552,35 @@ static void wined3d_cs_exec_unmap(struct wined3d_cs *cs, const void *data)
     *op->hr = resource->resource_ops->resource_sub_resource_unmap(resource, op->sub_resource_idx);
 }
 
-static HRESULT wined3d_cs_unmap(struct wined3d_device_context *context, struct wined3d_resource *resource,
-        unsigned int sub_resource_idx)
+HRESULT wined3d_device_context_emit_unmap(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx)
 {
-    struct wined3d_cs *cs = wined3d_cs_from_context(context);
     struct wined3d_cs_unmap *op;
+    struct wined3d_box box;
+    struct upload_bo bo;
     HRESULT hr;
 
-    wined3d_not_from_cs(cs);
+    if (context->ops->unmap_upload_bo(context, resource, sub_resource_idx, &box, &bo))
+    {
+        unsigned int row_pitch, slice_pitch;
 
-    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_MAP);
+        wined3d_resource_get_sub_resource_map_pitch(resource, sub_resource_idx, &row_pitch, &slice_pitch);
+        if (bo.flags & UPLOAD_BO_UPLOAD_ON_UNMAP)
+            wined3d_device_context_upload_bo(context, resource, sub_resource_idx, &box, &bo, row_pitch, slice_pitch);
+        return WINED3D_OK;
+    }
+
+    wined3d_not_from_cs(context->device->cs);
+
+    if (!(op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_MAP)))
+        return E_OUTOFMEMORY;
     op->opcode = WINED3D_CS_OP_UNMAP;
     op->resource = resource;
     op->sub_resource_idx = sub_resource_idx;
     op->hr = &hr;
 
     wined3d_device_context_submit(context, WINED3D_CS_QUEUE_MAP);
-    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_MAP);
+    wined3d_device_context_finish(context, WINED3D_CS_QUEUE_MAP);
 
     return hr;
 }
@@ -2379,6 +2602,7 @@ static void wined3d_cs_exec_blt_sub_resource(struct wined3d_cs *cs, const void *
         unsigned int row_pitch, slice_pitch;
         struct wined3d_context *context;
         struct wined3d_bo_address addr;
+        unsigned int location;
 
         if (op->flags & ~WINED3D_BLT_RAW)
         {
@@ -2411,11 +2635,16 @@ static void wined3d_cs_exec_blt_sub_resource(struct wined3d_cs *cs, const void *
 
         context = context_acquire(cs->c.device, NULL, 0);
 
+        location = src_texture->resource.map_binding;
+        if (location == WINED3D_LOCATION_SYSMEM
+                && wined3d_texture_can_use_pbo(src_texture, &context->device->adapter->d3d_info))
+            location = WINED3D_LOCATION_BUFFER;
+
         if (!wined3d_texture_load_location(src_texture, op->src_sub_resource_idx,
-                context, src_texture->resource.map_binding))
+                context, location))
         {
             ERR("Failed to load source sub-resource into %s.\n",
-                    wined3d_debug_location(src_texture->resource.map_binding));
+                    wined3d_debug_location(location));
             context_release(context);
             goto error;
         }
@@ -2436,7 +2665,7 @@ static void wined3d_cs_exec_blt_sub_resource(struct wined3d_cs *cs, const void *
             goto error;
         }
 
-        wined3d_texture_get_memory(src_texture, op->src_sub_resource_idx, &addr, src_texture->resource.map_binding);
+        wined3d_texture_get_memory(src_texture, op->src_sub_resource_idx, &addr, location);
         wined3d_texture_get_pitch(src_texture, op->src_sub_resource_idx % src_texture->level_count,
                 &row_pitch, &slice_pitch);
 
@@ -2470,6 +2699,11 @@ void wined3d_device_context_emit_blt_sub_resource(struct wined3d_device_context 
 {
     struct wined3d_cs_blt_sub_resource *op;
 
+    /* If we are replacing the whole resource, the CS thread might discard and
+     * rename the buffer object, in which case ours is no longer valid. */
+    if (dst_resource->type == WINED3D_RTYPE_BUFFER && dst_box->right - dst_box->left == dst_resource->size)
+        invalidate_client_address(dst_resource);
+
     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_BLT_SUB_RESOURCE;
     op->dst_resource = dst_resource;
@@ -2500,7 +2734,6 @@ static void wined3d_cs_exec_update_sub_resource(struct wined3d_cs *cs, const voi
     struct wined3d_resource *resource = op->resource;
     const struct wined3d_box *box = &op->box;
     unsigned int width, height, depth, level;
-    struct wined3d_const_bo_address addr;
     struct wined3d_context *context;
     struct wined3d_texture *texture;
     struct wined3d_box src_box;
@@ -2510,15 +2743,12 @@ static void wined3d_cs_exec_update_sub_resource(struct wined3d_cs *cs, const voi
     if (resource->type == WINED3D_RTYPE_BUFFER)
     {
         struct wined3d_buffer *buffer = buffer_from_resource(resource);
+        size_t size = box->right - box->left;
 
-        if (!wined3d_buffer_load_location(buffer, context, WINED3D_LOCATION_BUFFER))
-        {
-            ERR("Failed to load buffer location.\n");
-            goto done;
-        }
-
-        wined3d_buffer_upload_data(buffer, context, box, op->data.data);
-        wined3d_buffer_invalidate_location(buffer, ~WINED3D_LOCATION_BUFFER);
+        if (op->bo.addr.buffer_object && op->bo.addr.buffer_object == buffer->buffer_object)
+            wined3d_context_flush_bo_address(context, &op->bo.addr, size);
+        else
+            wined3d_buffer_copy_bo_address(buffer, context, box->left, &op->bo.addr, size);
         goto done;
     }
 
@@ -2529,9 +2759,6 @@ static void wined3d_cs_exec_update_sub_resource(struct wined3d_cs *cs, const voi
     height = wined3d_texture_get_level_height(texture, level);
     depth = wined3d_texture_get_level_depth(texture, level);
 
-    addr.buffer_object = 0;
-    addr.addr = op->data.data;
-
     /* Only load the sub-resource for partial updates. */
     if (!box->left && !box->top && !box->front
             && box->right == width && box->bottom == height && box->back == depth)
@@ -2540,8 +2767,8 @@ static void wined3d_cs_exec_update_sub_resource(struct wined3d_cs *cs, const voi
         wined3d_texture_load_location(texture, op->sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB);
 
     wined3d_box_set(&src_box, 0, 0, box->right - box->left, box->bottom - box->top, 0, box->back - box->front);
-    texture->texture_ops->texture_upload_data(context, &addr, texture->resource.format, &src_box,
-            op->data.row_pitch, op->data.slice_pitch, texture, op->sub_resource_idx,
+    texture->texture_ops->texture_upload_data(context, &op->bo.addr, texture->resource.format, &src_box,
+            op->row_pitch, op->slice_pitch, texture, op->sub_resource_idx,
             WINED3D_LOCATION_TEXTURE_RGB, box->left, box->top, box->front);
 
     wined3d_texture_validate_location(texture, op->sub_resource_idx, WINED3D_LOCATION_TEXTURE_RGB);
@@ -2553,11 +2780,29 @@ done:
     wined3d_resource_release(resource);
 }
 
-static void wined3d_cs_update_sub_resource(struct wined3d_device_context *context,
+void wined3d_device_context_emit_update_sub_resource(struct wined3d_device_context *context,
         struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
         const void *data, unsigned int row_pitch, unsigned int slice_pitch)
 {
     struct wined3d_cs_update_sub_resource *op;
+    struct wined3d_map_desc map_desc;
+    struct wined3d_box dummy_box;
+    struct upload_bo bo;
+
+    /* If we are replacing the whole resource, the CS thread might discard and
+     * rename the buffer object, in which case ours is no longer valid. */
+    if (resource->type == WINED3D_RTYPE_BUFFER && box->right - box->left == resource->size)
+        invalidate_client_address(resource);
+
+    if (context->ops->map_upload_bo(context, resource, sub_resource_idx, &map_desc, box, WINED3D_MAP_WRITE))
+    {
+        wined3d_format_copy_data(resource->format, data, row_pitch, slice_pitch, map_desc.data, map_desc.row_pitch,
+                map_desc.slice_pitch, box->right - box->left, box->bottom - box->top, box->back - box->front);
+        context->ops->unmap_upload_bo(context, resource, sub_resource_idx, &dummy_box, &bo);
+        wined3d_device_context_upload_bo(context, resource, sub_resource_idx,
+                box, &bo, map_desc.row_pitch, map_desc.slice_pitch);
+        return;
+    }
 
     wined3d_resource_wait_idle(resource);
 
@@ -2566,9 +2811,11 @@ static void wined3d_cs_update_sub_resource(struct wined3d_device_context *contex
     op->resource = resource;
     op->sub_resource_idx = sub_resource_idx;
     op->box = *box;
-    op->data.row_pitch = row_pitch;
-    op->data.slice_pitch = slice_pitch;
-    op->data.data = data;
+    op->bo.addr.buffer_object = 0;
+    op->bo.addr.addr = data;
+    op->bo.flags = 0;
+    op->row_pitch = row_pitch;
+    op->slice_pitch = slice_pitch;
 
     wined3d_device_context_acquire_resource(context, resource);
 
@@ -2621,14 +2868,14 @@ static void wined3d_cs_exec_clear_unordered_access_view(struct wined3d_cs *cs, c
     struct wined3d_context *context;
 
     context = context_acquire(cs->c.device, NULL, 0);
-    cs->c.device->adapter->adapter_ops->adapter_clear_uav(context, view, &op->clear_value);
+    cs->c.device->adapter->adapter_ops->adapter_clear_uav(context, view, &op->clear_value, op->fp);
     context_release(context);
 
     wined3d_resource_release(view->resource);
 }
 
-void wined3d_device_context_emit_clear_uav_uint(struct wined3d_device_context *context,
-        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value)
+void wined3d_device_context_emit_clear_uav(struct wined3d_device_context *context,
+        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp)
 {
     struct wined3d_cs_clear_unordered_access_view *op;
 
@@ -2636,6 +2883,7 @@ void wined3d_device_context_emit_clear_uav_uint(struct wined3d_device_context *c
     op->opcode = WINED3D_CS_OP_CLEAR_UNORDERED_ACCESS_VIEW;
     op->view = view;
     op->clear_value = *clear_value;
+    op->fp = fp;
 
     wined3d_device_context_acquire_resource(context, view->resource);
 
@@ -2714,6 +2962,8 @@ static void wined3d_cs_acquire_resource(struct wined3d_device_context *context, 
     wined3d_resource_acquire(resource);
 }
 
+static void wined3d_cs_exec_execute_command_list(struct wined3d_cs *cs, const void *data);
+
 static void (* const wined3d_cs_op_handlers[])(struct wined3d_cs *cs, const void *data) =
 {
     /* WINED3D_CS_OP_NOP                         */ wined3d_cs_exec_nop,
@@ -2725,18 +2975,17 @@ static void (* const wined3d_cs_op_handlers[])(struct wined3d_cs *cs, const void
     /* WINED3D_CS_OP_SET_PREDICATION             */ wined3d_cs_exec_set_predication,
     /* WINED3D_CS_OP_SET_VIEWPORTS               */ wined3d_cs_exec_set_viewports,
     /* WINED3D_CS_OP_SET_SCISSOR_RECTS           */ wined3d_cs_exec_set_scissor_rects,
-    /* WINED3D_CS_OP_SET_RENDERTARGET_VIEW       */ wined3d_cs_exec_set_rendertarget_view,
+    /* WINED3D_CS_OP_SET_RENDERTARGET_VIEWS      */ wined3d_cs_exec_set_rendertarget_views,
     /* WINED3D_CS_OP_SET_DEPTH_STENCIL_VIEW      */ wined3d_cs_exec_set_depth_stencil_view,
     /* WINED3D_CS_OP_SET_VERTEX_DECLARATION      */ wined3d_cs_exec_set_vertex_declaration,
-    /* WINED3D_CS_OP_SET_STREAM_SOURCE           */ wined3d_cs_exec_set_stream_source,
-    /* WINED3D_CS_OP_SET_STREAM_SOURCE_FREQ      */ wined3d_cs_exec_set_stream_source_freq,
-    /* WINED3D_CS_OP_SET_STREAM_OUTPUT           */ wined3d_cs_exec_set_stream_output,
+    /* WINED3D_CS_OP_SET_STREAM_SOURCES          */ wined3d_cs_exec_set_stream_sources,
+    /* WINED3D_CS_OP_SET_STREAM_OUTPUTS          */ wined3d_cs_exec_set_stream_outputs,
     /* WINED3D_CS_OP_SET_INDEX_BUFFER            */ wined3d_cs_exec_set_index_buffer,
-    /* WINED3D_CS_OP_SET_CONSTANT_BUFFER         */ wined3d_cs_exec_set_constant_buffer,
+    /* WINED3D_CS_OP_SET_CONSTANT_BUFFERS        */ wined3d_cs_exec_set_constant_buffers,
     /* WINED3D_CS_OP_SET_TEXTURE                 */ wined3d_cs_exec_set_texture,
-    /* WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEW    */ wined3d_cs_exec_set_shader_resource_view,
-    /* WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEW   */ wined3d_cs_exec_set_unordered_access_view,
-    /* WINED3D_CS_OP_SET_SAMPLER                 */ wined3d_cs_exec_set_sampler,
+    /* WINED3D_CS_OP_SET_SHADER_RESOURCE_VIEWS   */ wined3d_cs_exec_set_shader_resource_views,
+    /* WINED3D_CS_OP_SET_UNORDERED_ACCESS_VIEWS  */ wined3d_cs_exec_set_unordered_access_views,
+    /* WINED3D_CS_OP_SET_SAMPLERS                */ wined3d_cs_exec_set_samplers,
     /* WINED3D_CS_OP_SET_SHADER                  */ wined3d_cs_exec_set_shader,
     /* WINED3D_CS_OP_SET_BLEND_STATE             */ wined3d_cs_exec_set_blend_state,
     /* WINED3D_CS_OP_SET_DEPTH_STENCIL_STATE     */ wined3d_cs_exec_set_depth_stencil_state,
@@ -2765,7 +3014,50 @@ static void (* const wined3d_cs_op_handlers[])(struct wined3d_cs *cs, const void
     /* WINED3D_CS_OP_CLEAR_UNORDERED_ACCESS_VIEW */ wined3d_cs_exec_clear_unordered_access_view,
     /* WINED3D_CS_OP_COPY_UAV_COUNTER            */ wined3d_cs_exec_copy_uav_counter,
     /* WINED3D_CS_OP_GENERATE_MIPMAPS            */ wined3d_cs_exec_generate_mipmaps,
+    /* WINED3D_CS_OP_EXECUTE_COMMAND_LIST        */ wined3d_cs_exec_execute_command_list,
 };
+
+static void wined3d_cs_exec_execute_command_list(struct wined3d_cs *cs, const void *data)
+{
+    const struct wined3d_cs_execute_command_list *op = data;
+    size_t start = 0, end = op->list->data_size;
+    const BYTE *cs_data = op->list->data;
+
+    TRACE("Executing command list %p.\n", op->list);
+
+    while (start < end)
+    {
+        const struct wined3d_cs_packet *packet = (const struct wined3d_cs_packet *)&cs_data[start];
+        enum wined3d_cs_op opcode = *(const enum wined3d_cs_op *)packet->data;
+
+        if (opcode >= WINED3D_CS_OP_STOP)
+            ERR("Invalid opcode %#x.\n", opcode);
+        else
+            wined3d_cs_op_handlers[opcode](cs, packet->data);
+        TRACE("%s executed.\n", debug_cs_op(opcode));
+
+        start += offsetof(struct wined3d_cs_packet, data[packet->size]);
+    }
+}
+
+void wined3d_device_context_emit_execute_command_list(struct wined3d_device_context *context,
+        struct wined3d_command_list *list, bool restore_state)
+{
+    struct wined3d_cs_execute_command_list *op;
+
+    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_EXECUTE_COMMAND_LIST;
+    op->list = list;
+
+    context->ops->acquire_command_list(context, list);
+
+    wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+
+    if (restore_state)
+        wined3d_device_context_set_state(context, context->state);
+    else
+        wined3d_device_context_reset_state(context);
+}
 
 static void *wined3d_cs_st_require_space(struct wined3d_device_context *context,
         size_t size, enum wined3d_cs_queue_id queue_id)
@@ -2822,18 +3114,82 @@ static void wined3d_cs_st_finish(struct wined3d_device_context *context, enum wi
 {
 }
 
+static bool wined3d_cs_map_upload_bo(struct wined3d_device_context *context, struct wined3d_resource *resource,
+        unsigned int sub_resource_idx, struct wined3d_map_desc *map_desc, const struct wined3d_box *box, uint32_t flags)
+{
+    /* Limit NOOVERWRITE maps to buffers for now; there are too many ways that
+     * a texture can be invalidated to even count. */
+    if (wined3d_map_persistent() && resource->type == WINED3D_RTYPE_BUFFER && (flags & WINED3D_MAP_NOOVERWRITE))
+    {
+        struct wined3d_client_resource *client = &resource->client;
+        const struct wined3d_bo *bo;
+        uint8_t *map_ptr;
+
+        bo = (const struct wined3d_bo *)client->addr.buffer_object;
+        map_ptr = bo ? bo->map_ptr : NULL;
+        map_ptr += (uintptr_t)client->addr.addr;
+
+        if (!map_ptr)
+        {
+            TRACE("Sub-resource is not persistently mapped.\n");
+            return false;
+        }
+
+        wined3d_resource_get_sub_resource_map_pitch(resource, sub_resource_idx,
+                &map_desc->row_pitch, &map_desc->slice_pitch);
+
+        client->mapped_upload.addr = *wined3d_const_bo_address(&client->addr);
+        client->mapped_upload.flags = 0;
+        if (bo)
+        {
+            map_ptr += bo->memory_offset;
+            if (!bo->coherent)
+                client->mapped_upload.flags |= UPLOAD_BO_UPLOAD_ON_UNMAP;
+        }
+        map_desc->data = resource_offset_map_pointer(resource, sub_resource_idx, map_ptr, box);
+
+        client->mapped_box = *box;
+
+        TRACE("Returning bo %s, flags %#x.\n", debug_const_bo_address(&client->mapped_upload.addr),
+                client->mapped_upload.flags);
+        return true;
+    }
+
+    return false;
+}
+
+static bool wined3d_bo_address_is_null(struct wined3d_const_bo_address *addr)
+{
+    return !addr->buffer_object && !addr->addr;
+}
+
+static bool wined3d_cs_unmap_upload_bo(struct wined3d_device_context *context, struct wined3d_resource *resource,
+        unsigned int sub_resource_idx, struct wined3d_box *box, struct upload_bo *bo)
+{
+    struct wined3d_client_resource *client = &resource->client;
+
+    if (wined3d_bo_address_is_null(&client->mapped_upload.addr))
+        return false;
+
+    *bo = client->mapped_upload;
+    *box = client->mapped_box;
+    memset(&client->mapped_upload, 0, sizeof(client->mapped_upload));
+    memset(&client->mapped_box, 0, sizeof(client->mapped_box));
+    return true;
+}
+
 static const struct wined3d_device_context_ops wined3d_cs_st_ops =
 {
     wined3d_cs_st_require_space,
     wined3d_cs_st_submit,
     wined3d_cs_st_finish,
     wined3d_cs_st_push_constants,
-    wined3d_cs_map,
-    wined3d_cs_unmap,
-    wined3d_cs_update_sub_resource,
+    wined3d_cs_map_upload_bo,
+    wined3d_cs_unmap_upload_bo,
     wined3d_cs_issue_query,
     wined3d_cs_flush,
     wined3d_cs_acquire_resource,
+    wined3d_cs_acquire_command_list,
 };
 
 static BOOL wined3d_cs_queue_is_empty(const struct wined3d_cs *cs, const struct wined3d_cs_queue *queue)
@@ -2955,12 +3311,12 @@ static const struct wined3d_device_context_ops wined3d_cs_mt_ops =
     wined3d_cs_mt_submit,
     wined3d_cs_mt_finish,
     wined3d_cs_mt_push_constants,
-    wined3d_cs_map,
-    wined3d_cs_unmap,
-    wined3d_cs_update_sub_resource,
+    wined3d_cs_map_upload_bo,
+    wined3d_cs_unmap_upload_bo,
     wined3d_cs_issue_query,
     wined3d_cs_flush,
     wined3d_cs_acquire_resource,
+    wined3d_cs_acquire_command_list,
 };
 
 static void poll_queries(struct wined3d_cs *cs)
@@ -3101,6 +3457,9 @@ struct wined3d_cs *wined3d_cs_create(struct wined3d_device *device,
     cs->c.device = device;
     cs->serialize_commands = TRACE_ON(d3d_sync) || wined3d_settings.cs_multithreaded & WINED3D_CSMT_SERIALIZE;
 
+    if (cs->serialize_commands)
+        ERR_(d3d_sync)("Forcing serialization of all command streams.\n");
+
     state_init(&cs->state, d3d_info, WINED3D_STATE_NO_REF | WINED3D_STATE_INIT_DEFAULT, cs->c.state->feature_level);
 
     cs->data_size = WINED3D_INITIAL_CS_SIZE;
@@ -3161,4 +3520,373 @@ void wined3d_cs_destroy(struct wined3d_cs *cs)
     state_cleanup(&cs->state);
     heap_free(cs->data);
     heap_free(cs);
+}
+
+struct wined3d_deferred_context
+{
+    struct wined3d_device_context c;
+
+    SIZE_T data_size, data_capacity;
+    void *data;
+
+    SIZE_T resource_count, resources_capacity;
+    struct wined3d_resource **resources;
+
+    SIZE_T upload_count, uploads_capacity;
+    struct wined3d_deferred_upload *uploads;
+
+    /* List of command lists queued for execution on this context. A command
+     * list can be the only thing holding a pointer to another command list, so
+     * we need to hold a reference here and in wined3d_command_list as well. */
+    SIZE_T command_list_count, command_lists_capacity;
+    struct wined3d_command_list **command_lists;
+
+    SIZE_T query_count, queries_capacity;
+    struct wined3d_deferred_query_issue *queries;
+};
+
+static struct wined3d_deferred_context *wined3d_deferred_context_from_context(struct wined3d_device_context *context)
+{
+    return CONTAINING_RECORD(context, struct wined3d_deferred_context, c);
+}
+
+static void *wined3d_deferred_context_require_space(struct wined3d_device_context *context,
+        size_t size, enum wined3d_cs_queue_id queue_id)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    struct wined3d_cs_packet *packet;
+    size_t header_size, packet_size;
+
+    if (queue_id != WINED3D_CS_QUEUE_DEFAULT)
+        return NULL;
+
+    header_size = offsetof(struct wined3d_cs_packet, data[0]);
+    packet_size = offsetof(struct wined3d_cs_packet, data[size]);
+    packet_size = (packet_size + header_size - 1) & ~(header_size - 1);
+
+    if (!wined3d_array_reserve(&deferred->data, &deferred->data_capacity, deferred->data_size + packet_size, 1))
+        return NULL;
+
+    packet = (struct wined3d_cs_packet *)((BYTE *)deferred->data + deferred->data_size);
+    TRACE("size was %zu, adding %zu\n", (size_t)deferred->data_size, packet_size);
+    deferred->data_size += packet_size;
+    packet->size = packet_size - header_size;
+    return &packet->data;
+}
+
+static void wined3d_deferred_context_submit(struct wined3d_device_context *context, enum wined3d_cs_queue_id queue_id)
+{
+    assert(queue_id == WINED3D_CS_QUEUE_DEFAULT);
+
+    /* Nothing to do. */
+}
+
+static void wined3d_deferred_context_finish(struct wined3d_device_context *context, enum wined3d_cs_queue_id queue_id)
+{
+    /* This should not happen; we cannot meaningfully finish a deferred context. */
+    ERR("Ignoring finish() on a deferred context.\n");
+}
+
+static void wined3d_deferred_context_push_constants(struct wined3d_device_context *context,
+        enum wined3d_push_constants p, unsigned int start_idx, unsigned int count, const void *constants)
+{
+    FIXME("context %p, p %#x, start_idx %u, count %u, constants %p, stub!\n", context, p, start_idx, count, constants);
+}
+
+static struct wined3d_deferred_upload *deferred_context_get_upload(struct wined3d_deferred_context *deferred,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx)
+{
+    SIZE_T i = deferred->upload_count;
+
+    while (i--)
+    {
+        struct wined3d_deferred_upload *upload = &deferred->uploads[i];
+
+        if (upload->resource == resource && upload->sub_resource_idx == sub_resource_idx)
+            return upload;
+    }
+
+    return NULL;
+}
+
+static bool wined3d_deferred_context_map_upload_bo(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx,
+        struct wined3d_map_desc *map_desc, const struct wined3d_box *box, uint32_t flags)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    const struct wined3d_format *format = resource->format;
+    struct wined3d_deferred_upload *upload;
+    uint8_t *sysmem;
+    size_t size;
+
+    wined3d_format_calculate_pitch(format, 1, box->right - box->left,
+            box->bottom - box->top, &map_desc->row_pitch, &map_desc->slice_pitch);
+
+    size = (box->back - box->front - 1) * map_desc->slice_pitch
+            + ((box->bottom - box->top - 1) / format->block_height) * map_desc->row_pitch
+            + ((box->right - box->left + format->block_width - 1) / format->block_width) * format->block_byte_count;
+
+    if (!(flags & WINED3D_MAP_WRITE))
+    {
+        WARN("Flags %#x are not valid on a deferred context.\n", flags);
+        return false;
+    }
+
+    if (flags & ~(WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD | WINED3D_MAP_NOOVERWRITE))
+    {
+        FIXME("Unhandled flags %#x.\n", flags);
+        return false;
+    }
+
+    if (flags & WINED3D_MAP_NOOVERWRITE)
+    {
+        if (!(upload = deferred_context_get_upload(deferred, resource, sub_resource_idx)))
+            return false;
+
+        upload->upload_flags = 0;
+        map_desc->data = (void *)align((size_t)upload->sysmem, RESOURCE_ALIGNMENT);
+        return true;
+    }
+
+    if (!wined3d_array_reserve((void **)&deferred->uploads, &deferred->uploads_capacity,
+            deferred->upload_count + 1, sizeof(*deferred->uploads)))
+        return false;
+
+    if (!(sysmem = heap_alloc(size + RESOURCE_ALIGNMENT - 1)))
+        return false;
+
+    upload = &deferred->uploads[deferred->upload_count++];
+    upload->upload_flags = UPLOAD_BO_UPLOAD_ON_UNMAP;
+    upload->resource = resource;
+    wined3d_resource_incref(resource);
+    upload->sub_resource_idx = sub_resource_idx;
+    upload->sysmem = sysmem;
+    upload->box = *box;
+
+    map_desc->data = (void *)align((size_t)upload->sysmem, RESOURCE_ALIGNMENT);
+    return true;
+}
+
+static bool wined3d_deferred_context_unmap_upload_bo(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, unsigned int sub_resource_idx, struct wined3d_box *box, struct upload_bo *bo)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    const struct wined3d_deferred_upload *upload;
+
+    if ((upload = deferred_context_get_upload(deferred, resource, sub_resource_idx)))
+    {
+        *box = upload->box;
+        bo->addr.buffer_object = 0;
+        bo->addr.addr = (uint8_t *)align((size_t)upload->sysmem, RESOURCE_ALIGNMENT);
+        bo->flags = upload->upload_flags;
+        return true;
+    }
+
+    return false;
+}
+
+static void wined3d_deferred_context_issue_query(struct wined3d_device_context *context,
+        struct wined3d_query *query, unsigned int flags)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    struct wined3d_cs_query_issue *op;
+
+    op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+    op->opcode = WINED3D_CS_OP_QUERY_ISSUE;
+    op->query = query;
+    op->flags = flags;
+
+    wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
+
+    if (!wined3d_array_reserve((void **)&deferred->queries, &deferred->queries_capacity,
+            deferred->query_count + 1, sizeof(*deferred->queries)))
+    {
+        ERR("Failed to reserve memory.\n");
+        return;
+    }
+
+    deferred->queries[deferred->query_count].flags = flags;
+    wined3d_query_incref(deferred->queries[deferred->query_count++].query = query);
+}
+
+static void wined3d_deferred_context_flush(struct wined3d_device_context *context)
+{
+    FIXME("context %p, stub!\n", context);
+}
+
+static void wined3d_deferred_context_acquire_resource(struct wined3d_device_context *context,
+        struct wined3d_resource *resource)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+
+    if (!wined3d_array_reserve((void **)&deferred->resources, &deferred->resources_capacity,
+            deferred->resource_count + 1, sizeof(*deferred->resources)))
+        return;
+
+    deferred->resources[deferred->resource_count++] = resource;
+    wined3d_resource_incref(resource);
+}
+
+static void wined3d_deferred_context_acquire_command_list(struct wined3d_device_context *context,
+        struct wined3d_command_list *list)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+
+    /* Grab a reference to the command list. Note that this implicitly prevents
+     * any dependent command lists or resources from being freed as well. */
+    if (!wined3d_array_reserve((void **)&deferred->command_lists, &deferred->command_lists_capacity,
+            deferred->command_list_count + 1, sizeof(*deferred->command_lists)))
+        return;
+
+    wined3d_command_list_incref(deferred->command_lists[deferred->command_list_count++] = list);
+}
+
+static const struct wined3d_device_context_ops wined3d_deferred_context_ops =
+{
+    wined3d_deferred_context_require_space,
+    wined3d_deferred_context_submit,
+    wined3d_deferred_context_finish,
+    wined3d_deferred_context_push_constants,
+    wined3d_deferred_context_map_upload_bo,
+    wined3d_deferred_context_unmap_upload_bo,
+    wined3d_deferred_context_issue_query,
+    wined3d_deferred_context_flush,
+    wined3d_deferred_context_acquire_resource,
+    wined3d_deferred_context_acquire_command_list,
+};
+
+HRESULT CDECL wined3d_deferred_context_create(struct wined3d_device *device, struct wined3d_device_context **context)
+{
+    struct wined3d_deferred_context *object;
+    HRESULT hr;
+
+    TRACE("device %p, context %p.\n", device, context);
+
+    if (!(object = heap_alloc_zero(sizeof(*object))))
+        return E_OUTOFMEMORY;
+
+    if (FAILED(hr = wined3d_state_create(device, &device->cs->c.state->feature_level, 1, &object->c.state)))
+    {
+        heap_free(object);
+        return hr;
+    }
+
+    object->c.ops = &wined3d_deferred_context_ops;
+    object->c.device = device;
+
+    /* Make sure the first command list gets the state reset when executed.
+     * Resets for subsequent command lists are encoded in wined3d_deferred_context_record_command_list(). */
+    wined3d_device_context_emit_reset_state(&object->c, true);
+
+    TRACE("Created deferred context %p.\n", object);
+    *context = &object->c;
+
+    return S_OK;
+}
+
+void CDECL wined3d_deferred_context_destroy(struct wined3d_device_context *context)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    SIZE_T i;
+
+    TRACE("context %p.\n", context);
+
+    for (i = 0; i < deferred->resource_count; ++i)
+        wined3d_resource_decref(deferred->resources[i]);
+    heap_free(deferred->resources);
+
+    for (i = 0; i < deferred->upload_count; ++i)
+    {
+        wined3d_resource_decref(deferred->uploads[i].resource);
+        heap_free(deferred->uploads[i].sysmem);
+    }
+    heap_free(deferred->uploads);
+
+    for (i = 0; i < deferred->command_list_count; ++i)
+        wined3d_command_list_decref(deferred->command_lists[i]);
+    heap_free(deferred->command_lists);
+
+    for (i = 0; i < deferred->query_count; ++i)
+        wined3d_query_decref(deferred->queries[i].query);
+    heap_free(deferred->queries);
+
+    wined3d_state_destroy(deferred->c.state);
+    heap_free(deferred->data);
+    heap_free(deferred);
+}
+
+HRESULT CDECL wined3d_deferred_context_record_command_list(struct wined3d_device_context *context,
+        bool restore, struct wined3d_command_list **list)
+{
+    struct wined3d_deferred_context *deferred = wined3d_deferred_context_from_context(context);
+    struct wined3d_command_list *object;
+    void *memory;
+
+    TRACE("context %p, list %p.\n", context, list);
+
+    wined3d_device_context_lock(context);
+    memory = heap_alloc(sizeof(*object) + deferred->resource_count * sizeof(*object->resources)
+            + deferred->upload_count * sizeof(*object->uploads)
+            + deferred->command_list_count * sizeof(*object->command_lists)
+            + deferred->query_count * sizeof(*object->queries)
+            + deferred->data_size);
+
+    if (!memory)
+    {
+        wined3d_device_context_unlock(context);
+        return E_OUTOFMEMORY;
+    }
+
+    object = memory;
+    memory = &object[1];
+    memset(object, 0, sizeof(*object));
+    object->refcount = 1;
+    object->device = deferred->c.device;
+
+    object->resources = memory;
+    memory = &object->resources[deferred->resource_count];
+    object->resource_count = deferred->resource_count;
+    memcpy(object->resources, deferred->resources, deferred->resource_count * sizeof(*object->resources));
+    /* Transfer our references to the resources to the command list. */
+
+    object->uploads = memory;
+    memory = &object->uploads[deferred->upload_count];
+    object->upload_count = deferred->upload_count;
+    memcpy(object->uploads, deferred->uploads, deferred->upload_count * sizeof(*object->uploads));
+    /* Transfer our references to the resources to the command list. */
+
+    object->command_lists = memory;
+    memory = &object->command_lists[deferred->command_list_count];
+    object->command_list_count = deferred->command_list_count;
+    memcpy(object->command_lists, deferred->command_lists,
+            deferred->command_list_count * sizeof(*object->command_lists));
+    /* Transfer our references to the command lists to the command list. */
+
+    object->queries = memory;
+    memory = &object->queries[deferred->query_count];
+    object->query_count = deferred->query_count;
+    memcpy(object->queries, deferred->queries, deferred->query_count * sizeof(*object->queries));
+    /* Transfer our references to the queries to the command list. */
+
+    object->data = memory;
+    object->data_size = deferred->data_size;
+    memcpy(object->data, deferred->data, deferred->data_size);
+
+    deferred->data_size = 0;
+    deferred->resource_count = 0;
+    deferred->upload_count = 0;
+    deferred->command_list_count = 0;
+    deferred->query_count = 0;
+
+    /* This is in fact recorded into a subsequent command list. */
+    if (restore)
+        wined3d_device_context_set_state(&deferred->c, deferred->c.state);
+    else
+        wined3d_device_context_reset_state(&deferred->c);
+
+    TRACE("Created command list %p.\n", object);
+    *list = object;
+    wined3d_device_context_unlock(context);
+
+    return S_OK;
 }

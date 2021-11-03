@@ -32,6 +32,9 @@
 #include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+#include <X11/extensions/XInput2.h>
+#endif
 
 #define BOOL X_BOOL
 #define BYTE X_BYTE
@@ -152,11 +155,10 @@ extern BOOL CDECL X11DRV_Chord( PHYSDEV dev, INT left, INT top, INT right, INT b
 extern NTSTATUS CDECL X11DRV_D3DKMTCheckVidPnExclusiveOwnership( const D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP *desc ) DECLSPEC_HIDDEN;
 extern NTSTATUS CDECL X11DRV_D3DKMTSetVidPnSourceOwner( const D3DKMT_SETVIDPNSOURCEOWNER *desc ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_Ellipse( PHYSDEV dev, INT left, INT top, INT right, INT bottom ) DECLSPEC_HIDDEN;
-extern INT CDECL X11DRV_EnumICMProfiles( PHYSDEV dev, ICMENUMPROCW proc, LPARAM lparam ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_ExtFloodFill( PHYSDEV dev, INT x, INT y, COLORREF color, UINT fillType ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_FillPath( PHYSDEV dev ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_GetDeviceGammaRamp( PHYSDEV dev, LPVOID ramp ) DECLSPEC_HIDDEN;
-extern BOOL CDECL X11DRV_GetICMProfile( PHYSDEV dev, LPDWORD size, LPWSTR filename ) DECLSPEC_HIDDEN;
+extern BOOL CDECL X11DRV_GetICMProfile( PHYSDEV dev, BOOL allow_default, LPDWORD size, LPWSTR filename ) DECLSPEC_HIDDEN;
 extern DWORD CDECL X11DRV_GetImage( PHYSDEV dev, BITMAPINFO *info,
                                     struct gdi_image_bits *bits, struct bitblt_coords *src ) DECLSPEC_HIDDEN;
 extern COLORREF CDECL X11DRV_GetNearestColor( PHYSDEV dev, COLORREF color ) DECLSPEC_HIDDEN;
@@ -168,7 +170,6 @@ extern BOOL CDECL X11DRV_PaintRgn( PHYSDEV dev, HRGN hrgn ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_PatBlt( PHYSDEV dev, struct bitblt_coords *dst, DWORD rop ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_Pie( PHYSDEV dev, INT left, INT top, INT right,
                               INT bottom, INT xstart, INT ystart, INT xend, INT yend ) DECLSPEC_HIDDEN;
-extern BOOL CDECL X11DRV_Polygon( PHYSDEV dev, const POINT* pt, INT count ) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_PolyPolygon( PHYSDEV dev, const POINT* pt, const INT* counts, UINT polygons) DECLSPEC_HIDDEN;
 extern BOOL CDECL X11DRV_PolyPolyline( PHYSDEV dev, const POINT* pt, const DWORD* counts, DWORD polylines) DECLSPEC_HIDDEN;
 extern DWORD CDECL X11DRV_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
@@ -316,13 +317,6 @@ struct x11drv_escape_flush_gl_drawable
  * X11 USER driver
  */
 
-struct x11drv_valuator_data
-{
-    double min;
-    double max;
-    int number;
-};
-
 struct x11drv_thread_data
 {
     Display *display;
@@ -337,13 +331,15 @@ struct x11drv_thread_data
     Window   clip_window;          /* window used for cursor clipping */
     HWND     clip_hwnd;            /* message window stored in desktop while clipping is active */
     DWORD    clip_reset;           /* time when clipping was last reset */
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
     enum { xi_unavailable = -1, xi_unknown, xi_disabled, xi_enabled } xi2_state; /* XInput2 state */
     void    *xi2_devices;          /* list of XInput2 devices (valid when state is enabled) */
     int      xi2_device_count;
-    struct x11drv_valuator_data x_rel_valuator;
-    struct x11drv_valuator_data y_rel_valuator;
+    XIValuatorClassInfo x_valuator;
+    XIValuatorClassInfo y_valuator;
     int      xi2_core_pointer;     /* XInput2 core pointer id */
     int      xi2_current_slave;    /* Current slave driving the Core pointer */
+#endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
 };
 
 extern struct x11drv_thread_data *x11drv_init_thread_data(void) DECLSPEC_HIDDEN;
@@ -415,6 +411,7 @@ enum x11drv_atoms
     FIRST_XATOM = XA_LAST_PREDEFINED + 1,
     XATOM_CLIPBOARD = FIRST_XATOM,
     XATOM_COMPOUND_TEXT,
+    XATOM_EDID,
     XATOM_INCR,
     XATOM_MANAGER,
     XATOM_MULTIPLE,
@@ -588,11 +585,13 @@ extern struct x11drv_win_data *get_win_data( HWND hwnd ) DECLSPEC_HIDDEN;
 extern void release_win_data( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
 extern Window X11DRV_get_whole_window( HWND hwnd ) DECLSPEC_HIDDEN;
 extern XIC X11DRV_get_ic( HWND hwnd ) DECLSPEC_HIDDEN;
+extern Window get_dummy_parent(void) DECLSPEC_HIDDEN;
 
 extern void sync_gl_drawable( HWND hwnd, BOOL known_child ) DECLSPEC_HIDDEN;
 extern void set_gl_drawable_parent( HWND hwnd, HWND parent ) DECLSPEC_HIDDEN;
 extern void destroy_gl_drawable( HWND hwnd ) DECLSPEC_HIDDEN;
 extern void wine_vk_surface_destroy( HWND hwnd ) DECLSPEC_HIDDEN;
+extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
 
 extern void wait_for_withdrawn_state( HWND hwnd, BOOL set ) DECLSPEC_HIDDEN;
 extern Window init_clip_window(void) DECLSPEC_HIDDEN;
@@ -753,6 +752,9 @@ struct x11drv_monitor
     RECT rc_work;
     /* StateFlags in DISPLAY_DEVICE struct */
     DWORD state_flags;
+    /* Extended Device Identification Data */
+    unsigned long edid_len;
+    unsigned char *edid;
 };
 
 /* Required functions for display device registry initialization */
@@ -788,7 +790,7 @@ struct x11drv_display_device_handler
     void (*free_adapters)(struct x11drv_adapter *adapters);
 
     /* free_monitors will be called to free a monitor list from get_monitors */
-    void (*free_monitors)(struct x11drv_monitor *monitors);
+    void (*free_monitors)(struct x11drv_monitor *monitors, int count);
 
     /* register_event_handlers will be called to register event handlers.
      * This function pointer is optional and can be NULL when driver doesn't support it */

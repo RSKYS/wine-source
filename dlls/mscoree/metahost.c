@@ -89,6 +89,7 @@ MonoImage* (CDECL *mono_assembly_get_image)(MonoAssembly *assembly);
 MonoAssembly* (CDECL *mono_assembly_load_from)(MonoImage *image, const char *fname, MonoImageOpenStatus *status);
 const char* (CDECL *mono_assembly_name_get_name)(MonoAssemblyName *aname);
 const char* (CDECL *mono_assembly_name_get_culture)(MonoAssemblyName *aname);
+WORD (CDECL *mono_assembly_name_get_version)(MonoAssemblyName *aname, WORD *minor, WORD *build, WORD *revision);
 MonoAssembly* (CDECL *mono_assembly_open)(const char *filename, MonoImageOpenStatus *status);
 void (CDECL *mono_callspec_set_assembly)(MonoAssembly *assembly);
 MonoClass* (CDECL *mono_class_from_mono_type)(MonoType *type);
@@ -135,8 +136,6 @@ static BOOL find_mono_dll(LPCWSTR path, LPWSTR dll_path);
 static MonoAssembly* CDECL mono_assembly_preload_hook_fn(MonoAssemblyName *aname, char **assemblies_path, void *user_data);
 
 static void CDECL mono_shutdown_callback_fn(MonoProfiler *prof);
-
-static void CDECL mono_print_handler_fn(const char *string, INT is_stdout);
 
 static MonoImage* CDECL image_open_module_handle_dummy(HMODULE module_handle,
     char* fname, UINT has_entry_point, MonoImageOpenStatus* status)
@@ -199,6 +198,7 @@ static HRESULT load_mono(LPCWSTR mono_path)
         LOAD_MONO_FUNCTION(mono_assembly_load_from);
         LOAD_MONO_FUNCTION(mono_assembly_name_get_name);
         LOAD_MONO_FUNCTION(mono_assembly_name_get_culture);
+        LOAD_MONO_FUNCTION(mono_assembly_name_get_version);
         LOAD_MONO_FUNCTION(mono_assembly_open);
         LOAD_MONO_FUNCTION(mono_config_parse);
         LOAD_MONO_FUNCTION(mono_class_from_mono_type);
@@ -374,17 +374,6 @@ MonoDomain* get_root_domain(void)
 static void CDECL mono_shutdown_callback_fn(MonoProfiler *prof)
 {
     is_mono_shutdown = TRUE;
-}
-
-static void CDECL mono_print_handler_fn(const char *string, INT is_stdout)
-{
-    const char *p;
-    for (; *string; string = p)
-    {
-        if ((p = strstr(string, "\n"))) p++;
-        else p = string + strlen(string);
-        wine_dbg_printf("%.*s", (int)(p - string), string);
-    }
 }
 
 static HRESULT WINAPI thread_set_fn(void)
@@ -1553,8 +1542,9 @@ static DWORD get_basename_search_flags(const char *basename, MonoAssemblyName *a
         return reg_entry.flags;
     }
 
-    if (strcmp(basename, "Microsoft.Xna.Framework.*") == 0)
-        /* XNA redist is broken in Wine Mono, use FNA instead. */
+    if (strcmp(basename, "Microsoft.Xna.Framework.*") == 0 &&
+        mono_assembly_name_get_version(aname, NULL, NULL, NULL) == 4)
+        /* Use FNA as a replacement for XNA4. */
         return 0;
 
     return ASSEMBLY_SEARCH_UNDEFINED;

@@ -47,7 +47,11 @@ ULONG CDECL wined3d_palette_decref(struct wined3d_palette *palette)
     TRACE("%p decreasing refcount to %u.\n", palette, refcount);
 
     if (!refcount)
+    {
+        wined3d_mutex_lock();
         wined3d_cs_destroy_object(palette->device->cs, wined3d_palette_destroy_object, palette);
+        wined3d_mutex_unlock();
+    }
 
     return refcount;
 }
@@ -61,7 +65,7 @@ HRESULT CDECL wined3d_palette_get_entries(const struct wined3d_palette *palette,
 
     if (flags)
         return WINED3DERR_INVALIDCALL; /* unchecked */
-    if (start > palette->size || count > palette->size - start)
+    if (!wined3d_bound_range(start, count, palette->size))
         return WINED3DERR_INVALIDCALL;
 
     if (palette->flags & WINED3D_PALETTE_8BIT_ENTRIES)

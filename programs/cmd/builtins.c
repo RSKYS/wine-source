@@ -4218,7 +4218,7 @@ void WCMD_setshow_env (WCHAR *s) {
     if ((!status) & (gle == ERROR_ENVVAR_NOT_FOUND)) {
       errorlevel = 1;
     } else if (!status) WCMD_print_error();
-    else errorlevel = 0;
+    else if (!interactive) errorlevel = 0;
   }
 }
 
@@ -4351,8 +4351,8 @@ void WCMD_start(WCHAR *args)
     STARTUPINFOW st;
     PROCESS_INFORMATION pi;
 
-    GetWindowsDirectoryW( file, MAX_PATH );
-    lstrcatW(file, L"\\command\\start.exe");
+    GetSystemDirectoryW( file, MAX_PATH );
+    lstrcatW(file, L"\\start.exe");
     cmdline = heap_xalloc( (lstrlenW(file) + lstrlenW(args) + 8) * sizeof(WCHAR) );
     lstrcpyW( cmdline, file );
     lstrcatW(cmdline, L" ");
@@ -4763,7 +4763,7 @@ void WCMD_assoc (const WCHAR *args, BOOL assoc) {
     WCHAR   *newValue;
     LONG    rc = ERROR_SUCCESS;
     WCHAR    keyValue[MAXSTRING];
-    DWORD   valueLen = MAXSTRING;
+    DWORD   valueLen;
     HKEY    readKey;
 
     /* See if parameter includes '=' */
@@ -4803,7 +4803,7 @@ void WCMD_assoc (const WCHAR *args, BOOL assoc) {
 
             if (RegOpenKeyExW(key, subkey, 0, accessOptions, &readKey) == ERROR_SUCCESS) {
 
-              valueLen = ARRAY_SIZE(keyValue);
+              valueLen = sizeof(keyValue);
               rc = RegQueryValueExW(readKey, NULL, NULL, NULL, (LPBYTE)keyValue, &valueLen);
               WCMD_output_asis(keyName);
               WCMD_output_asis(L"=");
@@ -4836,6 +4836,7 @@ void WCMD_assoc (const WCHAR *args, BOOL assoc) {
 
         if (RegOpenKeyExW(key, subkey, 0, accessOptions, &readKey) == ERROR_SUCCESS) {
 
+          valueLen = sizeof(keyValue);
           rc = RegQueryValueExW(readKey, NULL, NULL, NULL, (LPBYTE)keyValue, &valueLen);
           WCMD_output_asis(args);
           WCMD_output_asis(L"=");

@@ -50,8 +50,7 @@ BOOL compare_export_(const char *file, unsigned line, const char *filename,
     todo_wine_if (todo & TODO_REG_COMPARE)
         lok(!lstrcmpW(fbuf, wstr), "export data does not match expected data\n");
 
-    ret = DeleteFileA(filename);
-    lok(ret, "DeleteFile failed: %u\n", GetLastError());
+    ret = delete_file_(file, line, filename);
 
 exit:
     HeapFree(GetProcessHeap(), 0, fbuf);
@@ -98,6 +97,18 @@ const char *complex_data_test =
     "[HKEY_CURRENT_USER\\" KEY_BASE "\\Subkey4]\r\n"
     "@=dword:12345678\r\n"
     "\"43981\"=hex(abcd):56,61,6c,75,65,00\r\n\r\n";
+
+const char *key_order_test =
+    "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
+    "[HKEY_CURRENT_USER\\" KEY_BASE "]\r\n\r\n"
+    "[HKEY_CURRENT_USER\\" KEY_BASE "\\Subkey1]\r\n\r\n"
+    "[HKEY_CURRENT_USER\\" KEY_BASE "\\Subkey2]\r\n\r\n";
+
+const char *value_order_test =
+    "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
+    "[HKEY_CURRENT_USER\\" KEY_BASE "]\r\n"
+    "\"Value 2\"=\"I was added first!\"\r\n"
+    "\"Value 1\"=\"I was added second!\"\r\n\r\n";
 
 const char *empty_hex_test =
     "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
@@ -154,30 +165,23 @@ const char *escaped_null_test =
     "\"Wine5e\"=\"Value3\\\\0Value4\"\r\n"
     "\"Wine5f\"=\"\\\\0Value5\"\r\n\r\n";
 
+const char *registry_view_test =
+    "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\" KEY_BASE "]\r\n"
+    "\"DWORD\"=dword:00000100\r\n"
+    "\"String\"=\"Your text here...\"\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\" KEY_BASE "\\Subkey1]\r\n"
+    "\"Binary\"=hex:11,22,33,44\r\n"
+    "\"Undefined hex\"=hex(100):25,50,41,54,48,25,00\r\n\r\n";
+
 
 /* Unit tests */
 
-static void test_export(void)
+static void test_command_syntax(void)
 {
-    LONG err;
-    DWORD r, dword, type, size;
-    HKEY hkey, subkey;
-    BYTE hex[4], buffer[8];
+    DWORD r;
 
-    const char *key_order_test =
-        "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
-        "[HKEY_CURRENT_USER\\" KEY_BASE "]\r\n\r\n"
-        "[HKEY_CURRENT_USER\\" KEY_BASE "\\Subkey1]\r\n\r\n"
-        "[HKEY_CURRENT_USER\\" KEY_BASE "\\Subkey2]\r\n\r\n";
-
-    const char *value_order_test =
-        "\xef\xbb\xbfWindows Registry Editor Version 5.00\r\n\r\n"
-        "[HKEY_CURRENT_USER\\" KEY_BASE "]\r\n"
-        "\"Value 2\"=\"I was added first!\"\r\n"
-        "\"Value 1\"=\"I was added second!\"\r\n\r\n";
-
-    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
-    verify_key_nonexist(HKEY_CURRENT_USER, KEY_BASE);
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     run_reg_exe("reg export", &r);
     ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
@@ -212,14 +216,34 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE, &r);
     ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
 
+    /* This test fails because the registry key doesn't exist */
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg", &r);
     ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
 
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg file2.reg", &r);
     ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
 
+    run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /reg:32 /reg:32", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /reg:32 /reg:64", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /reg:64 /reg:64", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+}
+
+static void test_export(void)
+{
+    LONG err;
+    DWORD r, dword, type, size;
+    HKEY hkey, subkey;
+    BYTE hex[4], buffer[8];
+
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE, 0);
+
     /* Test registry export with an empty key */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
+    add_key(HKEY_CURRENT_USER, KEY_BASE, 0, &hkey);
 
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
@@ -251,32 +275,32 @@ static void test_export(void)
     ok(compare_export("foo", simple_data_test, 0), "compare_export() failed\n");
 
     /* Test registry export with a complex data structure */
-    add_key(hkey, "Subkey1", &subkey);
+    add_key(hkey, "Subkey1", 0, &subkey);
     add_value(subkey, "Binary", REG_BINARY, "\x11\x22\x33\x44", 4);
     add_value(subkey, "Undefined hex", 0x100, "%PATH%", 7);
     close_key(subkey);
 
-    add_key(hkey, "Subkey2a", &subkey);
+    add_key(hkey, "Subkey2a", 0, &subkey);
     add_value(subkey, "double\"quote", REG_SZ, "\"Hello, World!\"", 16);
     dword = 0x8;
     add_value(subkey, "single'quote", REG_DWORD, &dword, sizeof(dword));
     close_key(subkey);
 
-    add_key(hkey, "Subkey2a\\Subkey2b", &subkey);
+    add_key(hkey, "Subkey2a\\Subkey2b", 0, &subkey);
     add_value(subkey, NULL, REG_SZ, "Default value name", 19);
     add_value(subkey, "Multiple strings", REG_MULTI_SZ, "Line1\0Line2\0Line3\0", 19);
     close_key(subkey);
 
-    add_key(hkey, "Subkey3a", &subkey);
+    add_key(hkey, "Subkey3a", 0, &subkey);
     add_value(subkey, "Backslash", REG_SZ, "Use \\\\ to escape a backslash", 29);
     close_key(subkey);
 
-    add_key(hkey, "Subkey3a\\Subkey3b\\Subkey3c", &subkey);
+    add_key(hkey, "Subkey3a\\Subkey3b\\Subkey3c", 0, &subkey);
     add_value(subkey, "String expansion", REG_EXPAND_SZ, "%HOME%\\%PATH%", 14);
     add_value(subkey, "Zero data type", REG_NONE, "Value", 6);
     close_key(subkey);
 
-    add_key(hkey, "Subkey4", &subkey);
+    add_key(hkey, "Subkey4", 0, &subkey);
     dword = 0x12345678;
     add_value(subkey, NULL, REG_DWORD, &dword, sizeof(dword));
     add_value(subkey, "43981", 0xabcd, "Value", 6);
@@ -287,18 +311,18 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", complex_data_test, 0), "compare_export() failed\n");
-    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test the export order of registry keys */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
-    add_key(hkey, "Subkey2", NULL);
-    add_key(hkey, "Subkey1", NULL);
+    add_key(HKEY_CURRENT_USER, KEY_BASE, 0, &hkey);
+    add_key(hkey, "Subkey2", 0, NULL);
+    add_key(hkey, "Subkey1", 0, NULL);
 
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", key_order_test, 0), "compare_export() failed\n");
-    delete_key(hkey, "Subkey1");
-    delete_key(hkey, "Subkey2");
+    delete_key(hkey, "Subkey1", 0);
+    delete_key(hkey, "Subkey2", 0);
 
     /* Test the export order of registry values. Windows exports registry values
      * in order of creation; Wine uses alphabetical order.
@@ -310,10 +334,10 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", value_order_test, TODO_REG_COMPARE), "compare_export() failed\n");
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    delete_key(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test registry export with empty hex data */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
+    add_key(HKEY_CURRENT_USER, KEY_BASE, 0, &hkey);
     add_value(hkey, "Wine1a", REG_NONE, NULL, 0);
     add_value(hkey, "Wine1b", REG_SZ, NULL, 0);
     add_value(hkey, "Wine1c", REG_EXPAND_SZ, NULL, 0);
@@ -327,7 +351,7 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", empty_hex_test, 0), "compare_export() failed\n");
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    delete_key(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test registry export after importing alternative registry data types */
     test_import_wstr("\xef\xbb\xbfWindows Registry Editor Version 5.00\n\n"
@@ -345,7 +369,7 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", empty_hex_test2, 0), "compare_export() failed\n");
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    delete_key(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     test_import_wstr("\xef\xbb\xbfWindows Registry Editor Version 5.00\n\n"
                      "[HKEY_CURRENT_USER\\" KEY_BASE "]\n"
@@ -364,7 +388,7 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", hex_types_test, 0), "compare_export() failed\n");
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    delete_key(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test registry export with embedded null characters */
     test_import_wstr("\xef\xbb\xbfWindows Registry Editor Version 5.00\n\n"
@@ -401,11 +425,11 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", embedded_null_test, 0), "compare_export() failed\n");
-    delete_key(HKEY_CURRENT_USER, KEY_BASE);
+    delete_key(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test registry export with forward and back slashes */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
-    add_key(hkey, "https://winehq.org", NULL);
+    add_key(HKEY_CURRENT_USER, KEY_BASE, 0, &hkey);
+    add_key(hkey, "https://winehq.org", 0, NULL);
     add_value(hkey, "count/up", REG_SZ, "one/two/three", 14);
     add_value(hkey, "\\foo\\bar", REG_SZ, "", 1);
     close_key(hkey);
@@ -413,10 +437,10 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", slashes_test, TODO_REG_COMPARE), "compare_export() failed\n");
-    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE, 0);
 
     /* Test escaped null characters */
-    add_key(HKEY_CURRENT_USER, KEY_BASE, &hkey);
+    add_key(HKEY_CURRENT_USER, KEY_BASE, 0, &hkey);
     add_value(hkey, "Wine5a", REG_SZ, "\\0", 3);
     add_value(hkey, "Wine5b", REG_SZ, "\\0\\0", 5);
     add_value(hkey, "Wine5c", REG_SZ, "Value1\\0", 9);
@@ -428,7 +452,142 @@ static void test_export(void)
     run_reg_exe("reg export HKEY_CURRENT_USER\\" KEY_BASE " file.reg /y", &r);
     ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
     ok(compare_export("file.reg", escaped_null_test, 0), "compare_export() failed\n");
-    delete_tree(HKEY_CURRENT_USER, KEY_BASE);
+    delete_tree(HKEY_CURRENT_USER, KEY_BASE, 0);
+}
+
+static void create_test_key(REGSAM sam)
+{
+    HKEY hkey, subkey;
+    DWORD dword = 0x100;
+
+    add_key(HKEY_LOCAL_MACHINE, KEY_BASE, sam, &hkey);
+    add_value(hkey, "DWORD", REG_DWORD, &dword, sizeof(dword));
+    add_value(hkey, "String", REG_SZ, "Your text here...", 18);
+
+    add_key(hkey, "Subkey1", sam, &subkey);
+    add_value(subkey, "Binary", REG_BINARY, "\x11\x22\x33\x44", 4);
+    add_value(subkey, "Undefined hex", 0x100, "%PATH%", 7);
+    close_key(subkey);
+
+    close_key(hkey);
+}
+
+static void test_registry_view_win32(void)
+{
+    DWORD r;
+    BOOL is_wow64, is_win32;
+
+    IsWow64Process(GetCurrentProcess(), &is_wow64);
+    is_win32 = !is_wow64 && (sizeof(void *) == sizeof(int));
+
+    if (!is_win32) return;
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    /* Try exporting from the 32-bit registry view (32-bit Windows) */
+    create_test_key(KEY_WOW64_32KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    /* Try exporting from the 64-bit registry view, which doesn't exist on 32-bit Windows */
+    create_test_key(KEY_WOW64_64KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+}
+
+static void test_registry_view_win64(void)
+{
+    DWORD r;
+    BOOL is_wow64, is_win64;
+
+    IsWow64Process(GetCurrentProcess(), &is_wow64);
+    is_win64 = !is_wow64 && (sizeof(void *) > sizeof(int));
+
+    if (!is_win64) return;
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    /* Try exporting from the 32-bit registry view (64-bit Windows) */
+    create_test_key(KEY_WOW64_32KEY);
+    verify_key_nonexist(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+
+    /* Try exporting from the 64-bit registry view (64-bit Windows) */
+    create_test_key(KEY_WOW64_64KEY);
+    verify_key_nonexist(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+}
+
+static void test_registry_view_wow64(void)
+{
+    DWORD r;
+    BOOL is_wow64;
+
+    IsWow64Process(GetCurrentProcess(), &is_wow64);
+
+    if (!is_wow64) return;
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    /* Try exporting from the 32-bit registry view (WOW64) */
+    create_test_key(KEY_WOW64_32KEY);
+    verify_key_nonexist(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
+
+    /* Try exporting from the 64-bit registry view (WOW64) */
+    create_test_key(KEY_WOW64_64KEY);
+    verify_key_nonexist(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_32KEY);
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:64", &r);
+    ok(r == REG_EXIT_SUCCESS, "got exit code %d, expected 0\n", r);
+    ok(compare_export("file.reg", registry_view_test, 0), "compare_export() failed\n");
+
+    run_reg_exe("reg export HKEY_LOCAL_MACHINE\\" KEY_BASE " file.reg /y /reg:32", &r);
+    ok(r == REG_EXIT_FAILURE, "got exit code %d, expected 1\n", r);
+
+    delete_tree(HKEY_LOCAL_MACHINE, KEY_BASE, KEY_WOW64_64KEY);
 }
 
 START_TEST(export)
@@ -440,5 +599,18 @@ START_TEST(export)
         return;
     }
 
+    test_command_syntax();
     test_export();
+
+    /* Check if reg.exe is running with elevated privileges */
+    if (!is_elevated_process())
+    {
+        win_skip("reg.exe is not running with elevated privileges; "
+                 "skipping registry view tests\n");
+        return;
+    }
+
+    test_registry_view_win32();
+    test_registry_view_win64();
+    test_registry_view_wow64();
 }

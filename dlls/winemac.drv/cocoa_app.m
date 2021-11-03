@@ -27,6 +27,12 @@
 
 static NSString* const WineAppWaitQueryResponseMode = @"WineAppWaitQueryResponseMode";
 
+// Private notifications that are reliably dispatched when a window is moved by dragging its titlebar.
+// The object of the notification is the window being dragged.
+// Available in macOS 10.12+
+static NSString* const NSWindowWillStartDraggingNotification = @"NSWindowWillStartDraggingNotification";
+static NSString* const NSWindowDidEndDraggingNotification = @"NSWindowDidEndDraggingNotification";
+
 
 int macdrv_err_on;
 
@@ -180,6 +186,15 @@ static NSString* WineLocalizedString(unsigned int stringID)
             warpRecords = [[NSMutableArray alloc] init];
 
             windowsBeingDragged = [[NSMutableSet alloc] init];
+
+            // On macOS 10.12+, use notifications to more reliably detect when windows are being dragged.
+            if ([NSProcessInfo instancesRespondToSelector:@selector(isOperatingSystemAtLeastVersion:)])
+            {
+                NSOperatingSystemVersion requiredVersion = { 10, 12, 0 };
+                useDragNotifications = [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:requiredVersion];
+            }
+            else
+                useDragNotifications = NO;
 
             if (!requests || !requestsManipQueue || !eventQueues || !eventQueuesLock ||
                 !keyWindows || !originalDisplayModes || !latentDisplayModes || !warpRecords)
@@ -1441,33 +1456,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
         return ret;
     }
 
-    - (void) activateCursorClipping
-    {
-        if (cursorClippingEventTap && !CGEventTapIsEnabled(cursorClippingEventTap))
-        {
-            CGEventTapEnable(cursorClippingEventTap, TRUE);
-            [self setCursorPosition:NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]])];
-        }
-    }
-
-    - (void) deactivateCursorClipping
-    {
-        if (cursorClippingEventTap && CGEventTapIsEnabled(cursorClippingEventTap))
-        {
-            CGEventTapEnable(cursorClippingEventTap, FALSE);
-            [warpRecords removeAllObjects];
-            lastSetCursorPositionTime = [[NSProcessInfo processInfo] systemUptime];
-        }
-    }
-
-    - (void) updateCursorClippingState
-    {
-        if (clippingCursor && [NSApp isActive] && ![windowsBeingDragged count])
-            [self activateCursorClipping];
-        else
-            [self deactivateCursorClipping];
-    }
-
     - (void) updateWindowsForCursorClipping
     {
         WineWindow* window;
@@ -1485,8 +1473,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         if (!cursorClippingEventTap && ![self installEventTap])
             return FALSE;
 
-        if (clippingCursor && CGRectEqualToRect(rect, cursorClipRect) &&
-            CGEventTapIsEnabled(cursorClippingEventTap))
+        if (clippingCursor && CGRectEqualToRect(rect, cursorClipRect))
             return TRUE;
 
         err = CGAssociateMouseAndMouseCursorPosition(false);
@@ -1495,7 +1482,10 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
         clippingCursor = TRUE;
         cursorClipRect = rect;
-        [self updateCursorClippingState];
+
+        CGEventTapEnable(cursorClippingEventTap, TRUE);
+        [self setCursorPosition:NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]])];
+
         [self updateWindowsForCursorClipping];
 
         return TRUE;
@@ -1503,12 +1493,21 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
     - (BOOL) stopClippingCursor
     {
-        CGError err = CGAssociateMouseAndMouseCursorPosition(true);
+        CGError err;
+
+        if (!clippingCursor)
+            return TRUE;
+
+        err = CGAssociateMouseAndMouseCursorPosition(true);
         if (err != kCGErrorSuccess)
             return FALSE;
 
         clippingCursor = FALSE;
-        [self updateCursorClippingState];
+
+        CGEventTapEnable(cursorClippingEventTap, FALSE);
+        [warpRecords removeAllObjects];
+        lastSetCursorPositionTime = [[NSProcessInfo processInfo] systemUptime];
+
         [self updateWindowsForCursorClipping];
 
         return TRUE;
@@ -1539,7 +1538,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
             [windowsBeingDragged addObject:window];
         else
             [windowsBeingDragged removeObject:window];
-        [self updateCursorClippingState];
     }
 
     - (void) windowWillOrderOut:(WineWindow*)window
@@ -1554,32 +1552,38 @@ static NSString* WineLocalizedString(unsigned int stringID)
         }
     }
 
-    - (void) handleWindowDrag:(NSEvent*)anEvent begin:(BOOL)begin
+    - (BOOL) isAnyWineWindowVisible
     {
-        WineWindow* window = (WineWindow*)[anEvent window];
-        if ([window isKindOfClass:[WineWindow class]])
+        for (WineWindow* w in [NSApp windows])
         {
-            macdrv_event* event;
-            int eventType;
-
-            if (begin)
-            {
-                [windowsBeingDragged addObject:window];
-                eventType = WINDOW_DRAG_BEGIN;
-            }
-            else
-            {
-                [windowsBeingDragged removeObject:window];
-                eventType = WINDOW_DRAG_END;
-            }
-            [self updateCursorClippingState];
-
-            event = macdrv_create_event(eventType, window);
-            if (eventType == WINDOW_DRAG_BEGIN)
-                event->window_drag_begin.no_activate = [NSEvent wine_commandKeyDown];
-            [window.queue postEvent:event];
-            macdrv_release_event(event);
+            if ([w isKindOfClass:[WineWindow class]] && ![w isMiniaturized] && [w isVisible])
+                return YES;
         }
+
+        return NO;
+    }
+
+    - (void) handleWindowDrag:(WineWindow*)window begin:(BOOL)begin
+    {
+        macdrv_event* event;
+        int eventType;
+
+        if (begin)
+        {
+            [windowsBeingDragged addObject:window];
+            eventType = WINDOW_DRAG_BEGIN;
+        }
+        else
+        {
+            [windowsBeingDragged removeObject:window];
+            eventType = WINDOW_DRAG_END;
+        }
+
+        event = macdrv_create_event(eventType, window);
+        if (eventType == WINDOW_DRAG_BEGIN)
+            event->window_drag_begin.no_activate = [NSEvent wine_commandKeyDown];
+        [window.queue postEvent:event];
+        macdrv_release_event(event);
     }
 
     - (void) handleMouseMove:(NSEvent*)anEvent
@@ -1735,9 +1739,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
         NSEventType type = [theEvent type];
         WineWindow* windowBroughtForward = nil;
         BOOL process = FALSE;
-
-        if (type == NSEventTypeLeftMouseUp && [windowsBeingDragged count])
-            [self handleWindowDrag:theEvent begin:NO];
 
         if ([window isKindOfClass:[WineWindow class]] &&
             type == NSEventTypeLeftMouseDown &&
@@ -2085,15 +2086,16 @@ static NSString* WineLocalizedString(unsigned int stringID)
                     [window postKeyEvent:anEvent];
             }
         }
-        else if (type == NSEventTypeAppKitDefined)
+        else if (!useDragNotifications && type == NSEventTypeAppKitDefined)
         {
+            WineWindow *window = (WineWindow *)[anEvent window];
             short subtype = [anEvent subtype];
 
             // These subtypes are not documented but they appear to mean
             // "a window is being dragged" and "a window is no longer being
             // dragged", respectively.
-            if (subtype == 20 || subtype == 21)
-                [self handleWindowDrag:anEvent begin:(subtype == 20)];
+            if ((subtype == 20 || subtype == 21) && [window isKindOfClass:[WineWindow class]])
+                [self handleWindowDrag:window begin:(subtype == 20)];
         }
 
         return ret;
@@ -2152,8 +2154,27 @@ static NSString* WineLocalizedString(unsigned int stringID)
                 });
             }
             [windowsBeingDragged removeObject:window];
-            [self updateCursorClippingState];
         }];
+
+        if (useDragNotifications) {
+            [nc addObserverForName:NSWindowWillStartDraggingNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note){
+                NSWindow* window = [note object];
+                if ([window isKindOfClass:[WineWindow class]])
+                    [self handleWindowDrag:(WineWindow *)window begin:YES];
+            }];
+
+            [nc addObserverForName:NSWindowDidEndDraggingNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note){
+                NSWindow* window = [note object];
+                if ([window isKindOfClass:[WineWindow class]])
+                    [self handleWindowDrag:(WineWindow *)window begin:NO];
+            }];
+        }
 
         [nc addObserver:self
                selector:@selector(keyboardSelectionDidChange)
@@ -2276,8 +2297,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
             [self setMode:mode forDisplay:[displayID unsignedIntValue]];
         }
 
-        [self updateCursorClippingState];
-
         [self updateFullscreenWindows];
         [self adjustWindowLevels:YES];
 
@@ -2319,8 +2338,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
     {
         macdrv_event* event;
         WineEventQueue* queue;
-
-        [self updateCursorClippingState];
 
         [self invalidateGotFocusEvents];
 
@@ -2815,4 +2832,15 @@ void macdrv_set_cocoa_retina_mode(int new_mode)
     OnMainThread(^{
         [[WineApplicationController sharedController] setRetinaMode:new_mode];
     });
+}
+
+int macdrv_is_any_wine_window_visible(void)
+{
+    __block int ret = FALSE;
+
+    OnMainThread(^{
+        ret = [[WineApplicationController sharedController] isAnyWineWindowVisible];
+    });
+
+    return ret;
 }

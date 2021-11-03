@@ -35,8 +35,6 @@
 #include "services.h"
 #include "svcctl.h"
 
-extern HANDLE CDECL __wine_make_process_system(void);
-
 WINE_DEFAULT_DEBUG_CHANNEL(service);
 
 static const GENERIC_MAPPING g_scm_generic =
@@ -981,7 +979,7 @@ DWORD __cdecl svcctl_QueryServiceConfig2W( SC_RPC_HANDLE hService, DWORD level,
 
     memset(buffer, 0, size);
 
-    if ((err = validate_service_handle(hService, SERVICE_QUERY_STATUS, &service)) != 0)
+    if ((err = validate_service_handle(hService, SERVICE_QUERY_CONFIG, &service)) != 0)
         return err;
 
     switch (level)
@@ -2135,7 +2133,8 @@ DWORD RPC_Init(void)
         return err;
     }
 
-    exit_event = __wine_make_process_system();
+    NtSetInformationProcess( GetCurrentProcess(), ProcessWineMakeProcessSystem,
+                             &exit_event, sizeof(HANDLE *) );
     return ERROR_SUCCESS;
 }
 

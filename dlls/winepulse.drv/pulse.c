@@ -43,6 +43,45 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(pulse);
 
+struct pulse_stream
+{
+    EDataFlow dataflow;
+
+    pa_stream *stream;
+    pa_sample_spec ss;
+    pa_channel_map map;
+    pa_buffer_attr attr;
+
+    DWORD flags;
+    AUDCLNT_SHAREMODE share;
+    HANDLE event;
+    float vol[PA_CHANNELS_MAX];
+    BOOL mute;
+
+    INT32 locked;
+    BOOL started;
+    SIZE_T bufsize_frames, alloc_size, real_bufsize_bytes, period_bytes;
+    SIZE_T peek_ofs, read_offs_bytes, lcl_offs_bytes, pa_offs_bytes;
+    SIZE_T tmp_buffer_bytes, held_bytes, peek_len, peek_buffer_len, pa_held_bytes;
+    BYTE *local_buffer, *tmp_buffer, *peek_buffer;
+    void *locked_ptr;
+    BOOL please_quit, just_started, just_underran;
+    pa_usec_t last_time, mmdev_period_usec;
+
+    INT64 clock_lastpos, clock_written;
+
+    struct list packet_free_head;
+    struct list packet_filled_head;
+};
+
+typedef struct _ACPacket
+{
+    struct list entry;
+    UINT64 qpcpos;
+    BYTE *data;
+    UINT32 discont;
+} ACPacket;
+
 static pa_context *pulse_ctx;
 static pa_mainloop *pulse_ml;
 
@@ -58,22 +97,25 @@ static const REFERENCE_TIME DefaultPeriod = 100000;
 static pthread_mutex_t pulse_mutex;
 static pthread_cond_t pulse_cond = PTHREAD_COND_INITIALIZER;
 
-static void WINAPI pulse_lock(void)
+UINT8 mult_alaw_sample(UINT8, float);
+UINT8 mult_ulaw_sample(UINT8, float);
+
+static void pulse_lock(void)
 {
     pthread_mutex_lock(&pulse_mutex);
 }
 
-static void WINAPI pulse_unlock(void)
+static void pulse_unlock(void)
 {
     pthread_mutex_unlock(&pulse_mutex);
 }
 
-static int WINAPI pulse_cond_wait(void)
+static int pulse_cond_wait(void)
 {
     return pthread_cond_wait(&pulse_cond, &pulse_mutex);
 }
 
-static void WINAPI pulse_broadcast(void)
+static void pulse_broadcast(void)
 {
     pthread_cond_broadcast(&pulse_cond);
 }
@@ -134,16 +176,44 @@ static int pulse_poll_func(struct pollfd *ufds, unsigned long nfds, int timeout,
     return r;
 }
 
-static void WINAPI pulse_main_loop(void)
+static NTSTATUS pulse_process_attach(void *args)
 {
+    pthread_mutexattr_t attr;
+
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
+
+    if (pthread_mutex_init(&pulse_mutex, &attr) != 0)
+        pthread_mutex_init(&pulse_mutex, NULL);
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_process_detach(void *args)
+{
+    if (pulse_ctx)
+    {
+        pa_context_disconnect(pulse_ctx);
+        pa_context_unref(pulse_ctx);
+    }
+    if (pulse_ml)
+        pa_mainloop_quit(pulse_ml, 0);
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_main_loop(void *args)
+{
+    struct main_loop_params *params = args;
     int ret;
+    pulse_lock();
     pulse_ml = pa_mainloop_new();
     pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
-    pulse_lock();
-    pulse_broadcast();
+    NtSetEvent(params->event, NULL);
     pa_mainloop_run(pulse_ml, &ret);
-    pulse_unlock();
     pa_mainloop_free(pulse_ml);
+    pulse_unlock();
+    return STATUS_SUCCESS;
 }
 
 static void pulse_contextcallback(pa_context *c, void *userdata)
@@ -200,9 +270,21 @@ static void pulse_started_callback(pa_stream *s, void *userdata)
     TRACE("%p: (Re)started playing\n", userdata);
 }
 
+static void pulse_op_cb(pa_stream *s, int success, void *user)
+{
+    TRACE("Success: %i\n", success);
+    *(int*)user = success;
+    pulse_broadcast();
+}
+
 static void silence_buffer(pa_sample_format_t format, BYTE *buffer, UINT32 bytes)
 {
     memset(buffer, format == PA_SAMPLE_U8 ? 0x80 : 0, bytes);
+}
+
+static BOOL pulse_stream_valid(struct pulse_stream *stream)
+{
+    return pa_stream_get_state(stream->stream) == PA_STREAM_READY;
 }
 
 static HRESULT pulse_connect(const char *name)
@@ -452,8 +534,10 @@ static void pulse_probe_settings(int render, WAVEFORMATEXTENSIBLE *fmt) {
  * have to do as much as possible without creating a new thread. this function
  * sets up a synchronous connection to verify the server is running and query
  * static data. */
-static HRESULT WINAPI pulse_test_connect(const char *name, struct pulse_config *config)
+static NTSTATUS pulse_test_connect(void *args)
 {
+    struct test_connect_params *params = args;
+    struct pulse_config *config = params->config;
     pa_operation *o;
     int ret;
 
@@ -462,13 +546,14 @@ static HRESULT WINAPI pulse_test_connect(const char *name, struct pulse_config *
 
     pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
 
-    pulse_ctx = pa_context_new(pa_mainloop_get_api(pulse_ml), name);
+    pulse_ctx = pa_context_new(pa_mainloop_get_api(pulse_ml), params->name);
     if (!pulse_ctx) {
         ERR("Failed to create context\n");
         pa_mainloop_free(pulse_ml);
         pulse_ml = NULL;
         pulse_unlock();
-        return E_FAIL;
+        params->result = E_FAIL;
+        return STATUS_SUCCESS;
     }
 
     pa_context_set_state_callback(pulse_ctx, pulse_contextcallback, NULL);
@@ -522,7 +607,8 @@ static HRESULT WINAPI pulse_test_connect(const char *name, struct pulse_config *
 
     pulse_unlock();
 
-    return S_OK;
+    params->result = S_OK;
+    return STATUS_SUCCESS;
 
 fail:
     pa_context_unref(pulse_ctx);
@@ -530,8 +616,8 @@ fail:
     pa_mainloop_free(pulse_ml);
     pulse_ml = NULL;
     pulse_unlock();
-
-    return E_FAIL;
+    params->result = E_FAIL;
+    return STATUS_SUCCESS;
 }
 
 static DWORD get_channel_mask(unsigned int channels)
@@ -737,41 +823,51 @@ static HRESULT pulse_stream_connect(struct pulse_stream *stream, UINT32 period_b
     return S_OK;
 }
 
-static HRESULT WINAPI pulse_create_stream(const char *name, EDataFlow dataflow, AUDCLNT_SHAREMODE mode,
-                                          DWORD flags, REFERENCE_TIME duration, REFERENCE_TIME period,
-                                          const WAVEFORMATEX *fmt, UINT32 *channel_count,
-                                          struct pulse_stream **ret)
+static NTSTATUS pulse_create_stream(void *args)
 {
+    struct create_stream_params *params = args;
+    REFERENCE_TIME period, duration = params->duration;
     struct pulse_stream *stream;
-    unsigned int bufsize_bytes;
+    unsigned int i, bufsize_bytes;
     HRESULT hr;
 
-    if (FAILED(hr = pulse_connect(name)))
-        return hr;
+    pulse_lock();
 
-    if (!(stream = RtlAllocateHeap(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*stream))))
-        return E_OUTOFMEMORY;
+    if (FAILED(params->result = pulse_connect(params->name)))
+    {
+        pulse_unlock();
+        return STATUS_SUCCESS;
+    }
 
-    stream->dataflow = dataflow;
+    if (!(stream = calloc(1, sizeof(*stream))))
+    {
+        pulse_unlock();
+        params->result = E_OUTOFMEMORY;
+        return STATUS_SUCCESS;
+    }
 
-    hr = pulse_spec_from_waveformat(stream, fmt);
+    stream->dataflow = params->dataflow;
+    for (i = 0; i < ARRAY_SIZE(stream->vol); ++i)
+        stream->vol[i] = 1.f;
+
+    hr = pulse_spec_from_waveformat(stream, params->fmt);
     TRACE("Obtaining format returns %08x\n", hr);
 
     if (FAILED(hr))
         goto exit;
 
-    period = pulse_def_period[dataflow == eCapture];
+    period = pulse_def_period[stream->dataflow == eCapture];
     if (duration < 3 * period)
         duration = 3 * period;
 
     stream->period_bytes = pa_frame_size(&stream->ss) * muldiv(period, stream->ss.rate, 10000000);
 
-    stream->bufsize_frames = ceil((duration / 10000000.) * fmt->nSamplesPerSec);
+    stream->bufsize_frames = ceil((duration / 10000000.) * params->fmt->nSamplesPerSec);
     bufsize_bytes = stream->bufsize_frames * pa_frame_size(&stream->ss);
     stream->mmdev_period_usec = period / 10;
 
-    stream->share = mode;
-    stream->flags = flags;
+    stream->share = params->mode;
+    stream->flags = params->flags;
     hr = pulse_stream_connect(stream, stream->period_bytes);
     if (SUCCEEDED(hr)) {
         UINT32 unalign;
@@ -779,10 +875,11 @@ static HRESULT WINAPI pulse_create_stream(const char *name, EDataFlow dataflow, 
         stream->attr = *attr;
         /* Update frames according to new size */
         dump_attr(attr);
-        if (dataflow == eRender) {
-            stream->real_bufsize_bytes = stream->bufsize_frames * 2 * pa_frame_size(&stream->ss);
-            stream->local_buffer = RtlAllocateHeap(GetProcessHeap(), 0, stream->real_bufsize_bytes);
-            if(!stream->local_buffer)
+        if (stream->dataflow == eRender) {
+            stream->alloc_size = stream->real_bufsize_bytes =
+                stream->bufsize_frames * 2 * pa_frame_size(&stream->ss);
+            if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
+                                        0, &stream->real_bufsize_bytes, MEM_COMMIT, PAGE_READWRITE))
                 hr = E_OUTOFMEMORY;
         } else {
             UINT32 i, capture_packets;
@@ -794,8 +891,9 @@ static HRESULT WINAPI pulse_create_stream(const char *name, EDataFlow dataflow, 
 
             capture_packets = stream->real_bufsize_bytes / stream->period_bytes;
 
-            stream->local_buffer = RtlAllocateHeap(GetProcessHeap(), 0, stream->real_bufsize_bytes + capture_packets * sizeof(ACPacket));
-            if (!stream->local_buffer)
+            stream->alloc_size = stream->real_bufsize_bytes + capture_packets * sizeof(ACPacket);
+            if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
+                                        0, &stream->alloc_size, MEM_COMMIT, PAGE_READWRITE))
                 hr = E_OUTOFMEMORY;
             else {
                 ACPacket *cur_packet = (ACPacket*)((char*)stream->local_buffer + stream->real_bufsize_bytes);
@@ -812,28 +910,32 @@ static HRESULT WINAPI pulse_create_stream(const char *name, EDataFlow dataflow, 
         }
     }
 
+    *params->channel_count = stream->ss.channels;
+    *params->stream = stream;
+
 exit:
-    if (FAILED(hr)) {
+    if (FAILED(params->result = hr)) {
         free(stream->local_buffer);
         if (stream->stream) {
             pa_stream_disconnect(stream->stream);
             pa_stream_unref(stream->stream);
-            RtlFreeHeap(GetProcessHeap(), 0, stream);
+            free(stream);
         }
-        return hr;
     }
 
-    *channel_count = stream->ss.channels;
-    *ret = stream;
-    return S_OK;
+    pulse_unlock();
+    return STATUS_SUCCESS;
 }
 
-static void WINAPI pulse_release_stream(struct pulse_stream *stream, HANDLE timer)
+static NTSTATUS pulse_release_stream(void *args)
 {
-    if(timer) {
+    struct release_stream_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    if(params->timer) {
         stream->please_quit = TRUE;
-        NtWaitForSingleObject(timer, FALSE, NULL);
-        NtClose(timer);
+        NtWaitForSingleObject(params->timer, FALSE, NULL);
+        NtClose(params->timer);
     }
 
     pulse_lock();
@@ -845,49 +947,1035 @@ static void WINAPI pulse_release_stream(struct pulse_stream *stream, HANDLE time
     pa_stream_unref(stream->stream);
     pulse_unlock();
 
-    RtlFreeHeap(GetProcessHeap(), 0, stream->tmp_buffer);
-    RtlFreeHeap(GetProcessHeap(), 0, stream->peek_buffer);
-    RtlFreeHeap(GetProcessHeap(), 0, stream->local_buffer);
-    RtlFreeHeap(GetProcessHeap(), 0, stream);
+    if (stream->tmp_buffer)
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer,
+                            &stream->tmp_buffer_bytes, MEM_RELEASE);
+    if (stream->local_buffer)
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
+                            &stream->alloc_size, MEM_RELEASE);
+    free(stream->peek_buffer);
+    free(stream);
+    return STATUS_SUCCESS;
 }
 
-static const struct unix_funcs unix_funcs =
+static int write_buffer(const struct pulse_stream *stream, BYTE *buffer, UINT32 bytes)
 {
-    pulse_lock,
-    pulse_unlock,
-    pulse_cond_wait,
-    pulse_broadcast,
-    pulse_main_loop,
-    pulse_create_stream,
-    pulse_release_stream,
-    pulse_test_connect,
-};
+    const float *vol = stream->vol;
+    UINT32 i, channels, mute = 0;
+    BOOL adjust = FALSE;
+    BYTE *end;
 
-NTSTATUS CDECL __wine_init_unix_lib(HMODULE module, DWORD reason, const void *ptr_in, void *ptr_out)
-{
-    pthread_mutexattr_t attr;
+    if (!bytes) return 0;
 
-    switch (reason)
+    /* Adjust the buffer based on the volume for each channel */
+    channels = stream->ss.channels;
+    for (i = 0; i < channels; i++)
     {
-    case DLL_PROCESS_ATTACH:
-        pthread_mutexattr_init(&attr);
-        pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
+        adjust |= vol[i] != 1.0f;
+        if (vol[i] == 0.0f)
+            mute++;
+    }
+    if (mute == channels)
+    {
+        silence_buffer(stream->ss.format, buffer, bytes);
+        goto write;
+    }
+    if (!adjust) goto write;
 
-        if (pthread_mutex_init(&pulse_mutex, &attr) != 0)
-            pthread_mutex_init(&pulse_mutex, NULL);
-
-        *(const struct unix_funcs **)ptr_out = &unix_funcs;
+    end = buffer + bytes;
+    switch (stream->ss.format)
+    {
+#ifndef WORDS_BIGENDIAN
+#define PROCESS_BUFFER(type) do         \
+{                                       \
+    type *p = (type*)buffer;            \
+    do                                  \
+    {                                   \
+        for (i = 0; i < channels; i++)  \
+            p[i] = p[i] * vol[i];       \
+        p += i;                         \
+    } while ((BYTE*)p != end);          \
+} while (0)
+    case PA_SAMPLE_S16LE:
+        PROCESS_BUFFER(INT16);
         break;
-    case DLL_PROCESS_DETACH:
-        if (pulse_ctx)
+    case PA_SAMPLE_S32LE:
+        PROCESS_BUFFER(INT32);
+        break;
+    case PA_SAMPLE_FLOAT32LE:
+        PROCESS_BUFFER(float);
+        break;
+#undef PROCESS_BUFFER
+    case PA_SAMPLE_S24_32LE:
+    {
+        UINT32 *p = (UINT32*)buffer;
+        do
         {
-            pa_context_disconnect(pulse_ctx);
-            pa_context_unref(pulse_ctx);
-        }
-        if (pulse_ml)
-            pa_mainloop_quit(pulse_ml, 0);
+            for (i = 0; i < channels; i++)
+            {
+                p[i] = (INT32)((INT32)(p[i] << 8) * vol[i]);
+                p[i] >>= 8;
+            }
+            p += i;
+        } while ((BYTE*)p != end);
+        break;
+    }
+    case PA_SAMPLE_S24LE:
+    {
+        /* do it 12 bytes at a time until it is no longer possible */
+        UINT32 *q = (UINT32*)buffer;
+        BYTE *p;
 
+        i = 0;
+        while (end - (BYTE*)q >= 12)
+        {
+            UINT32 v[4], k;
+            v[0] = q[0] << 8;
+            v[1] = q[1] << 16 | (q[0] >> 16 & ~0xff);
+            v[2] = q[2] << 24 | (q[1] >> 8  & ~0xff);
+            v[3] = q[2] & ~0xff;
+            for (k = 0; k < 4; k++)
+            {
+                v[k] = (INT32)((INT32)v[k] * vol[i]);
+                if (++i == channels) i = 0;
+            }
+            *q++ = v[0] >> 8  | (v[1] & ~0xff) << 16;
+            *q++ = v[1] >> 16 | (v[2] & ~0xff) << 8;
+            *q++ = v[2] >> 24 | (v[3] & ~0xff);
+        }
+        p = (BYTE*)q;
+        while (p != end)
+        {
+            UINT32 v = (INT32)((INT32)(p[0] << 8 | p[1] << 16 | p[2] << 24) * vol[i]);
+            *p++ = v >> 8  & 0xff;
+            *p++ = v >> 16 & 0xff;
+            *p++ = v >> 24;
+            if (++i == channels) i = 0;
+        }
+        break;
+    }
+#endif
+    case PA_SAMPLE_U8:
+    {
+        UINT8 *p = (UINT8*)buffer;
+        do
+        {
+            for (i = 0; i < channels; i++)
+                p[i] = (int)((p[i] - 128) * vol[i]) + 128;
+            p += i;
+        } while ((BYTE*)p != end);
+        break;
+    }
+    case PA_SAMPLE_ALAW:
+    {
+        UINT8 *p = (UINT8*)buffer;
+        do
+        {
+            for (i = 0; i < channels; i++)
+                p[i] = mult_alaw_sample(p[i], vol[i]);
+            p += i;
+        } while ((BYTE*)p != end);
+        break;
+    }
+    case PA_SAMPLE_ULAW:
+    {
+        UINT8 *p = (UINT8*)buffer;
+        do
+        {
+            for (i = 0; i < channels; i++)
+                p[i] = mult_ulaw_sample(p[i], vol[i]);
+            p += i;
+        } while ((BYTE*)p != end);
+        break;
+    }
+    default:
+        TRACE("Unhandled format %i, not adjusting volume.\n", stream->ss.format);
+        break;
+    }
+
+write:
+    return pa_stream_write(stream->stream, buffer, bytes, NULL, 0, PA_SEEK_RELATIVE);
+}
+
+static void pulse_write(struct pulse_stream *stream)
+{
+    /* write as much data to PA as we can */
+    UINT32 to_write;
+    BYTE *buf = stream->local_buffer + stream->pa_offs_bytes;
+    UINT32 bytes = pa_stream_writable_size(stream->stream);
+
+    if (stream->just_underran)
+    {
+        /* prebuffer with silence if needed */
+        if(stream->pa_held_bytes < bytes){
+            to_write = bytes - stream->pa_held_bytes;
+            TRACE("prebuffering %u frames of silence\n",
+                    (int)(to_write / pa_frame_size(&stream->ss)));
+            buf = calloc(1, to_write);
+            pa_stream_write(stream->stream, buf, to_write, NULL, 0, PA_SEEK_RELATIVE);
+            free(buf);
+        }
+
+        stream->just_underran = FALSE;
+    }
+
+    buf = stream->local_buffer + stream->pa_offs_bytes;
+    TRACE("held: %lu, avail: %u\n", stream->pa_held_bytes, bytes);
+    bytes = min(stream->pa_held_bytes, bytes);
+
+    if (stream->pa_offs_bytes + bytes > stream->real_bufsize_bytes)
+    {
+        to_write = stream->real_bufsize_bytes - stream->pa_offs_bytes;
+        TRACE("writing small chunk of %u bytes\n", to_write);
+        write_buffer(stream, buf, to_write);
+        stream->pa_held_bytes -= to_write;
+        to_write = bytes - to_write;
+        stream->pa_offs_bytes = 0;
+        buf = stream->local_buffer;
+    }
+    else
+        to_write = bytes;
+
+    TRACE("writing main chunk of %u bytes\n", to_write);
+    write_buffer(stream, buf, to_write);
+    stream->pa_offs_bytes += to_write;
+    stream->pa_offs_bytes %= stream->real_bufsize_bytes;
+    stream->pa_held_bytes -= to_write;
+}
+
+static void pulse_read(struct pulse_stream *stream)
+{
+    size_t bytes = pa_stream_readable_size(stream->stream);
+
+    TRACE("Readable total: %zu, fragsize: %u\n", bytes, pa_stream_get_buffer_attr(stream->stream)->fragsize);
+
+    bytes += stream->peek_len - stream->peek_ofs;
+
+    while (bytes >= stream->period_bytes)
+    {
+        BYTE *dst = NULL, *src;
+        size_t src_len, copy, rem = stream->period_bytes;
+
+        if (stream->started)
+        {
+            LARGE_INTEGER stamp, freq;
+            ACPacket *p, *next;
+
+            if (!(p = (ACPacket*)list_head(&stream->packet_free_head)))
+            {
+                p = (ACPacket*)list_head(&stream->packet_filled_head);
+                if (!p) return;
+                if (!p->discont) {
+                    next = (ACPacket*)p->entry.next;
+                    next->discont = 1;
+                } else
+                    p = (ACPacket*)list_tail(&stream->packet_filled_head);
+            }
+            else
+            {
+                stream->held_bytes += stream->period_bytes;
+            }
+            NtQueryPerformanceCounter(&stamp, &freq);
+            p->qpcpos = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
+            p->discont = 0;
+            list_remove(&p->entry);
+            list_add_tail(&stream->packet_filled_head, &p->entry);
+
+            dst = p->data;
+        }
+
+        while (rem)
+        {
+            if (stream->peek_len)
+            {
+                copy = min(rem, stream->peek_len - stream->peek_ofs);
+
+                if (dst)
+                {
+                    memcpy(dst, stream->peek_buffer + stream->peek_ofs, copy);
+                    dst += copy;
+                }
+
+                rem -= copy;
+                stream->peek_ofs += copy;
+                if(stream->peek_len == stream->peek_ofs)
+                    stream->peek_len = stream->peek_ofs = 0;
+
+            }
+            else if (pa_stream_peek(stream->stream, (const void**)&src, &src_len) == 0 && src_len)
+            {
+                copy = min(rem, src_len);
+
+                if (dst) {
+                    if(src)
+                        memcpy(dst, src, copy);
+                    else
+                        silence_buffer(stream->ss.format, dst, copy);
+
+                    dst += copy;
+                }
+
+                rem -= copy;
+
+                if (copy < src_len)
+                {
+                    if (src_len > stream->peek_buffer_len)
+                    {
+                        free(stream->peek_buffer);
+                        stream->peek_buffer = malloc(src_len);
+                        stream->peek_buffer_len = src_len;
+                    }
+
+                    if(src)
+                        memcpy(stream->peek_buffer, src + copy, src_len - copy);
+                    else
+                        silence_buffer(stream->ss.format, stream->peek_buffer, src_len - copy);
+
+                    stream->peek_len = src_len - copy;
+                    stream->peek_ofs = 0;
+                }
+
+                pa_stream_drop(stream->stream);
+            }
+        }
+
+        bytes -= stream->period_bytes;
+    }
+}
+
+static NTSTATUS pulse_timer_loop(void *args)
+{
+    struct timer_loop_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    LARGE_INTEGER delay;
+    UINT32 adv_bytes;
+    int success;
+    pa_operation *o;
+
+    pulse_lock();
+    delay.QuadPart = -stream->mmdev_period_usec * 10;
+    pa_stream_get_time(stream->stream, &stream->last_time);
+    pulse_unlock();
+
+    while (!stream->please_quit)
+    {
+        pa_usec_t now, adv_usec = 0;
+        int err;
+
+        NtDelayExecution(FALSE, &delay);
+
+        pulse_lock();
+
+        delay.QuadPart = -stream->mmdev_period_usec * 10;
+
+        o = pa_stream_update_timing_info(stream->stream, pulse_op_cb, &success);
+        if (o)
+        {
+            while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+                pulse_cond_wait();
+            pa_operation_unref(o);
+        }
+        err = pa_stream_get_time(stream->stream, &now);
+        if (err == 0)
+        {
+            TRACE("got now: %s, last time: %s\n", wine_dbgstr_longlong(now), wine_dbgstr_longlong(stream->last_time));
+            if (stream->started && (stream->dataflow == eCapture || stream->held_bytes))
+            {
+                if(stream->just_underran)
+                {
+                    stream->last_time = now;
+                    stream->just_started = TRUE;
+                }
+
+                if (stream->just_started)
+                {
+                    /* let it play out a period to absorb some latency and get accurate timing */
+                    pa_usec_t diff = now - stream->last_time;
+
+                    if (diff > stream->mmdev_period_usec)
+                    {
+                        stream->just_started = FALSE;
+                        stream->last_time = now;
+                    }
+                }
+                else
+                {
+                    INT32 adjust = stream->last_time + stream->mmdev_period_usec - now;
+
+                    adv_usec = now - stream->last_time;
+
+                    if(adjust > ((INT32)(stream->mmdev_period_usec / 2)))
+                        adjust = stream->mmdev_period_usec / 2;
+                    else if(adjust < -((INT32)(stream->mmdev_period_usec / 2)))
+                        adjust = -1 * stream->mmdev_period_usec / 2;
+
+                    delay.QuadPart = -(stream->mmdev_period_usec + adjust) * 10;
+
+                    stream->last_time += stream->mmdev_period_usec;
+                }
+
+                if (stream->dataflow == eRender)
+                {
+                    pulse_write(stream);
+
+                    /* regardless of what PA does, advance one period */
+                    adv_bytes = min(stream->period_bytes, stream->held_bytes);
+                    stream->lcl_offs_bytes += adv_bytes;
+                    stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
+                    stream->held_bytes -= adv_bytes;
+                }
+                else if(stream->dataflow == eCapture)
+                {
+                    pulse_read(stream);
+                }
+            }
+            else
+            {
+                stream->last_time = now;
+                delay.QuadPart = -stream->mmdev_period_usec * 10;
+            }
+        }
+
+        if (stream->event)
+            NtSetEvent(stream->event, NULL);
+
+        TRACE("%p after update, adv usec: %d, held: %u, delay usec: %u\n",
+                stream, (int)adv_usec,
+                (int)(stream->held_bytes/ pa_frame_size(&stream->ss)),
+                (unsigned int)(-delay.QuadPart / 10));
+
+        pulse_unlock();
     }
 
     return STATUS_SUCCESS;
 }
+
+static NTSTATUS pulse_start(void *args)
+{
+    struct start_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    int success;
+    pa_operation *o;
+
+    params->result = S_OK;
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = S_OK;
+        return STATUS_SUCCESS;
+    }
+
+    if ((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_EVENTHANDLE_NOT_SET;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->started)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_NOT_STOPPED;
+        return STATUS_SUCCESS;
+    }
+
+    pulse_write(stream);
+
+    if (pa_stream_is_corked(stream->stream))
+    {
+        o = pa_stream_cork(stream->stream, 0, pulse_op_cb, &success);
+        if (o)
+        {
+            while(pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+                pulse_cond_wait();
+            pa_operation_unref(o);
+        }
+        else
+            success = 0;
+        if (!success)
+            params->result = E_FAIL;
+    }
+
+    if (SUCCEEDED(params->result))
+    {
+        stream->started = TRUE;
+        stream->just_started = TRUE;
+    }
+    pulse_unlock();
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_stop(void *args)
+{
+    struct stop_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    pa_operation *o;
+    int success;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    if (!stream->started)
+    {
+        pulse_unlock();
+        params->result = S_FALSE;
+        return STATUS_SUCCESS;
+    }
+
+    params->result = S_OK;
+    if (stream->dataflow == eRender)
+    {
+        o = pa_stream_cork(stream->stream, 1, pulse_op_cb, &success);
+        if (o)
+        {
+            while(pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+                pulse_cond_wait();
+            pa_operation_unref(o);
+        }
+        else
+            success = 0;
+        if (!success)
+            params->result = E_FAIL;
+    }
+    if (SUCCEEDED(params->result))
+        stream->started = FALSE;
+    pulse_unlock();
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_reset(void *args)
+{
+    struct reset_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->started)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_NOT_STOPPED;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->locked)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_BUFFER_OPERATION_PENDING;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->dataflow == eRender)
+    {
+        /* If there is still data in the render buffer it needs to be removed from the server */
+        int success = 0;
+        if (stream->held_bytes)
+        {
+            pa_operation *o = pa_stream_flush(stream->stream, pulse_op_cb, &success);
+            if (o)
+            {
+                while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+                    pulse_cond_wait();
+                pa_operation_unref(o);
+            }
+        }
+        if (success || !stream->held_bytes)
+        {
+            stream->clock_lastpos = stream->clock_written = 0;
+            stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
+            stream->held_bytes = stream->pa_held_bytes = 0;
+        }
+    }
+    else
+    {
+        ACPacket *p;
+        stream->clock_written += stream->held_bytes;
+        stream->held_bytes = 0;
+
+        if ((p = stream->locked_ptr))
+        {
+            stream->locked_ptr = NULL;
+            list_add_tail(&stream->packet_free_head, &p->entry);
+        }
+        list_move_tail(&stream->packet_free_head, &stream->packet_filled_head);
+    }
+    pulse_unlock();
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static BOOL alloc_tmp_buffer(struct pulse_stream *stream, SIZE_T bytes)
+{
+    if (stream->tmp_buffer_bytes >= bytes)
+        return TRUE;
+
+    if (stream->tmp_buffer)
+    {
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer,
+                            &stream->tmp_buffer_bytes, MEM_RELEASE);
+        stream->tmp_buffer = NULL;
+        stream->tmp_buffer_bytes = 0;
+    }
+    if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer,
+                                0, &bytes, MEM_COMMIT, PAGE_READWRITE))
+        return FALSE;
+
+    stream->tmp_buffer_bytes = bytes;
+    return TRUE;
+}
+
+static UINT32 pulse_render_padding(struct pulse_stream *stream)
+{
+    return stream->held_bytes / pa_frame_size(&stream->ss);
+}
+
+static UINT32 pulse_capture_padding(struct pulse_stream *stream)
+{
+    ACPacket *packet = stream->locked_ptr;
+    if (!packet && !list_empty(&stream->packet_filled_head))
+    {
+        packet = (ACPacket*)list_head(&stream->packet_filled_head);
+        stream->locked_ptr = packet;
+        list_remove(&packet->entry);
+    }
+    return stream->held_bytes / pa_frame_size(&stream->ss);
+}
+
+static NTSTATUS pulse_get_render_buffer(void *args)
+{
+    struct get_render_buffer_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    size_t bytes;
+    UINT32 wri_offs_bytes;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->locked)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_OUT_OF_ORDER;
+        return STATUS_SUCCESS;
+    }
+
+    if (!params->frames)
+    {
+        pulse_unlock();
+        *params->data = NULL;
+        params->result = S_OK;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->held_bytes / pa_frame_size(&stream->ss) + params->frames > stream->bufsize_frames)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_BUFFER_TOO_LARGE;
+        return STATUS_SUCCESS;
+    }
+
+    bytes = params->frames * pa_frame_size(&stream->ss);
+    wri_offs_bytes = (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
+    if (wri_offs_bytes + bytes > stream->real_bufsize_bytes)
+    {
+        if (!alloc_tmp_buffer(stream, bytes))
+        {
+            pulse_unlock();
+            params->result = E_OUTOFMEMORY;
+            return STATUS_SUCCESS;
+        }
+        *params->data = stream->tmp_buffer;
+        stream->locked = -bytes;
+    }
+    else
+    {
+        *params->data = stream->local_buffer + wri_offs_bytes;
+        stream->locked = bytes;
+    }
+
+    silence_buffer(stream->ss.format, *params->data, bytes);
+
+    pulse_unlock();
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static void pulse_wrap_buffer(struct pulse_stream *stream, BYTE *buffer, UINT32 written_bytes)
+{
+    UINT32 wri_offs_bytes = (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
+    UINT32 chunk_bytes = stream->real_bufsize_bytes - wri_offs_bytes;
+
+    if (written_bytes <= chunk_bytes)
+    {
+        memcpy(stream->local_buffer + wri_offs_bytes, buffer, written_bytes);
+    }
+    else
+    {
+        memcpy(stream->local_buffer + wri_offs_bytes, buffer, chunk_bytes);
+        memcpy(stream->local_buffer, buffer + chunk_bytes, written_bytes - chunk_bytes);
+    }
+}
+
+static NTSTATUS pulse_release_render_buffer(void *args)
+{
+    struct release_render_buffer_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    UINT32 written_bytes;
+    BYTE *buffer;
+
+    pulse_lock();
+    if (!stream->locked || !params->written_frames)
+    {
+        stream->locked = 0;
+        pulse_unlock();
+        params->result = params->written_frames ? AUDCLNT_E_OUT_OF_ORDER : S_OK;
+        return STATUS_SUCCESS;
+    }
+
+    if (params->written_frames * pa_frame_size(&stream->ss) >
+        (stream->locked >= 0 ? stream->locked : -stream->locked))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_INVALID_SIZE;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->locked >= 0)
+        buffer = stream->local_buffer + (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
+    else
+        buffer = stream->tmp_buffer;
+
+    written_bytes = params->written_frames * pa_frame_size(&stream->ss);
+    if (params->flags & AUDCLNT_BUFFERFLAGS_SILENT)
+        silence_buffer(stream->ss.format, buffer, written_bytes);
+
+    if (stream->locked < 0)
+        pulse_wrap_buffer(stream, buffer, written_bytes);
+
+    stream->held_bytes += written_bytes;
+    stream->pa_held_bytes += written_bytes;
+    if (stream->pa_held_bytes > stream->real_bufsize_bytes)
+    {
+        stream->pa_offs_bytes += stream->pa_held_bytes - stream->real_bufsize_bytes;
+        stream->pa_offs_bytes %= stream->real_bufsize_bytes;
+        stream->pa_held_bytes = stream->real_bufsize_bytes;
+    }
+    stream->clock_written += written_bytes;
+    stream->locked = 0;
+
+    TRACE("Released %u, held %lu\n", params->written_frames, stream->held_bytes / pa_frame_size(&stream->ss));
+
+    pulse_unlock();
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_capture_buffer(void *args)
+{
+    struct get_capture_buffer_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    ACPacket *packet;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+    if (stream->locked)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_OUT_OF_ORDER;
+        return STATUS_SUCCESS;
+    }
+
+    pulse_capture_padding(stream);
+    if ((packet = stream->locked_ptr))
+    {
+        *params->frames = stream->period_bytes / pa_frame_size(&stream->ss);
+        *params->flags = 0;
+        if (packet->discont)
+            *params->flags |= AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY;
+        if (params->devpos)
+        {
+            if (packet->discont)
+                *params->devpos = (stream->clock_written + stream->period_bytes) / pa_frame_size(&stream->ss);
+            else
+                *params->devpos = stream->clock_written / pa_frame_size(&stream->ss);
+        }
+        if (params->qpcpos)
+            *params->qpcpos = packet->qpcpos;
+        *params->data = packet->data;
+    }
+    else
+        *params->frames = 0;
+    stream->locked = *params->frames;
+    pulse_unlock();
+    params->result =  *params->frames ? S_OK : AUDCLNT_S_BUFFER_EMPTY;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_release_capture_buffer(void *args)
+{
+    struct release_capture_buffer_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    if (!stream->locked && params->done)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_OUT_OF_ORDER;
+        return STATUS_SUCCESS;
+    }
+    if (params->done && stream->locked != params->done)
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_INVALID_SIZE;
+        return STATUS_SUCCESS;
+    }
+    if (params->done)
+    {
+        ACPacket *packet = stream->locked_ptr;
+        stream->locked_ptr = NULL;
+        stream->held_bytes -= stream->period_bytes;
+        if (packet->discont)
+            stream->clock_written += 2 * stream->period_bytes;
+        else
+            stream->clock_written += stream->period_bytes;
+        list_add_tail(&stream->packet_free_head, &packet->entry);
+    }
+    stream->locked = 0;
+    pulse_unlock();
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_buffer_size(void *args)
+{
+    struct get_buffer_size_params *params = args;
+
+    params->result = S_OK;
+
+    pulse_lock();
+    if (!pulse_stream_valid(params->stream))
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+    else
+        *params->size = params->stream->bufsize_frames;
+    pulse_unlock();
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_latency(void *args)
+{
+    struct get_latency_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    const pa_buffer_attr *attr;
+    REFERENCE_TIME lat;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream)) {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+    attr = pa_stream_get_buffer_attr(stream->stream);
+    if (stream->dataflow == eRender)
+        lat = attr->minreq / pa_frame_size(&stream->ss);
+    else
+        lat = attr->fragsize / pa_frame_size(&stream->ss);
+    *params->latency = (lat * 10000000) / stream->ss.rate + pulse_def_period[0];
+    pulse_unlock();
+    TRACE("Latency: %u ms\n", (DWORD)(*params->latency / 10000));
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_current_padding(void *args)
+{
+    struct get_current_padding_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    if (stream->dataflow == eRender)
+        *params->padding = pulse_render_padding(stream);
+    else
+        *params->padding = pulse_capture_padding(stream);
+    pulse_unlock();
+
+    TRACE("%p Pad: %u ms (%u)\n", stream, muldiv(*params->padding, 1000, stream->ss.rate),
+          *params->padding);
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_next_packet_size(void *args)
+{
+    struct get_next_packet_size_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    pulse_capture_padding(stream);
+    if (stream->locked_ptr)
+        *params->frames = stream->period_bytes / pa_frame_size(&stream->ss);
+    else
+        *params->frames = 0;
+    pulse_unlock();
+    params->result = S_OK;
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_frequency(void *args)
+{
+    struct get_frequency_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    *params->freq = stream->ss.rate;
+    if (stream->share == AUDCLNT_SHAREMODE_SHARED)
+        *params->freq *= pa_frame_size(&stream->ss);
+    pulse_unlock();
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_get_position(void *args)
+{
+    struct get_position_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+    {
+        pulse_unlock();
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
+
+    *params->pos = stream->clock_written - stream->held_bytes;
+
+    if (stream->share == AUDCLNT_SHAREMODE_EXCLUSIVE || params->device)
+        *params->pos /= pa_frame_size(&stream->ss);
+
+    /* Make time never go backwards */
+    if (*params->pos < stream->clock_lastpos)
+        *params->pos = stream->clock_lastpos;
+    else
+        stream->clock_lastpos = *params->pos;
+    pulse_unlock();
+
+    TRACE("%p Position: %u\n", stream, (unsigned)*params->pos);
+
+    if (params->qpctime)
+    {
+        LARGE_INTEGER stamp, freq;
+        NtQueryPerformanceCounter(&stamp, &freq);
+        *params->qpctime = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
+    }
+
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_set_volumes(void *args)
+{
+    struct set_volumes_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    unsigned int i;
+
+    for (i = 0; i < stream->ss.channels; i++)
+        stream->vol[i] = params->volumes[i] * params->master_volume * params->session_volumes[i];
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_set_event_handle(void *args)
+{
+    struct set_event_handle_params *params = args;
+    struct pulse_stream *stream = params->stream;
+    HRESULT hr = S_OK;
+
+    pulse_lock();
+    if (!pulse_stream_valid(stream))
+        hr = AUDCLNT_E_DEVICE_INVALIDATED;
+    else if (!(stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK))
+        hr = AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED;
+    else if (stream->event)
+        hr = HRESULT_FROM_WIN32(ERROR_INVALID_NAME);
+    else
+        stream->event = params->event;
+    pulse_unlock();
+
+    params->result = hr;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pulse_is_started(void *args)
+{
+    struct is_started_params *params = args;
+    struct pulse_stream *stream = params->stream;
+
+    pulse_lock();
+    params->started = pulse_stream_valid(stream) && stream->started;
+    pulse_unlock();
+
+    return STATUS_SUCCESS;
+}
+
+const unixlib_entry_t __wine_unix_call_funcs[] =
+{
+    pulse_process_attach,
+    pulse_process_detach,
+    pulse_main_loop,
+    pulse_create_stream,
+    pulse_release_stream,
+    pulse_start,
+    pulse_stop,
+    pulse_reset,
+    pulse_timer_loop,
+    pulse_get_render_buffer,
+    pulse_release_render_buffer,
+    pulse_get_capture_buffer,
+    pulse_release_capture_buffer,
+    pulse_get_buffer_size,
+    pulse_get_latency,
+    pulse_get_current_padding,
+    pulse_get_next_packet_size,
+    pulse_get_frequency,
+    pulse_get_position,
+    pulse_set_volumes,
+    pulse_set_event_handle,
+    pulse_test_connect,
+    pulse_is_started,
+};

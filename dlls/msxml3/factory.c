@@ -21,13 +21,9 @@
 
 #define COBJMACROS
 
-#include "config.h"
-
 #include <stdarg.h>
-#ifdef HAVE_LIBXML2
-# include <libxml/parser.h>
-# include <libxml/xmlerror.h>
-#endif
+#include <libxml/parser.h>
+#include <libxml/xmlerror.h>
 
 #include "windef.h"
 #include "winbase.h"
@@ -302,7 +298,7 @@ HRESULT WINAPI DllGetClassObject( REFCLSID rclsid, REFIID riid, void **ppv )
         IsEqualCLSID( rclsid, &CLSID_DOMDocument40 )||  /* Version dep.   v 4.0 */
         IsEqualCLSID( rclsid, &CLSID_DOMDocument60 ))   /* Version dep.   v 6.0 */
     {
-        return DOMClassFactory_Create(rclsid, riid, ppv, DOMDocument_create);
+        return DOMClassFactory_Create(rclsid, riid, ppv, dom_document_create);
     }
     else if( IsEqualCLSID( rclsid, &CLSID_XMLSchemaCache )   ||
              IsEqualCLSID( rclsid, &CLSID_XMLSchemaCache26 ) ||
@@ -323,7 +319,7 @@ HRESULT WINAPI DllGetClassObject( REFCLSID rclsid, REFIID riid, void **ppv )
              IsEqualCLSID( rclsid, &CLSID_FreeThreadedDOMDocument40 ) ||
              IsEqualCLSID( rclsid, &CLSID_FreeThreadedDOMDocument60 ))
     {
-        return DOMClassFactory_Create(rclsid, riid, ppv, DOMDocument_create);
+        return DOMClassFactory_Create(rclsid, riid, ppv, dom_document_create);
     }
     else if( IsEqualCLSID( rclsid, &CLSID_SAXXMLReader) ||
              IsEqualCLSID( rclsid, &CLSID_SAXXMLReader30 ) ||

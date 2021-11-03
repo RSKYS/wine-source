@@ -21,18 +21,14 @@
 
 #define COBJMACROS
 
-#include "config.h"
-
 #include <stdarg.h>
 #include <assert.h>
-#ifdef HAVE_LIBXML2
-# include <libxml/parser.h>
-# include <libxml/xmlerror.h>
-# include <libxml/xpathInternals.h>
+#include <libxml/parser.h>
+#include <libxml/xmlerror.h>
+#include <libxml/xpathInternals.h>
 # include <libxml/xmlsave.h>
-# include <libxml/SAX2.h>
-# include <libxml/parserInternals.h>
-#endif
+#include <libxml/SAX2.h>
+#include <libxml/parserInternals.h>
 
 #include "windef.h"
 #include "winbase.h"
@@ -50,8 +46,6 @@
 #include "wine/debug.h"
 
 #include "msxml_private.h"
-
-#ifdef HAVE_LIBXML2
 
 WINE_DEFAULT_DEBUG_CHANNEL(msxml);
 
@@ -1210,6 +1204,8 @@ static HRESULT WINAPI domdoc_insertBefore(
 
     TRACE("(%p)->(%p %s %p)\n", This, newChild, debugstr_variant(&refChild), outNewChild);
 
+    if (!newChild) return E_INVALIDARG;
+
     hr = IXMLDOMNode_get_nodeType(newChild, &type);
     if (hr != S_OK) return hr;
 
@@ -1640,9 +1636,7 @@ static HRESULT WINAPI domdoc_get_implementation(
     if(!impl)
         return E_INVALIDARG;
 
-    *impl = (IXMLDOMImplementation*)create_doc_Implementation();
-
-    return S_OK;
+    return create_dom_implementation(impl);
 }
 
 static HRESULT WINAPI domdoc_get_documentElement(
@@ -1890,13 +1884,10 @@ static HRESULT WINAPI domdoc_createProcessingInstruction(
     hr = IXMLDOMDocument3_createNode(iface, type, target, NULL, &node);
     if (hr == S_OK)
     {
-        xmlnode *node_obj;
-
         /* this is to bypass check in ::put_data() that blocks "<?xml" PIs */
-        node_obj = get_node_obj(node);
-        hr = node_set_content(node_obj, data);
-
-        IXMLDOMNode_QueryInterface(node, &IID_IXMLDOMProcessingInstruction, (void**)pi);
+        hr = dom_pi_put_xml_decl(node, data);
+        if (SUCCEEDED(hr))
+            hr = IXMLDOMNode_QueryInterface(node, &IID_IXMLDOMProcessingInstruction, (void**)pi);
         IXMLDOMNode_Release(node);
     }
 
@@ -2140,12 +2131,7 @@ static HRESULT WINAPI domdoc_createNode(
         xmlnode = xmlNewReference(get_doc(This), xml_name);
         break;
     case NODE_PROCESSING_INSTRUCTION:
-#ifdef HAVE_XMLNEWDOCPI
         xmlnode = xmlNewDocPI(get_doc(This), xml_name, NULL);
-#else
-        FIXME("xmlNewDocPI() not supported, use libxml2 2.6.15 or greater\n");
-        xmlnode = NULL;
-#endif
         break;
     case NODE_COMMENT:
         xmlnode = xmlNewDocComment(get_doc(This), NULL);
@@ -2496,9 +2482,9 @@ static HRESULT WINAPI domdoc_loadXML(
 
             /* skip leading spaces if needed */
             if (This->properties->version == MSXML_DEFAULT || This->properties->version == MSXML26)
-                while (*ptr && isspaceW(*ptr)) ptr++;
+                while (*ptr && iswspace(*ptr)) ptr++;
 
-            xmldoc = doparse(This, (char*)ptr, strlenW(ptr)*sizeof(WCHAR), XML_CHAR_ENCODING_UTF16LE);
+            xmldoc = doparse(This, (char*)ptr, lstrlenW(ptr)*sizeof(WCHAR), XML_CHAR_ENCODING_UTF16LE);
             if ( !xmldoc )
             {
                 This->error = E_FAIL;
@@ -2563,6 +2549,63 @@ static int XMLCALL domdoc_stream_save_closecallback(void *ctx)
     return 0;
 }
 
+static char *xmldoc_encoding(IXMLDOMDocument3 *doc)
+{
+    HRESULT hr;
+    IXMLDOMNode *node;
+    char *encoding = NULL;
+
+    hr = IXMLDOMDocument3_get_firstChild(doc, &node);
+    if (hr == S_OK)
+    {
+        DOMNodeType type;
+
+        hr = IXMLDOMNode_get_nodeType(node, &type);
+        if (hr == S_OK && type == NODE_PROCESSING_INSTRUCTION)
+        {
+            IXMLDOMProcessingInstruction *pi;
+            IXMLDOMNode *item;
+            IXMLDOMNamedNodeMap *node_map;
+
+            hr = IXMLDOMNode_QueryInterface(node, &IID_IXMLDOMProcessingInstruction, (void **)&pi);
+            if (hr == S_OK)
+            {
+                hr = IXMLDOMNode_get_attributes(node, &node_map);
+                if (hr == S_OK)
+                {
+                    static const WCHAR encodingW[] = {'e','n','c','o','d','i','n','g',0};
+                    BSTR bstr;
+
+                    bstr = SysAllocString(encodingW);
+                    hr = IXMLDOMNamedNodeMap_getNamedItem(node_map, bstr, &item);
+                    SysFreeString(bstr);
+                    if (hr == S_OK)
+                    {
+                        VARIANT var;
+
+                        hr = IXMLDOMNode_get_nodeValue(item, &var);
+                        if (hr == S_OK)
+                        {
+                            if (V_VT(&var) == VT_BSTR)
+                                encoding = (char *)xmlchar_from_wchar(V_BSTR(&var));
+
+                            VariantClear(&var);
+                        }
+                    }
+
+                    IXMLDOMNamedNodeMap_Release(node_map);
+                }
+
+                IXMLDOMProcessingInstruction_Release(pi);
+            }
+        }
+
+        IXMLDOMNode_Release(node);
+    }
+
+    return encoding;
+}
+
 static HRESULT WINAPI domdoc_save(
     IXMLDOMDocument3 *iface,
     VARIANT destination )
@@ -2601,8 +2644,12 @@ static HRESULT WINAPI domdoc_save(
             ret = IUnknown_QueryInterface(pUnk, &IID_IStream, (void**)&stream);
             if(ret == S_OK)
             {
+                char *encoding = xmldoc_encoding(iface);
+
+                TRACE("using encoding %s\n", encoding ? debugstr_a(encoding) : "default");
                 ctx = xmlSaveToIO(domdoc_stream_save_writecallback,
-                    domdoc_stream_save_closecallback, stream, NULL, XML_SAVE_NO_DECL);
+                    domdoc_stream_save_closecallback, stream, encoding, XML_SAVE_NO_DECL);
+                heap_free(encoding);
 
                 if(!ctx)
                 {
@@ -2616,6 +2663,7 @@ static HRESULT WINAPI domdoc_save(
     case VT_BSTR:
     case VT_BSTR | VT_BYREF:
         {
+            char *encoding;
             /* save with file path */
             HANDLE handle = CreateFileW( (V_VT(&destination) & VT_BYREF)? *V_BSTRREF(&destination) : V_BSTR(&destination),
                                          GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
@@ -2625,8 +2673,12 @@ static HRESULT WINAPI domdoc_save(
                 return E_FAIL;
             }
 
+            encoding = xmldoc_encoding(iface);
+            TRACE("using encoding %s\n", encoding ? debugstr_a(encoding) : "default");
             ctx = xmlSaveToIO(domdoc_save_writecallback, domdoc_save_closecallback,
-                              handle, NULL, XML_SAVE_NO_DECL);
+                              handle, encoding, XML_SAVE_NO_DECL);
+            heap_free(encoding);
+
             if (!ctx)
             {
                 CloseHandle(handle);
@@ -2835,32 +2887,7 @@ static HRESULT WINAPI domdoc_putref_schemas(
 
 static inline BOOL is_wellformed(xmlDocPtr doc)
 {
-#ifdef HAVE_XMLDOC_PROPERTIES
     return doc->properties & XML_DOC_WELLFORMED;
-#else
-    /* Not a full check, but catches the worst violations */
-    xmlNodePtr child;
-    int root = 0;
-
-    for (child = doc->children; child != NULL; child = child->next)
-    {
-        switch (child->type)
-        {
-        case XML_ELEMENT_NODE:
-            if (++root > 1)
-                return FALSE;
-            break;
-        case XML_TEXT_NODE:
-        case XML_CDATA_SECTION_NODE:
-            return FALSE;
-            break;
-        default:
-            break;
-        }
-    }
-
-    return root == 1;
-#endif
 }
 
 static void LIBXML2_LOG_CALLBACK validate_error(void* ctx, char const* msg, ...)
@@ -3733,7 +3760,7 @@ HRESULT get_domdoc_from_xmldoc(xmlDocPtr xmldoc, IXMLDOMDocument3 **document)
     return S_OK;
 }
 
-HRESULT DOMDocument_create(MSXML_VERSION version, void **ppObj)
+HRESULT dom_document_create(MSXML_VERSION version, void **ppObj)
 {
     xmlDocPtr xmldoc;
     HRESULT hr;
@@ -3771,14 +3798,3 @@ IUnknown* create_domdoc( xmlNodePtr document )
 
     return obj;
 }
-
-#else
-
-HRESULT DOMDocument_create(MSXML_VERSION version, void **ppObj)
-{
-    MESSAGE("This program tried to use a DOMDocument object, but\n"
-            "libxml2 support was not present at compile time.\n");
-    return E_NOTIMPL;
-}
-
-#endif

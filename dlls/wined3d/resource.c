@@ -121,26 +121,26 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
         if (base_type == WINED3D_GL_RES_TYPE_COUNT)
             base_type = gl_type;
 
-        if (type != WINED3D_RTYPE_BUFFER)
+        if (type == WINED3D_RTYPE_BUFFER)
+            break;
+
+        if ((bind_flags & WINED3D_BIND_RENDER_TARGET)
+                && !(format->flags[gl_type] & WINED3DFMT_FLAG_RENDERTARGET))
         {
-            if ((bind_flags & WINED3D_BIND_RENDER_TARGET)
-                    && !(format->flags[gl_type] & WINED3DFMT_FLAG_RENDERTARGET))
-            {
-                WARN("Format %s cannot be used for render targets.\n", debug_d3dformat(format->id));
-                continue;
-            }
-            if ((bind_flags & WINED3D_BIND_DEPTH_STENCIL)
-                    && !(format->flags[gl_type] & WINED3DFMT_FLAG_DEPTH_STENCIL))
-            {
-                WARN("Format %s cannot be used for depth/stencil buffers.\n", debug_d3dformat(format->id));
-                continue;
-            }
-            if ((bind_flags & WINED3D_BIND_SHADER_RESOURCE)
-                    && !(format->flags[gl_type] & WINED3DFMT_FLAG_TEXTURE))
-            {
-                WARN("Format %s cannot be used for texturing.\n", debug_d3dformat(format->id));
-                continue;
-            }
+            WARN("Format %s cannot be used for render targets.\n", debug_d3dformat(format->id));
+            continue;
+        }
+        if ((bind_flags & WINED3D_BIND_DEPTH_STENCIL)
+                && !(format->flags[gl_type] & WINED3DFMT_FLAG_DEPTH_STENCIL))
+        {
+            WARN("Format %s cannot be used for depth/stencil buffers.\n", debug_d3dformat(format->id));
+            continue;
+        }
+        if ((bind_flags & WINED3D_BIND_SHADER_RESOURCE)
+                && !(format->flags[gl_type] & WINED3DFMT_FLAG_TEXTURE))
+        {
+            WARN("Format %s cannot be used for texturing.\n", debug_d3dformat(format->id));
+            continue;
         }
         if (((width & (width - 1)) || (height & (height - 1)))
                 && !d3d_info->texture_npot
@@ -235,7 +235,6 @@ static void wined3d_resource_destroy_object(void *object)
 
     TRACE("resource %p.\n", resource);
 
-    heap_free(resource->sub_resource_bind_counts_device);
     wined3d_resource_free_sysmem(resource);
     context_resource_released(resource->device, resource);
     wined3d_resource_release(resource);
@@ -389,12 +388,16 @@ GLbitfield wined3d_resource_gl_storage_flags(const struct wined3d_resource *reso
     return flags;
 }
 
-GLbitfield wined3d_resource_gl_map_flags(DWORD d3d_flags)
+GLbitfield wined3d_resource_gl_map_flags(const struct wined3d_bo_gl *bo, DWORD d3d_flags)
 {
     GLbitfield ret = 0;
 
     if (d3d_flags & WINED3D_MAP_WRITE)
-        ret |= GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT;
+    {
+        ret |= GL_MAP_WRITE_BIT;
+        if (!bo->b.coherent)
+            ret |= GL_MAP_FLUSH_EXPLICIT_BIT;
+    }
     if (d3d_flags & WINED3D_MAP_READ)
         ret |= GL_MAP_READ_BIT;
     else
@@ -436,7 +439,7 @@ BOOL wined3d_resource_is_offscreen(struct wined3d_resource *resource)
 
     /* If the swapchain is rendered to an FBO, the backbuffer is
      * offscreen, otherwise onscreen */
-    return swapchain->render_to_fbo;
+    return wined3d_settings.offscreen_rendering_mode == ORM_FBO;
 }
 
 void wined3d_resource_update_draw_binding(struct wined3d_resource *resource)
@@ -502,6 +505,44 @@ unsigned int wined3d_resource_get_sample_count(const struct wined3d_resource *re
     return resource->multisample_type;
 }
 
+HRESULT wined3d_resource_check_box_dimensions(struct wined3d_resource *resource,
+        unsigned int sub_resource_idx, const struct wined3d_box *box)
+{
+    const struct wined3d_format *format = resource->format;
+    struct wined3d_sub_resource_desc desc;
+    unsigned int width_mask, height_mask;
+
+    wined3d_resource_get_sub_resource_desc(resource, sub_resource_idx, &desc);
+
+    if (box->left >= box->right || box->right > desc.width
+            || box->top >= box->bottom || box->bottom > desc.height
+            || box->front >= box->back || box->back > desc.depth)
+    {
+        WARN("Box %s is invalid.\n", debug_box(box));
+        return WINEDDERR_INVALIDRECT;
+    }
+
+    if (resource->format_flags & WINED3DFMT_FLAG_BLOCKS)
+    {
+        /* This assumes power of two block sizes, but NPOT block sizes would
+         * be silly anyway.
+         *
+         * This also assumes that the format's block depth is 1. */
+        width_mask = format->block_width - 1;
+        height_mask = format->block_height - 1;
+
+        if ((box->left & width_mask) || (box->top & height_mask)
+                || (box->right & width_mask && box->right != desc.width)
+                || (box->bottom & height_mask && box->bottom != desc.height))
+        {
+            WARN("Box %s is misaligned for %ux%u blocks.\n", debug_box(box), format->block_width, format->block_height);
+            return WINED3DERR_INVALIDCALL;
+        }
+    }
+
+    return WINED3D_OK;
+}
+
 VkAccessFlags vk_access_mask_from_bind_flags(uint32_t bind_flags)
 {
     VkAccessFlags flags = 0;
@@ -548,4 +589,30 @@ VkPipelineStageFlags vk_pipeline_stage_mask_from_bind_flags(uint32_t bind_flags)
         flags |= VK_PIPELINE_STAGE_TRANSFORM_FEEDBACK_BIT_EXT;
 
     return flags;
+}
+
+void *resource_offset_map_pointer(struct wined3d_resource *resource, unsigned int sub_resource_idx,
+        uint8_t *base_memory, const struct wined3d_box *box)
+{
+    const struct wined3d_format *format = resource->format;
+    unsigned int row_pitch, slice_pitch;
+
+    wined3d_resource_get_sub_resource_map_pitch(resource, sub_resource_idx, &row_pitch, &slice_pitch);
+
+    if ((resource->format_flags & (WINED3DFMT_FLAG_BLOCKS | WINED3DFMT_FLAG_BROKEN_PITCH)) == WINED3DFMT_FLAG_BLOCKS)
+    {
+        /* Compressed textures are block based, so calculate the offset of
+         * the block that contains the top-left pixel of the mapped box. */
+        return base_memory
+                + (box->front * slice_pitch)
+                + ((box->top / format->block_height) * row_pitch)
+                + ((box->left / format->block_width) * format->block_byte_count);
+    }
+    else
+    {
+        return base_memory
+                + (box->front * slice_pitch)
+                + (box->top * row_pitch)
+                + (box->left * format->byte_count);
+    }
 }

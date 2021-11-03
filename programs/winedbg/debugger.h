@@ -39,7 +39,7 @@
 #include "oaidl.h"
 #include <wine/list.h>
 
-#define ADDRSIZE        (dbg_curr_process->be_cpu->pointer_size)
+#define ADDRSIZE        (dbg_curr_process ? dbg_curr_process->be_cpu->pointer_size : (int)sizeof(void*))
 #define ADDRWIDTH       (ADDRSIZE * 2)
 
 /* the debugger uses these exceptions for its internal use */
@@ -98,7 +98,7 @@ enum dbg_internal_types
  */
 struct dbg_type
 {
-    unsigned long       id;
+    ULONG               id;
     DWORD_PTR           module;
 };
 
@@ -133,11 +133,11 @@ enum dbg_exec_mode
 struct dbg_breakpoint
 {
     ADDRESS64           addr;
-    unsigned long       enabled : 1,
+    unsigned int        enabled : 1,
                         xpoint_type : 2,
                         refcount : 13,
                         skipcount : 16;
-    unsigned long       info;
+    unsigned int        info;
     struct              /* only used for watchpoints */
     {
         BYTE		len : 2;
@@ -179,7 +179,7 @@ struct dbg_thread
                                                  *      - only valid when in_exception is TRUE
                                                  */
     EXCEPTION_RECORD            excpt_record;   /* only valid when in_exception is TRUE */
-    struct
+    struct dbg_frame
     {
         ADDRESS64               addr_pc;
         ADDRESS64               addr_frame;
@@ -188,6 +188,7 @@ struct dbg_thread
         DWORD_PTR               linear_frame;
         DWORD_PTR               linear_stack;
         dbg_ctx_t               context;        /* context we got out of stackwalk for this frame */
+        DWORD                   inline_ctx;
         BOOL                    is_ctx_valid;   /* is the context above valid */
     }*                          frames;
     int                         num_frames;
@@ -256,7 +257,7 @@ struct dbg_internal_var
     DWORD_PTR		        val;
     const char*		        name;
     DWORD_PTR		        *pval;
-    unsigned long               typeid; /* always internal type */
+    ULONG                       typeid; /* always internal type */
 };
 
 enum sym_get_lval {sglv_found, sglv_unknown, sglv_aborted};
@@ -311,7 +312,7 @@ extern int              msgbox_res_id(HWND hwnd, UINT textId, UINT captionId, UI
 extern void             parser_handle(HANDLE);
 extern int              input_read_line(const char* pfx, char* buffer, int size);
 extern int              input_fetch_entire_line(const char* pfx, char** line);
-extern HANDLE           parser_generate_command_file(const char*, ...);
+extern HANDLE           WINAPIV parser_generate_command_file(const char*, ...);
 
   /* debug.l */
 extern void             lexeme_flush(void);
@@ -328,14 +329,14 @@ extern BOOL             display_enable(int displaynum, int enable);
 extern void             expr_free_all(void);
 extern struct expr*     expr_alloc_internal_var(const char* name);
 extern struct expr*     expr_alloc_symbol(const char* name);
-extern struct expr*     expr_alloc_sconstant(long int val);
-extern struct expr*     expr_alloc_uconstant(long unsigned val);
+extern struct expr*     expr_alloc_sconstant(INT_PTR val);
+extern struct expr*     expr_alloc_uconstant(UINT_PTR val);
 extern struct expr*     expr_alloc_string(const char* str);
 extern struct expr*     expr_alloc_binary_op(int oper, struct expr*, struct expr*);
 extern struct expr*     expr_alloc_unary_op(int oper, struct expr*);
 extern struct expr*     expr_alloc_pstruct(struct expr*, const char* element);
 extern struct expr*     expr_alloc_struct(struct expr*, const char* element);
-extern struct expr*     expr_alloc_func_call(const char*, int nargs, ...);
+extern struct expr*     WINAPIV expr_alloc_func_call(const char*, int nargs, ...);
 extern struct expr*     expr_alloc_typecast(struct type_expr_t*, struct expr*);
 extern struct dbg_lvalue expr_eval(struct expr*);
 extern struct expr*     expr_clone(const struct expr* exp, BOOL *local_binding);
@@ -386,14 +387,24 @@ extern void             source_free_files(struct dbg_process* p);
 extern void             stack_info(int len);
 extern void             stack_backtrace(DWORD threadID);
 extern BOOL             stack_set_frame(int newframe);
-extern BOOL             stack_get_current_frame(IMAGEHLP_STACK_FRAME* ihsf);
 extern BOOL             stack_get_register_frame(const struct dbg_internal_var* div, DWORD_PTR** pval);
 extern unsigned         stack_fetch_frames(const dbg_ctx_t *ctx);
 extern BOOL             stack_get_current_symbol(SYMBOL_INFO* sym);
+static inline struct dbg_frame*
+                        stack_get_thread_frame(struct dbg_thread* thd, unsigned nf)
+{
+    if (!thd->frames || nf >= thd->num_frames) return NULL;
+    return &thd->frames[nf];
+}
+static inline struct dbg_frame*
+                        stack_get_curr_frame(void)
+{
+    return stack_get_thread_frame(dbg_curr_thread, dbg_curr_thread->curr_frame);
+}
 
   /* symbol.c */
 extern enum sym_get_lval symbol_get_lvalue(const char* name, const int lineno, struct dbg_lvalue* addr, BOOL bp_disp);
-extern void             symbol_read_symtable(const char* filename, unsigned long offset);
+extern void             symbol_read_symtable(const char* filename, ULONG_PTR offset);
 extern enum dbg_line_status symbol_get_function_line_status(const ADDRESS64* addr);
 extern BOOL             symbol_get_line(const char* filename, const char* func, IMAGEHLP_LINE64* ret);
 extern void             symbol_info(const char* str);
@@ -432,24 +443,24 @@ extern enum dbg_start   tgt_module_load(const char* name, BOOL keep);
 extern void             print_value(const struct dbg_lvalue* addr, char format, int level);
 extern BOOL             types_print_type(const struct dbg_type*, BOOL details);
 extern BOOL             print_types(void);
-extern long int         types_extract_as_integer(const struct dbg_lvalue*);
+extern INT_PTR          types_extract_as_integer(const struct dbg_lvalue*);
 extern LONGLONG         types_extract_as_longlong(const struct dbg_lvalue*, unsigned* psize, BOOL *pissigned);
 extern void             types_extract_as_address(const struct dbg_lvalue*, ADDRESS64*);
 extern BOOL             types_store_value(struct dbg_lvalue* lvalue_to, const struct dbg_lvalue* lvalue_from);
-extern BOOL             types_udt_find_element(struct dbg_lvalue* value, const char* name, long int* tmpbuf);
+extern BOOL             types_udt_find_element(struct dbg_lvalue* value, const char* name, ULONG *tmpbuf);
 extern BOOL             types_array_index(const struct dbg_lvalue* value, int index, struct dbg_lvalue* result);
 extern BOOL             types_get_info(const struct dbg_type*, IMAGEHLP_SYMBOL_TYPE_INFO, void*);
 extern BOOL             types_get_real_type(struct dbg_type* type, DWORD* tag);
 extern struct dbg_type  types_find_pointer(const struct dbg_type* type);
-extern struct dbg_type  types_find_type(unsigned long linear, const char* name, enum SymTagEnum tag);
+extern struct dbg_type  types_find_type(DWORD64 linear, const char* name, enum SymTagEnum tag);
 
   /* winedbg.c */
 extern void	        dbg_outputW(const WCHAR* buffer, int len);
 extern const char*      dbg_W2A(const WCHAR* buffer, unsigned len);
 #ifdef __GNUC__
-extern int	        dbg_printf(const char* format, ...) __attribute__((format (printf,1,2)));
+extern int WINAPIV      dbg_printf(const char* format, ...) __attribute__((format (printf,1,2)));
 #else
-extern int	        dbg_printf(const char* format, ...);
+extern int WINAPIV      dbg_printf(const char* format, ...);
 #endif
 extern const struct dbg_internal_var* dbg_get_internal_var(const char*);
 extern BOOL             dbg_interrupt_debuggee(void);
@@ -464,7 +475,6 @@ extern struct dbg_thread* dbg_get_thread(struct dbg_process* p, DWORD tid);
 extern void             dbg_del_thread(struct dbg_thread* t);
 extern BOOL             dbg_init(HANDLE hProc, const WCHAR* in, BOOL invade);
 extern BOOL             dbg_load_module(HANDLE hProc, HANDLE hFile, const WCHAR* name, DWORD_PTR base, DWORD size);
-extern BOOL             dbg_get_debuggee_info(HANDLE hProcess, IMAGEHLP_MODULE64* imh_mod);
 extern void             dbg_set_option(const char*, const char*);
 extern void             dbg_start_interactive(HANDLE hFile);
 extern void             dbg_init_console(void);

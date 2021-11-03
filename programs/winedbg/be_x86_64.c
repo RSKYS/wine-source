@@ -73,14 +73,6 @@ static void be_x86_64_single_step(dbg_ctx_t *ctx, BOOL enable)
     else ctx->ctx.EFlags &= ~STEP_FLAG;
 }
 
-static inline long double m128a_to_longdouble(const M128A m)
-{
-    /* gcc uses the same IEEE-754 representation as M128A for long double
-     * but 16 byte aligned (hence only the first 10 bytes out of the 16 are used)
-     */
-    return *(long double*)&m;
-}
-
 static void be_x86_64_print_context(HANDLE hThread, const dbg_ctx_t *pctx,
                                     int all_regs)
 {
@@ -97,13 +89,13 @@ static void be_x86_64_print_context(HANDLE hThread, const dbg_ctx_t *pctx,
             buf[i] = ' ';
 
     dbg_printf("Register dump:\n");
-    dbg_printf(" rip:%016lx rsp:%016lx rbp:%016lx eflags:%08x (%s)\n",
+    dbg_printf(" rip:%016I64x rsp:%016I64x rbp:%016I64x eflags:%08x (%s)\n",
                ctx->Rip, ctx->Rsp, ctx->Rbp, ctx->EFlags, buf);
-    dbg_printf(" rax:%016lx rbx:%016lx rcx:%016lx rdx:%016lx\n",
+    dbg_printf(" rax:%016I64x rbx:%016I64x rcx:%016I64x rdx:%016I64x\n",
                ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
-    dbg_printf(" rsi:%016lx rdi:%016lx  r8:%016lx  r9:%016lx r10:%016lx\n",
+    dbg_printf(" rsi:%016I64x rdi:%016I64x  r8:%016I64x  r9:%016I64x r10:%016I64x\n",
                ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9, ctx->R10 );
-    dbg_printf(" r11:%016lx r12:%016lx r13:%016lx r14:%016lx r15:%016lx\n",
+    dbg_printf(" r11:%016I64x r12:%016I64x r13:%016I64x r14:%016I64x r15:%016I64x\n",
                ctx->R11, ctx->R12, ctx->R13, ctx->R14, ctx->R15 );
 
     if (!all_regs) return;
@@ -112,9 +104,9 @@ static void be_x86_64_print_context(HANDLE hThread, const dbg_ctx_t *pctx,
                ctx->SegCs, ctx->SegDs, ctx->SegEs, ctx->SegFs, ctx->SegGs, ctx->SegSs );
 
     dbg_printf("Debug:\n");
-    dbg_printf(" dr0:%016lx dr1:%016lx dr2:%016lx dr3:%016lx\n",
+    dbg_printf(" dr0:%016I64x dr1:%016I64x dr2:%016I64x dr3:%016I64x\n",
                ctx->Dr0, ctx->Dr1, ctx->Dr2, ctx->Dr3 );
-    dbg_printf(" dr6:%016lx dr7:%016lx\n", ctx->Dr6, ctx->Dr7 );
+    dbg_printf(" dr6:%016I64x dr7:%016I64x\n", ctx->Dr6, ctx->Dr7 );
 
     dbg_printf("Floating point:\n");
     dbg_printf(" flcw:%04x ", LOWORD(ctx->u.FltSave.ControlWord));
@@ -154,14 +146,11 @@ static void be_x86_64_print_context(HANDLE hThread, const dbg_ctx_t *pctx,
                ctx->u.FltSave.ErrorSelector, ctx->u.FltSave.ErrorOffset,
                ctx->u.FltSave.DataSelector, ctx->u.FltSave.DataOffset );
 
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 8; i++)
     {
-        dbg_printf(" st%u:%-16Lg ", i, m128a_to_longdouble(ctx->u.FltSave.FloatRegisters[i]));
-    }
-    dbg_printf("\n");
-    for (i = 4; i < 8; i++)
-    {
-        dbg_printf(" st%u:%-16Lg ", i, m128a_to_longdouble(ctx->u.FltSave.FloatRegisters[i]));
+        M128A reg = ctx->u.FltSave.FloatRegisters[i];
+        if (i == 4) dbg_printf("\n");
+        dbg_printf(" ST%u:%016I64x%16I64x ", i, reg.High, reg.Low );
     }
     dbg_printf("\n");
 
@@ -172,7 +161,7 @@ static void be_x86_64_print_context(HANDLE hThread, const dbg_ctx_t *pctx,
 
     for (i = 0; i < 16; i++)
     {
-        dbg_printf( " %sxmm%u: uint=%016lx%016lx", (i > 9) ? "" : " ", i,
+        dbg_printf( " %sxmm%u: uint=%016I64x%016I64x", (i > 9) ? "" : " ", i,
                     ctx->u.FltSave.XmmRegisters[i].High, ctx->u.FltSave.XmmRegisters[i].Low );
         dbg_printf( " double={%g; %g}", *(double *)&ctx->u.FltSave.XmmRegisters[i].Low,
                     *(double *)&ctx->u.FltSave.XmmRegisters[i].High );
@@ -609,13 +598,13 @@ static inline int be_x86_64_get_unused_DR(dbg_ctx_t *pctx, DWORD64** r)
 
 static BOOL be_x86_64_insert_Xpoint(HANDLE hProcess, const struct be_process_io* pio,
                                     dbg_ctx_t *ctx, enum be_xpoint_type type,
-                                    void* addr, unsigned long* val, unsigned size)
+                                    void* addr, unsigned *val, unsigned size)
 {
     unsigned char       ch;
     SIZE_T              sz;
     DWORD64            *pr;
     int                 reg;
-    unsigned long       bits;
+    unsigned int        bits;
 
     switch (type)
     {
@@ -661,7 +650,7 @@ static BOOL be_x86_64_insert_Xpoint(HANDLE hProcess, const struct be_process_io*
 
 static BOOL be_x86_64_remove_Xpoint(HANDLE hProcess, const struct be_process_io* pio,
                                     dbg_ctx_t *ctx, enum be_xpoint_type type,
-                                    void* addr, unsigned long val, unsigned size)
+                                    void* addr, unsigned val, unsigned size)
 {
     SIZE_T              sz;
     unsigned char       ch;
@@ -731,20 +720,17 @@ static BOOL be_x86_64_fetch_integer(const struct dbg_lvalue* lvalue, unsigned si
     return TRUE;
 }
 
-static BOOL be_x86_64_fetch_float(const struct dbg_lvalue* lvalue, unsigned size,
-                                  long double* ret)
+static BOOL be_x86_64_fetch_float(const struct dbg_lvalue* lvalue, unsigned size, double *ret)
 {
-    char        tmp[sizeof(long double)];
+    char tmp[sizeof(double)];
 
     /* FIXME: this assumes that debuggee and debugger use the same
      * representation for reals
      */
     if (!memory_read_value(lvalue, size, tmp)) return FALSE;
 
-    /* float & double types have to be promoted to a long double */
-    if (size == 4) *ret = *(float*)tmp;
-    else if (size == 8) *ret = *(double*)tmp;
-    else if (size == 10) *ret = *(long double*)tmp;
+    if (size == sizeof(float)) *ret = *(float*)tmp;
+    else if (size == sizeof(double)) *ret = *(double*)tmp;
     else return FALSE;
 
     return TRUE;

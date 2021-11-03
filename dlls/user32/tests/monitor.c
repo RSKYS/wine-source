@@ -19,34 +19,49 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+
 #include "wine/test.h"
 #include "winbase.h"
 #include "wingdi.h"
 #include "winuser.h"
 #include "winreg.h"
+#include "winternl.h"
+#include "ddk/d3dkmthk.h"
 #include "wine/heap.h"
 #include <stdio.h>
 
-static HMODULE hdll;
 static LONG (WINAPI *pGetDisplayConfigBufferSizes)(UINT32,UINT32*,UINT32*);
+static BOOL (WINAPI *pGetDpiForMonitorInternal)(HMONITOR,UINT,UINT*,UINT*);
 static LONG (WINAPI *pQueryDisplayConfig)(UINT32,UINT32*,DISPLAYCONFIG_PATH_INFO*,UINT32*,
                                           DISPLAYCONFIG_MODE_INFO*,DISPLAYCONFIG_TOPOLOGY_ID*);
 static LONG (WINAPI *pDisplayConfigGetDeviceInfo)(DISPLAYCONFIG_DEVICE_INFO_HEADER*);
+static LONG (WINAPI *pDisplayConfigSetDeviceInfo)(DISPLAYCONFIG_DEVICE_INFO_HEADER*);
 static DPI_AWARENESS_CONTEXT (WINAPI *pSetThreadDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
+
+static NTSTATUS (WINAPI *pD3DKMTCloseAdapter)(const D3DKMT_CLOSEADAPTER*);
+static NTSTATUS (WINAPI *pD3DKMTOpenAdapterFromGdiDisplayName)(D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME*);
 
 static void init_function_pointers(void)
 {
-    hdll = GetModuleHandleA("user32.dll");
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
 
-#define GET_PROC(func) \
-    p ## func = (void*)GetProcAddress(hdll, #func); \
-    if(!p ## func) \
-      trace("GetProcAddress(%s) failed\n", #func);
+#define GET_PROC(module, func)                       \
+    p##func = (void *)GetProcAddress(module, #func); \
+    if (!p##func)                                    \
+        trace("GetProcAddress(%s, %s) failed.\n", #module, #func);
 
-    GET_PROC(GetDisplayConfigBufferSizes)
-    GET_PROC(QueryDisplayConfig)
-    GET_PROC(DisplayConfigGetDeviceInfo)
-    GET_PROC(SetThreadDpiAwarenessContext)
+    GET_PROC(user32, GetDisplayConfigBufferSizes)
+    GET_PROC(user32, GetDpiForMonitorInternal)
+    GET_PROC(user32, QueryDisplayConfig)
+    GET_PROC(user32, DisplayConfigGetDeviceInfo)
+    GET_PROC(user32, DisplayConfigSetDeviceInfo)
+    GET_PROC(user32, SetThreadDpiAwarenessContext)
+
+    GET_PROC(gdi32, D3DKMTCloseAdapter)
+    GET_PROC(gdi32, D3DKMTOpenAdapterFromGdiDisplayName)
 
 #undef GET_PROC
 }
@@ -68,19 +83,26 @@ static void flush_events(void)
     }
 }
 
-static BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC hdc, LPRECT lprc,
-                                       LPARAM lparam)
+static unsigned int get_primary_dpi(void)
 {
-    MONITORINFOEXA mi;
-    char *primary = (char *)lparam;
+    DPI_AWARENESS_CONTEXT old_context;
+    UINT dpi_x = 0, dpi_y = 0;
+    POINT point = {0, 0};
+    HMONITOR monitor;
 
-    mi.cbSize = sizeof(mi);
+    if (!pSetThreadDpiAwarenessContext || !pGetDpiForMonitorInternal)
+        return 0;
 
-    ok(GetMonitorInfoA(hmon, (MONITORINFO*)&mi), "GetMonitorInfo failed\n");
-    if (mi.dwFlags & MONITORINFOF_PRIMARY)
-        strcpy(primary, mi.szDevice);
+    old_context = pSetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    monitor = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
+    pGetDpiForMonitorInternal(monitor, 0, &dpi_x, &dpi_y);
+    pSetThreadDpiAwarenessContext(old_context);
+    return dpi_y;
+}
 
-    return TRUE;
+static int get_bitmap_stride(int width, int bpp)
+{
+    return ((width * bpp + 15) >> 3) & ~1;
 }
 
 static int adapter_count = 0;
@@ -113,11 +135,6 @@ static void test_enumdisplaydevices_adapter(int index, const DISPLAY_DEVICEA *de
        *device->DeviceString, "#%d: expect DeviceString not empty\n", index);
 
     /* StateFlags */
-    if (index == 0)
-        ok(device->StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE, "#%d: adapter should be primary\n", index);
-    else
-        ok(!(device->StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE), "#%d: adapter should not be primary\n", index);
-
     if (device->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
     {
         /* Test creating DC */
@@ -143,7 +160,7 @@ static void test_enumdisplaydevices_adapter(int index, const DISPLAY_DEVICEA *de
     }
 }
 
-static void test_enumdisplaydevices_monitor(int adapter_index, int monitor_index, const char *adapter_name,
+static void test_enumdisplaydevices_monitor(int monitor_index, const char *adapter_name,
                                             DISPLAY_DEVICEA *device, DWORD flags)
 {
     static const char device_key_prefix[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class"
@@ -163,11 +180,8 @@ static void test_enumdisplaydevices_monitor(int adapter_index, int monitor_index
     ok(*device->DeviceString, "#%d: expect DeviceString not empty\n", monitor_index);
 
     /* StateFlags */
-    if (adapter_index == 0 && monitor_index == 0)
-        ok(device->StateFlags & DISPLAY_DEVICE_ATTACHED, "#%d expect to have a primary monitor attached\n", monitor_index);
-    else
-        ok(device->StateFlags <= (DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE), "#%d wrong state %#x\n", monitor_index,
-           device->StateFlags);
+    ok(device->StateFlags <= (DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE),
+       "#%d wrong state %#x\n", monitor_index, device->StateFlags);
 
     /* DeviceID */
     CharLowerA(device->DeviceID);
@@ -199,8 +213,6 @@ static void test_enumdisplaydevices(void)
 {
     static const DWORD flags[] = {0, EDD_GET_DEVICE_INTERFACE_NAME};
     DISPLAY_DEVICEA dd;
-    char primary_device_name[32];
-    char primary_monitor_device_name[32];
     char adapter_name[32];
     int number;
     int flag_index;
@@ -229,23 +241,12 @@ static void test_enumdisplaydevices(void)
 
             for (monitor_index = 0; EnumDisplayDevicesA(adapter_name, monitor_index, &dd, flags[flag_index]);
                  monitor_index++)
-                test_enumdisplaydevices_monitor(adapter_index, monitor_index, adapter_name, &dd, flags[flag_index]);
+                test_enumdisplaydevices_monitor(monitor_index, adapter_name, &dd, flags[flag_index]);
         }
 
     ok(adapter_count > 0, "Expect at least one adapter found\n");
     /* XP on Testbot doesn't report a monitor, whereas XP on real machine does */
     ok(broken(monitor_count == 0) || monitor_count > 0, "Expect at least one monitor found\n");
-
-    ret = EnumDisplayDevicesA(NULL, 0, &dd, 0);
-    ok(ret, "Expect success\n");
-    lstrcpyA(primary_device_name, dd.DeviceName);
-
-    primary_monitor_device_name[0] = 0;
-    ret = EnumDisplayMonitors(NULL, NULL, monitor_enum_proc, (LPARAM)primary_monitor_device_name);
-    ok(ret, "EnumDisplayMonitors failed\n");
-    ok(!strcmp(primary_monitor_device_name, primary_device_name),
-       "monitor device name %s, device name %s\n", primary_monitor_device_name,
-       primary_device_name);
 }
 
 struct vid_mode
@@ -297,8 +298,6 @@ static void _expect_dm(INT line, const DEVMODEA *expected, const CHAR *device, D
 
     ok_(__FILE__, line)((dm.dmFields & expected->dmFields) == expected->dmFields,
             "Device %s test %d expect dmFields to contain %#x, got %#x\n", device, test, expected->dmFields, dm.dmFields);
-    /* Wine doesn't support changing color depth yet */
-    todo_wine_if(expected->dmFields & DM_BITSPERPEL && expected->dmBitsPerPel != 32 && expected->dmBitsPerPel != 24)
     ok_(__FILE__, line)(!(expected->dmFields & DM_BITSPERPEL) || dm.dmBitsPerPel == expected->dmBitsPerPel,
             "Device %s test %d expect dmBitsPerPel %u, got %u\n", device, test, expected->dmBitsPerPel, dm.dmBitsPerPel);
     ok_(__FILE__, line)(!(expected->dmFields & DM_PELSWIDTH) || dm.dmPelsWidth == expected->dmPelsWidth,
@@ -333,6 +332,7 @@ static void test_ChangeDisplaySettingsEx(void)
     DISPLAY_DEVICEA dd;
     POINTL position;
     DEVMODEW dmW;
+    BOOL found;
     LONG res;
     int i;
 
@@ -695,7 +695,6 @@ static void test_ChangeDisplaySettingsEx(void)
             dm.dmSize = sizeof(dm);
             res = EnumDisplaySettingsA(devices[device].name, ENUM_CURRENT_SETTINGS, &dm);
             ok(res, "Device %s EnumDisplaySettingsA failed, error %#x.\n", devices[device].name, GetLastError());
-            todo_wine_if(depths[test] != 32)
             ok(dm.dmBitsPerPel == depths[test], "Device %s expect dmBitsPerPel %u, got %u.\n",
                devices[device].name, depths[test], dm.dmBitsPerPel);
             /* 2008 resets to the resolution in the registry. Newer versions of Windows doesn't
@@ -732,7 +731,7 @@ static void test_ChangeDisplaySettingsEx(void)
         ok(count == old_count - 1, "Expect monitor count %d, got %d\n", old_count - 1, count);
     }
 
-    /* Test changing each adapter to every available mode */
+    /* Test changing each adapter to different width, height, frequency and depth */
     position.x = 0;
     position.y = 0;
     for (device = 0; device < device_count; ++device)
@@ -741,6 +740,42 @@ static void test_ChangeDisplaySettingsEx(void)
         dm.dmSize = sizeof(dm);
         for (mode = 0; EnumDisplaySettingsExA(devices[device].name, mode, &dm, 0); ++mode)
         {
+            if (mode == 0)
+            {
+                dm2 = dm;
+            }
+            else
+            {
+                found = FALSE;
+                if (dm2.dmPelsWidth && dm.dmPelsWidth != dm2.dmPelsWidth)
+                {
+                    dm2.dmPelsWidth = 0;
+                    found = TRUE;
+                }
+                if (dm2.dmPelsHeight && dm.dmPelsHeight != dm2.dmPelsHeight)
+                {
+                    dm2.dmPelsHeight = 0;
+                    found = TRUE;
+                }
+                if (dm2.dmDisplayFrequency && dm.dmDisplayFrequency != dm2.dmDisplayFrequency)
+                {
+                    dm2.dmDisplayFrequency = 0;
+                    found = TRUE;
+                }
+                if (dm2.dmBitsPerPel && dm.dmBitsPerPel != dm2.dmBitsPerPel)
+                {
+                    dm2.dmBitsPerPel = 0;
+                    found = TRUE;
+                }
+
+                if (!dm2.dmPelsWidth && !dm2.dmPelsHeight && !dm2.dmDisplayFrequency
+                        && !dm2.dmBitsPerPel)
+                    break;
+
+                if (!found)
+                    continue;
+            }
+
             dm.dmPosition = position;
             dm.dmFields |= DM_POSITION;
             /* Reattach detached non-primary adapters, otherwise ChangeDisplaySettingsExA with only CDS_RESET fails */
@@ -1524,6 +1559,7 @@ static void test_EnumDisplayMonitors(void)
     static const DWORD DESKTOP_ALL_ACCESS = 0x01ff;
     HWINSTA winstation, old_winstation;
     HDESK desktop, old_desktop;
+    USEROBJECTFLAGS flags;
     INT count, old_count;
     DWORD error;
     BOOL ret;
@@ -1562,6 +1598,12 @@ static void test_EnumDisplayMonitors(void)
     ret = SetProcessWindowStation(winstation);
     ok(ret, "SetProcessWindowStation failed, error %#x.\n", GetLastError());
     ok(winstation == GetProcessWindowStation(), "Expected %p, got %p.\n", GetProcessWindowStation(), winstation);
+
+    flags.fInherit = FALSE;
+    flags.fReserved = FALSE;
+    flags.dwFlags = WSF_VISIBLE;
+    ret = SetUserObjectInformationW(winstation, UOI_FLAGS, &flags, sizeof(flags));
+    ok(ret, "SetUserObjectInformationW failed, error %#x.\n", GetLastError());
 
     desktop = CreateDesktopW(L"test_desktop", NULL, NULL, 0, DESKTOP_ALL_ACCESS, NULL);
     ok(!!desktop && desktop != old_desktop, "CreateDesktopW failed, error %#x.\n", GetLastError());
@@ -1913,6 +1955,85 @@ static void test_display_config(void)
     test_DisplayConfigGetDeviceInfo();
 }
 
+static void test_DisplayConfigSetDeviceInfo(void)
+{
+    static const unsigned int scales[] = {100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
+    int current_scale, current_scale_idx, recommended_scale_idx, step, dpi, old_dpi;
+    D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME open_adapter_gdi_desc;
+    DISPLAYCONFIG_GET_SOURCE_DPI_SCALE get_scale_req;
+    DISPLAYCONFIG_SET_SOURCE_DPI_SCALE set_scale_req;
+    D3DKMT_CLOSEADAPTER close_adapter_desc;
+    NTSTATUS status;
+    LONG ret;
+
+#define CHECK_FUNC(func)                       \
+    if (!p##func)                              \
+    {                                          \
+        skip("%s() is unavailable.\n", #func); \
+        return;                                \
+    }
+
+    CHECK_FUNC(D3DKMTCloseAdapter)
+    CHECK_FUNC(D3DKMTOpenAdapterFromGdiDisplayName)
+    CHECK_FUNC(DisplayConfigGetDeviceInfo)
+    CHECK_FUNC(DisplayConfigSetDeviceInfo)
+    CHECK_FUNC(GetDpiForMonitorInternal)
+    CHECK_FUNC(SetThreadDpiAwarenessContext)
+
+#undef CHECK_FUNC
+
+    lstrcpyW(open_adapter_gdi_desc.DeviceName, L"\\\\.\\DISPLAY1");
+    status = pD3DKMTOpenAdapterFromGdiDisplayName(&open_adapter_gdi_desc);
+    ok(status == STATUS_SUCCESS, "D3DKMTOpenAdapterFromGdiDisplayName failed, status %#x.\n", status);
+
+    get_scale_req.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_DPI_SCALE;
+    get_scale_req.header.size = sizeof(get_scale_req);
+    get_scale_req.header.adapterId = open_adapter_gdi_desc.AdapterLuid;
+    get_scale_req.header.id = open_adapter_gdi_desc.VidPnSourceId;
+    ret = pDisplayConfigGetDeviceInfo(&get_scale_req.header);
+    if (ret != NO_ERROR)
+    {
+        skip("DisplayConfigGetDeviceInfo failed, returned %d.\n", ret);
+        goto failed;
+    }
+
+    dpi = get_primary_dpi();
+    old_dpi = dpi;
+    current_scale = dpi * 100 / 96;
+    for (current_scale_idx = 0; current_scale_idx < ARRAY_SIZE(scales); ++current_scale_idx)
+    {
+        if (scales[current_scale_idx] == current_scale)
+            break;
+    }
+    ok(scales[current_scale_idx] == current_scale, "Failed to find current scale.\n");
+    recommended_scale_idx = current_scale_idx - get_scale_req.curRelativeScaleStep;
+
+    set_scale_req.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_SOURCE_DPI_SCALE;
+    set_scale_req.header.size = sizeof(set_scale_req);
+    set_scale_req.header.adapterId = open_adapter_gdi_desc.AdapterLuid;
+    set_scale_req.header.id = open_adapter_gdi_desc.VidPnSourceId;
+    for (step = get_scale_req.minRelativeScaleStep; step <= get_scale_req.maxRelativeScaleStep; ++step)
+    {
+        set_scale_req.relativeScaleStep = step;
+        ret = pDisplayConfigSetDeviceInfo(&set_scale_req.header);
+        ok(ret == NO_ERROR, "DisplayConfigSetDeviceInfo failed, returned %d.\n", ret);
+
+        dpi = scales[step + recommended_scale_idx] * 96 / 100;
+        ok(dpi == get_primary_dpi(), "Expected %d, got %d.\n", get_primary_dpi(), dpi);
+    }
+
+    /* Restore to the original scale */
+    set_scale_req.relativeScaleStep = get_scale_req.curRelativeScaleStep;
+    ret = pDisplayConfigSetDeviceInfo(&set_scale_req.header);
+    ok(ret == NO_ERROR, "DisplayConfigSetDeviceInfo failed, returned %d.\n", ret);
+    ok(old_dpi == get_primary_dpi(), "Expected %d, got %d.\n", get_primary_dpi(), old_dpi);
+
+failed:
+    close_adapter_desc.hAdapter = open_adapter_gdi_desc.hAdapter;
+    status = pD3DKMTCloseAdapter(&close_adapter_desc);
+    ok(status == STATUS_SUCCESS, "Got unexpected return code %#x.\n", status);
+}
+
 static BOOL CALLBACK test_handle_proc(HMONITOR full_monitor, HDC hdc, LPRECT rect, LPARAM lparam)
 {
     MONITORINFO monitor_info = {sizeof(monitor_info)};
@@ -1996,7 +2117,10 @@ static void test_handles(void)
 #define check_display_dc(a, b, c) _check_display_dc(__LINE__, a, b, c)
 static void _check_display_dc(INT line, HDC hdc, const DEVMODEA *dm, BOOL allow_todo)
 {
+    BITMAP bitmap;
+    HBITMAP hbmp;
     INT value;
+    BOOL ret;
 
     value = GetDeviceCaps(hdc, HORZRES);
     todo_wine_if(allow_todo && dm->dmPelsWidth != GetSystemMetrics(SM_CXSCREEN))
@@ -2024,6 +2148,34 @@ static void _check_display_dc(INT line, HDC hdc, const DEVMODEA *dm, BOOL allow_
     todo_wine_if(allow_todo)
     ok_(__FILE__, line)(value == dm->dmDisplayFrequency, "Expected VREFRESH %d, got %d.\n",
             dm->dmDisplayFrequency, value);
+
+    value = GetDeviceCaps(hdc, BITSPIXEL);
+    ok_(__FILE__, line)(value == dm->dmBitsPerPel, "Expected BITSPIXEL %d, got %d.\n",
+            dm->dmBitsPerPel, value);
+
+    hbmp = GetCurrentObject(hdc, OBJ_BITMAP);
+    ok_(__FILE__, line)(!!hbmp, "GetCurrentObject failed, error %#x.\n", GetLastError());
+    ret = GetObjectA(hbmp, sizeof(bitmap), &bitmap);
+    /* GetObjectA fails on Win7 and older */
+    ok_(__FILE__, line)(ret || broken(!ret), "GetObjectA failed, error %d.\n", GetLastError());
+    if (ret)
+    {
+        ok_(__FILE__, line)(bitmap.bmType == 0, "Expected bmType %d, got %d.\n", 0, bitmap.bmType);
+        todo_wine
+        ok_(__FILE__, line)(bitmap.bmWidth == GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                "Expected bmWidth %d, got %d.\n", GetSystemMetrics(SM_CXVIRTUALSCREEN), bitmap.bmWidth);
+        todo_wine
+        ok_(__FILE__, line)(bitmap.bmHeight == GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                "Expected bmHeight %d, got %d.\n", GetSystemMetrics(SM_CYVIRTUALSCREEN), bitmap.bmHeight);
+        todo_wine
+        ok_(__FILE__, line)(bitmap.bmBitsPixel == 32, "Expected bmBitsPixel %d, got %d.\n", 32,
+                bitmap.bmBitsPixel);
+        ok_(__FILE__, line)(bitmap.bmWidthBytes == get_bitmap_stride(bitmap.bmWidth, bitmap.bmBitsPixel),
+                "Expected bmWidthBytes %d, got %d.\n", get_bitmap_stride(bitmap.bmWidth, bitmap.bmBitsPixel),
+                bitmap.bmWidthBytes);
+        ok_(__FILE__, line)(bitmap.bmPlanes == 1, "Expected bmPlanes %d, got %d.\n", 1, bitmap.bmPlanes);
+        ok_(__FILE__, line)(bitmap.bmBits == NULL, "Expected bmBits %p, got %p.\n", NULL, bitmap.bmBits);
+    }
 }
 
 static void test_display_dc(void)
@@ -2047,7 +2199,7 @@ static void test_display_dc(void)
 
     check_display_dc(hdc, &dm, FALSE);
 
-    /* Tests after mode changes */
+    /* Tests after mode changes to a different resolution */
     memset(&dm2, 0, sizeof(dm2));
     dm2.dmSize = sizeof(dm2);
     for (mode_idx = 0; EnumDisplaySettingsA(NULL, mode_idx, &dm2); ++mode_idx)
@@ -2069,6 +2221,33 @@ static void test_display_dc(void)
         ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA returned unexpected %d.\n", res);
     }
 
+    /* Tests after mode changes to a different color depth */
+    memset(&dm2, 0, sizeof(dm2));
+    dm2.dmSize = sizeof(dm2);
+    for (mode_idx = 0; EnumDisplaySettingsA(NULL, mode_idx, &dm2); ++mode_idx)
+    {
+        if (dm2.dmBitsPerPel != dm.dmBitsPerPel)
+            break;
+    }
+    if (dm2.dmBitsPerPel && dm2.dmBitsPerPel != dm.dmBitsPerPel)
+    {
+        res = ChangeDisplaySettingsExA(NULL, &dm2, NULL, CDS_RESET, NULL);
+        /* Win8 TestBots */
+        ok(res == DISP_CHANGE_SUCCESSFUL || broken(res == DISP_CHANGE_FAILED),
+                "ChangeDisplaySettingsExA returned unexpected %d.\n", res);
+        if (res == DISP_CHANGE_SUCCESSFUL)
+        {
+            check_display_dc(hdc, &dm2, FALSE);
+
+            res = ChangeDisplaySettingsExA(NULL, NULL, NULL, 0, NULL);
+            ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA returned unexpected %d.\n", res);
+        }
+    }
+    else
+    {
+        win_skip("Failed to find a different color depth other than %u.\n", dm.dmBitsPerPel);
+    }
+
     DeleteDC(hdc);
 
     /* Test DCs covering a specific monitor */
@@ -2088,7 +2267,7 @@ static void test_display_dc(void)
 
         check_display_dc(hdc, &dm, FALSE);
 
-        /* Tests after mode changes */
+        /* Tests after mode changes to a different resolution */
         memset(&dm2, 0, sizeof(dm2));
         dm2.dmSize = sizeof(dm2);
         for (mode_idx = 0; EnumDisplaySettingsA(dd.DeviceName, mode_idx, &dm2); ++mode_idx)
@@ -2111,7 +2290,33 @@ static void test_display_dc(void)
 
         check_display_dc(hdc, &dm2, FALSE);
 
+        /* Tests after mode changes to a different color depth */
+        memset(&dm2, 0, sizeof(dm2));
+        dm2.dmSize = sizeof(dm2);
+        for (mode_idx = 0; EnumDisplaySettingsA(dd.DeviceName, mode_idx, &dm2); ++mode_idx)
+        {
+            if (dm2.dmBitsPerPel != dm.dmBitsPerPel)
+                break;
+        }
+        if (dm2.dmBitsPerPel && dm2.dmBitsPerPel != dm.dmBitsPerPel)
+        {
+            res = ChangeDisplaySettingsExA(dd.DeviceName, &dm2, NULL, CDS_RESET, NULL);
+            ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA returned unexpected %d.\n", res);
+
+            check_display_dc(hdc, &dm2, FALSE);
+
+            res = ChangeDisplaySettingsExA(NULL, NULL, NULL, 0, NULL);
+            ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA returned unexpected %d.\n", res);
+        }
+        else
+        {
+            win_skip("Failed to find a different color depth other than %u.\n", dm.dmBitsPerPel);
+        }
+
         /* Tests after monitor detach */
+        ret = EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm2);
+        ok(ret, "EnumDisplaySettingsA %s failed.\n", dd.DeviceName);
+
         if (!(dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE))
         {
             old_count = GetSystemMetrics(SM_CMONITORS);
@@ -2153,6 +2358,7 @@ START_TEST(monitor)
     init_function_pointers();
     test_enumdisplaydevices();
     test_ChangeDisplaySettingsEx();
+    test_DisplayConfigSetDeviceInfo();
     test_EnumDisplayMonitors();
     test_monitors();
     test_work_area();

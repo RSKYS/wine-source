@@ -287,7 +287,11 @@ char * CDECL strtok( char *str, const char *delim )
         if (!(str = data->strtok_next)) return NULL;
 
     while (*str && strchr( delim, *str )) str++;
-    if (!*str) return NULL;
+    if (!*str)
+    {
+        data->strtok_next = str;
+        return NULL;
+    }
     ret = str++;
     while (*str && !strchr( delim, *str )) str++;
     if (*str) *str++ = 0;
@@ -1061,7 +1065,13 @@ double CDECL strtod( const char *str, char **end )
  */
 float CDECL _strtof_l( const char *str, char **end, _locale_t locale )
 {
-    return _strtod_l(str, end, locale);
+    double ret = _strtod_l(str, end, locale);
+    if (ret && isfinite(ret)) {
+        float f = ret;
+        if (!f || !isfinite(f))
+            *_errno() = ERANGE;
+    }
+    return ret;
 }
 
 /*********************************************************************
@@ -2845,13 +2855,72 @@ void * __cdecl memcpy(void *dst, const void *src, size_t n)
     return memmove(dst, src, n);
 }
 
+static inline void memset_aligned_32(unsigned char *d, uint64_t v, size_t n)
+{
+    unsigned char *end = d + n;
+    while (d < end)
+    {
+        *(uint64_t *)(d + 0) = v;
+        *(uint64_t *)(d + 8) = v;
+        *(uint64_t *)(d + 16) = v;
+        *(uint64_t *)(d + 24) = v;
+        d += 32;
+    }
+}
+
 /*********************************************************************
  *		    memset (MSVCRT.@)
  */
-void* __cdecl memset(void *dst, int c, size_t n)
+void *__cdecl memset(void *dst, int c, size_t n)
 {
-    volatile unsigned char *d = dst;  /* avoid gcc optimizations */
-    while (n--) *d++ = c;
+    typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
+    typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
+    typedef uint16_t DECLSPEC_ALIGN(1) unaligned_ui16;
+
+    uint64_t v = 0x101010101010101ull * (unsigned char)c;
+    unsigned char *d = (unsigned char *)dst;
+    size_t a = 0x20 - ((uintptr_t)d & 0x1f);
+
+    if (n >= 16)
+    {
+        *(unaligned_ui64 *)(d + 0) = v;
+        *(unaligned_ui64 *)(d + 8) = v;
+        *(unaligned_ui64 *)(d + n - 16) = v;
+        *(unaligned_ui64 *)(d + n - 8) = v;
+        if (n <= 32) return dst;
+        *(unaligned_ui64 *)(d + 16) = v;
+        *(unaligned_ui64 *)(d + 24) = v;
+        *(unaligned_ui64 *)(d + n - 32) = v;
+        *(unaligned_ui64 *)(d + n - 24) = v;
+        if (n <= 64) return dst;
+
+        n = (n - a) & ~0x1f;
+        memset_aligned_32(d + a, v, n);
+        return dst;
+    }
+    if (n >= 8)
+    {
+        *(unaligned_ui64 *)d = v;
+        *(unaligned_ui64 *)(d + n - 8) = v;
+        return dst;
+    }
+    if (n >= 4)
+    {
+        *(unaligned_ui32 *)d = v;
+        *(unaligned_ui32 *)(d + n - 4) = v;
+        return dst;
+    }
+    if (n >= 2)
+    {
+        *(unaligned_ui16 *)d = v;
+        *(unaligned_ui16 *)(d + n - 2) = v;
+        return dst;
+    }
+    if (n >= 1)
+    {
+        *(uint8_t *)d = v;
+        return dst;
+    }
     return dst;
 }
 

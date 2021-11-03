@@ -22,14 +22,7 @@
 #define COBJMACROS
 #define NONAMELESSUNION
 
-#include "config.h"
-
 #include <stdarg.h>
-#ifdef HAVE_LIBXML2
-# include <libxml/parser.h>
-# include <libxml/xmlerror.h>
-# include <libxml/encoding.h>
-#endif
 
 #include "windef.h"
 #include "winbase.h"
@@ -44,11 +37,9 @@
 #include "docobj.h"
 #include "shlwapi.h"
 
-#include "msxml_private.h"
+#include "msxml_dispex.h"
 
 #include "wine/debug.h"
-
-#ifdef HAVE_LIBXML2
 
 WINE_DEFAULT_DEBUG_CHANNEL(msxml);
 
@@ -398,7 +389,7 @@ static HRESULT WINAPI BindStatusCallback_GetBindInfo(IBindStatusCallback *iface,
     if (This->request->verb == BINDVERB_CUSTOM)
     {
         pbindinfo->szCustomVerb = CoTaskMemAlloc(SysStringByteLen(This->request->custom)+sizeof(WCHAR));
-        strcpyW(pbindinfo->szCustomVerb, This->request->custom);
+        lstrcpyW(pbindinfo->szCustomVerb, This->request->custom);
     }
 
     return S_OK;
@@ -521,10 +512,10 @@ static HRESULT WINAPI BSCHttpNegotiate_BeginningTransaction(IHttpNegotiate *ifac
 
     if (base_uri)
     {
-        strcpyW(ptr, refererW);
-        strcatW(ptr, base_uri);
-        strcatW(ptr, crlfW);
-        ptr += strlenW(refererW) + SysStringLen(base_uri) + strlenW(crlfW);
+        lstrcpyW(ptr, refererW);
+        lstrcatW(ptr, base_uri);
+        lstrcatW(ptr, crlfW);
+        ptr += lstrlenW(refererW) + SysStringLen(base_uri) + lstrlenW(crlfW);
         SysFreeString(base_uri);
     }
 
@@ -600,11 +591,11 @@ static HRESULT WINAPI BSCHttpNegotiate_OnResponse(IHttpNegotiate *iface, DWORD c
         ptr = line = resp_headers;
 
         /* skip HTTP-Version */
-        ptr = strchrW(ptr, ' ');
+        ptr = wcschr(ptr, ' ');
         if (ptr)
         {
             /* skip Status-Code */
-            ptr = strchrW(++ptr, ' ');
+            ptr = wcschr(++ptr, ' ');
             if (ptr)
             {
                 status_text = ++ptr;
@@ -872,7 +863,7 @@ static HRESULT verify_uri(httprequest *This, IUri *uri)
 
     hr = IUri_GetHost(This->base_uri, &base_host);
     if(SUCCEEDED(hr)) {
-        if(strcmpiW(host, base_host)) {
+        if(wcsicmp(host, base_host)) {
             WARN("Hosts don't match\n");
             hr = E_ACCESSDENIED;
         }
@@ -909,21 +900,21 @@ static HRESULT httprequest_open(httprequest *This, BSTR method, BSTR url,
     This->user = This->password = NULL;
     free_request_headers(This);
 
-    if (!strcmpiW(method, MethodGetW))
+    if (!wcsicmp(method, MethodGetW))
     {
         This->verb = BINDVERB_GET;
     }
-    else if (!strcmpiW(method, MethodPutW))
+    else if (!wcsicmp(method, MethodPutW))
     {
         This->verb = BINDVERB_PUT;
     }
-    else if (!strcmpiW(method, MethodPostW))
+    else if (!wcsicmp(method, MethodPostW))
     {
         This->verb = BINDVERB_POST;
     }
-    else if (!strcmpiW(method, MethodDeleteW) ||
-             !strcmpiW(method, MethodHeadW) ||
-             !strcmpiW(method, MethodPropFindW))
+    else if (!wcsicmp(method, MethodDeleteW) ||
+             !wcsicmp(method, MethodHeadW) ||
+             !wcsicmp(method, MethodPropFindW))
     {
         This->verb = BINDVERB_CUSTOM;
         SysReAllocString(&This->custom, method);
@@ -1008,7 +999,7 @@ static HRESULT httprequest_setRequestHeader(httprequest *This, BSTR header, BSTR
     /* replace existing header value if already added */
     LIST_FOR_EACH_ENTRY(entry, &This->reqheaders, struct httpheader, entry)
     {
-        if (lstrcmpW(entry->header, header) == 0)
+        if (wcscmp(entry->header, header) == 0)
         {
             LONG length = SysStringLen(entry->value);
             HRESULT hr;
@@ -1064,7 +1055,7 @@ static HRESULT httprequest_getResponseHeader(httprequest *This, BSTR header, BST
 
     LIST_FOR_EACH_ENTRY(entry, &This->respheaders, struct httpheader, entry)
     {
-        if (!strcmpiW(entry->header, header))
+        if (!wcsicmp(entry->header, header))
         {
             *value = SysAllocString(entry->value);
             TRACE("header value %s\n", debugstr_w(*value));
@@ -1127,6 +1118,58 @@ static HRESULT httprequest_get_statusText(httprequest *This, BSTR *status)
     return S_OK;
 }
 
+enum response_encoding
+{
+    RESPONSE_ENCODING_NONE,
+    RESPONSE_ENCODING_UCS4BE,
+    RESPONSE_ENCODING_UCS4LE,
+    RESPONSE_ENCODING_UCS4_2143,
+    RESPONSE_ENCODING_UCS4_3412,
+    RESPONSE_ENCODING_EBCDIC,
+    RESPONSE_ENCODING_UTF8,
+    RESPONSE_ENCODING_UTF16LE,
+    RESPONSE_ENCODING_UTF16BE,
+};
+
+static unsigned int detect_response_encoding(const BYTE *in, unsigned int len)
+{
+    if (len >= 4)
+    {
+        if (in[0] == 0 && in[1] == 0 && in[2] == 0 && in[3] == 0x3c)
+            return RESPONSE_ENCODING_UCS4BE;
+        if (in[0] == 0x3c && in[1] == 0 && in[2] == 0 && in[3] == 0)
+            return RESPONSE_ENCODING_UCS4LE;
+        if (in[0] == 0 && in[1] == 0 && in[2] == 0x3c && in[3] == 0)
+            return RESPONSE_ENCODING_UCS4_2143;
+        if (in[0] == 0 && in[1] == 0x3c && in[2] == 0 && in[3] == 0)
+            return RESPONSE_ENCODING_UCS4_3412;
+        if (in[0] == 0x4c && in[1] == 0x6f && in[2] == 0xa7 && in[3] == 0x94)
+            return RESPONSE_ENCODING_EBCDIC;
+        if (in[0] == 0x3c && in[1] == 0x3f && in[2] == 0x78 && in[3] == 0x6d)
+            return RESPONSE_ENCODING_UTF8;
+        if (in[0] == 0x3c && in[1] == 0 && in[2] == 0x3f && in[3] == 0)
+            return RESPONSE_ENCODING_UTF16LE;
+        if (in[0] == 0 && in[1] == 0x3c && in[2] == 0 && in[3] == 0x3f)
+            return RESPONSE_ENCODING_UTF16BE;
+    }
+
+    if (len >= 3)
+    {
+        if (in[0] == 0xef && in[1] == 0xbb && in[2] == 0xbf)
+            return RESPONSE_ENCODING_UTF8;
+    }
+
+    if (len >= 2)
+    {
+        if (in[0] == 0xfe && in[1] == 0xff)
+            return RESPONSE_ENCODING_UTF16BE;
+        if (in[0] == 0xff && in[1] == 0xfe)
+            return RESPONSE_ENCODING_UTF16LE;
+    }
+
+    return RESPONSE_ENCODING_NONE;
+}
+
 static HRESULT httprequest_get_responseText(httprequest *This, BSTR *body)
 {
     HGLOBAL hglobal;
@@ -1138,34 +1181,34 @@ static HRESULT httprequest_get_responseText(httprequest *This, BSTR *body)
     hr = GetHGlobalFromStream(This->bsc->stream, &hglobal);
     if (hr == S_OK)
     {
-        xmlChar *ptr = GlobalLock(hglobal);
+        const char *ptr = GlobalLock(hglobal);
         DWORD size = GlobalSize(hglobal);
-        xmlCharEncoding encoding = XML_CHAR_ENCODING_UTF8;
+        unsigned int encoding = RESPONSE_ENCODING_NONE;
 
         /* try to determine data encoding */
         if (size >= 4)
         {
-            encoding = xmlDetectCharEncoding(ptr, 4);
-            TRACE("detected encoding: %s\n", debugstr_a(xmlGetCharEncodingName(encoding)));
-            if ( encoding != XML_CHAR_ENCODING_UTF8 &&
-                 encoding != XML_CHAR_ENCODING_UTF16LE &&
-                 encoding != XML_CHAR_ENCODING_NONE )
+            encoding = detect_response_encoding((const BYTE *)ptr, 4);
+            TRACE("detected encoding: %u.\n", encoding);
+
+            if (encoding != RESPONSE_ENCODING_UTF8 &&
+                    encoding != RESPONSE_ENCODING_UTF16LE &&
+                    encoding != RESPONSE_ENCODING_NONE )
             {
-                FIXME("unsupported encoding: %s\n", debugstr_a(xmlGetCharEncodingName(encoding)));
+                FIXME("unsupported response encoding: %u.\n", encoding);
                 GlobalUnlock(hglobal);
                 return E_FAIL;
             }
         }
 
         /* without BOM assume UTF-8 */
-        if (encoding == XML_CHAR_ENCODING_UTF8 ||
-            encoding == XML_CHAR_ENCODING_NONE )
+        if (encoding == RESPONSE_ENCODING_UTF8 || encoding == RESPONSE_ENCODING_NONE)
         {
-            DWORD length = MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)ptr, size, NULL, 0);
+            DWORD length = MultiByteToWideChar(CP_UTF8, 0, ptr, size, NULL, 0);
 
             *body = SysAllocStringLen(NULL, length);
             if (*body)
-                MultiByteToWideChar( CP_UTF8, 0, (LPCSTR)ptr, size, *body, length);
+                MultiByteToWideChar( CP_UTF8, 0, ptr, size, *body, length);
         }
         else
             *body = SysAllocStringByteLen((LPCSTR)ptr, size);
@@ -1186,7 +1229,7 @@ static HRESULT httprequest_get_responseXML(httprequest *This, IDispatch **body)
     if (!body) return E_INVALIDARG;
     if (This->state != READYSTATE_COMPLETE) return E_FAIL;
 
-    hr = DOMDocument_create(MSXML_DEFAULT, (void**)&doc);
+    hr = dom_document_create(MSXML_DEFAULT, (void**)&doc);
     if (hr != S_OK) return hr;
 
     hr = httprequest_get_responseText(This, &str);
@@ -2099,21 +2142,3 @@ HRESULT ServerXMLHTTP_create(void **obj)
 
     return S_OK;
 }
-
-#else
-
-HRESULT XMLHTTPRequest_create(void **ppObj)
-{
-    MESSAGE("This program tried to use a XMLHTTPRequest object, but\n"
-            "libxml2 support was not present at compile time.\n");
-    return E_NOTIMPL;
-}
-
-HRESULT ServerXMLHTTP_create(void **obj)
-{
-    MESSAGE("This program tried to use a ServerXMLHTTP object, but\n"
-            "libxml2 support was not present at compile time.\n");
-    return E_NOTIMPL;
-}
-
-#endif

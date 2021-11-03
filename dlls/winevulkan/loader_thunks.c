@@ -128,6 +128,11 @@ void WINAPI vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRend
     unix_funcs->p_vkCmdBeginRenderPass2KHR(commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
 }
 
+void WINAPI vkCmdBeginRenderingKHR(VkCommandBuffer commandBuffer, const VkRenderingInfoKHR *pRenderingInfo)
+{
+    unix_funcs->p_vkCmdBeginRenderingKHR(commandBuffer, pRenderingInfo);
+}
+
 void WINAPI vkCmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer *pCounterBuffers, const VkDeviceSize *pCounterBufferOffsets)
 {
     unix_funcs->p_vkCmdBeginTransformFeedbackEXT(commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
@@ -141,6 +146,11 @@ void WINAPI vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBin
 void WINAPI vkCmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
 {
     unix_funcs->p_vkCmdBindIndexBuffer(commandBuffer, buffer, offset, indexType);
+}
+
+void WINAPI vkCmdBindInvocationMaskHUAWEI(VkCommandBuffer commandBuffer, VkImageView imageView, VkImageLayout imageLayout)
+{
+    unix_funcs->p_vkCmdBindInvocationMaskHUAWEI(commandBuffer, imageView, imageLayout);
 }
 
 void WINAPI vkCmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline)
@@ -388,6 +398,16 @@ void WINAPI vkCmdDrawMeshTasksNV(VkCommandBuffer commandBuffer, uint32_t taskCou
     unix_funcs->p_vkCmdDrawMeshTasksNV(commandBuffer, taskCount, firstTask);
 }
 
+void WINAPI vkCmdDrawMultiEXT(VkCommandBuffer commandBuffer, uint32_t drawCount, const VkMultiDrawInfoEXT *pVertexInfo, uint32_t instanceCount, uint32_t firstInstance, uint32_t stride)
+{
+    unix_funcs->p_vkCmdDrawMultiEXT(commandBuffer, drawCount, pVertexInfo, instanceCount, firstInstance, stride);
+}
+
+void WINAPI vkCmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t drawCount, const VkMultiDrawIndexedInfoEXT *pIndexInfo, uint32_t instanceCount, uint32_t firstInstance, uint32_t stride, const int32_t *pVertexOffset)
+{
+    unix_funcs->p_vkCmdDrawMultiIndexedEXT(commandBuffer, drawCount, pIndexInfo, instanceCount, firstInstance, stride, pVertexOffset);
+}
+
 void WINAPI vkCmdEndConditionalRenderingEXT(VkCommandBuffer commandBuffer)
 {
     unix_funcs->p_vkCmdEndConditionalRenderingEXT(commandBuffer);
@@ -421,6 +441,11 @@ void WINAPI vkCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEn
 void WINAPI vkCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pSubpassEndInfo)
 {
     unix_funcs->p_vkCmdEndRenderPass2KHR(commandBuffer, pSubpassEndInfo);
+}
+
+void WINAPI vkCmdEndRenderingKHR(VkCommandBuffer commandBuffer)
+{
+    unix_funcs->p_vkCmdEndRenderingKHR(commandBuffer);
 }
 
 void WINAPI vkCmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer *pCounterBuffers, const VkDeviceSize *pCounterBufferOffsets)
@@ -741,6 +766,11 @@ void WINAPI vkCmdSetViewportWScalingNV(VkCommandBuffer commandBuffer, uint32_t f
 void WINAPI vkCmdSetViewportWithCountEXT(VkCommandBuffer commandBuffer, uint32_t viewportCount, const VkViewport *pViewports)
 {
     unix_funcs->p_vkCmdSetViewportWithCountEXT(commandBuffer, viewportCount, pViewports);
+}
+
+void WINAPI vkCmdSubpassShadingHUAWEI(VkCommandBuffer commandBuffer)
+{
+    unix_funcs->p_vkCmdSubpassShadingHUAWEI(commandBuffer);
 }
 
 void WINAPI vkCmdTraceRaysIndirectKHR(VkCommandBuffer commandBuffer, const VkStridedDeviceAddressRegionKHR *pRaygenShaderBindingTable, const VkStridedDeviceAddressRegionKHR *pMissShaderBindingTable, const VkStridedDeviceAddressRegionKHR *pHitShaderBindingTable, const VkStridedDeviceAddressRegionKHR *pCallableShaderBindingTable, VkDeviceAddress indirectDeviceAddress)
@@ -1373,6 +1403,11 @@ void WINAPI vkGetDeviceAccelerationStructureCompatibilityKHR(VkDevice device, co
     unix_funcs->p_vkGetDeviceAccelerationStructureCompatibilityKHR(device, pVersionInfo, pCompatibility);
 }
 
+void WINAPI vkGetDeviceBufferMemoryRequirementsKHR(VkDevice device, const VkDeviceBufferMemoryRequirementsKHR *pInfo, VkMemoryRequirements2 *pMemoryRequirements)
+{
+    unix_funcs->p_vkGetDeviceBufferMemoryRequirementsKHR(device, pInfo, pMemoryRequirements);
+}
+
 void WINAPI vkGetDeviceGroupPeerMemoryFeatures(VkDevice device, uint32_t heapIndex, uint32_t localDeviceIndex, uint32_t remoteDeviceIndex, VkPeerMemoryFeatureFlags *pPeerMemoryFeatures)
 {
     unix_funcs->p_vkGetDeviceGroupPeerMemoryFeatures(device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
@@ -1391,6 +1426,16 @@ VkResult WINAPI vkGetDeviceGroupPresentCapabilitiesKHR(VkDevice device, VkDevice
 VkResult WINAPI vkGetDeviceGroupSurfacePresentModesKHR(VkDevice device, VkSurfaceKHR surface, VkDeviceGroupPresentModeFlagsKHR *pModes)
 {
     return unix_funcs->p_vkGetDeviceGroupSurfacePresentModesKHR(device, surface, pModes);
+}
+
+void WINAPI vkGetDeviceImageMemoryRequirementsKHR(VkDevice device, const VkDeviceImageMemoryRequirementsKHR *pInfo, VkMemoryRequirements2 *pMemoryRequirements)
+{
+    unix_funcs->p_vkGetDeviceImageMemoryRequirementsKHR(device, pInfo, pMemoryRequirements);
+}
+
+void WINAPI vkGetDeviceImageSparseMemoryRequirementsKHR(VkDevice device, const VkDeviceImageMemoryRequirementsKHR *pInfo, uint32_t *pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+    unix_funcs->p_vkGetDeviceImageSparseMemoryRequirementsKHR(device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
 }
 
 void WINAPI vkGetDeviceMemoryCommitment(VkDevice device, VkDeviceMemory memory, VkDeviceSize *pCommittedMemoryInBytes)
@@ -1416,6 +1461,11 @@ void WINAPI vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_
 void WINAPI vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *pQueueInfo, VkQueue *pQueue)
 {
     unix_funcs->p_vkGetDeviceQueue2(device, pQueueInfo, pQueue);
+}
+
+VkResult WINAPI vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI(VkDevice device, VkRenderPass renderpass, VkExtent2D *pMaxWorkgroupSize)
+{
+    return unix_funcs->p_vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI(device, renderpass, pMaxWorkgroupSize);
 }
 
 VkResult WINAPI vkGetEventStatus(VkDevice device, VkEvent event)
@@ -1903,6 +1953,11 @@ VkResult WINAPI vkSetDebugUtilsObjectTagEXT(VkDevice device, const VkDebugUtilsO
     return unix_funcs->p_vkSetDebugUtilsObjectTagEXT(device, pTagInfo);
 }
 
+void WINAPI vkSetDeviceMemoryPriorityEXT(VkDevice device, VkDeviceMemory memory, float priority)
+{
+    unix_funcs->p_vkSetDeviceMemoryPriorityEXT(device, memory, priority);
+}
+
 VkResult WINAPI vkSetEvent(VkDevice device, VkEvent event)
 {
     return unix_funcs->p_vkSetEvent(device, event);
@@ -1968,6 +2023,11 @@ VkResult WINAPI vkWaitForFences(VkDevice device, uint32_t fenceCount, const VkFe
     return unix_funcs->p_vkWaitForFences(device, fenceCount, pFences, waitAll, timeout);
 }
 
+VkResult WINAPI vkWaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout)
+{
+    return unix_funcs->p_vkWaitForPresentKHR(device, swapchain, presentId, timeout);
+}
+
 VkResult WINAPI vkWaitSemaphores(VkDevice device, const VkSemaphoreWaitInfo *pWaitInfo, uint64_t timeout)
 {
     return unix_funcs->p_vkWaitSemaphores(device, pWaitInfo, timeout);
@@ -2008,9 +2068,11 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkCmdBeginRenderPass", &vkCmdBeginRenderPass},
     {"vkCmdBeginRenderPass2", &vkCmdBeginRenderPass2},
     {"vkCmdBeginRenderPass2KHR", &vkCmdBeginRenderPass2KHR},
+    {"vkCmdBeginRenderingKHR", &vkCmdBeginRenderingKHR},
     {"vkCmdBeginTransformFeedbackEXT", &vkCmdBeginTransformFeedbackEXT},
     {"vkCmdBindDescriptorSets", &vkCmdBindDescriptorSets},
     {"vkCmdBindIndexBuffer", &vkCmdBindIndexBuffer},
+    {"vkCmdBindInvocationMaskHUAWEI", &vkCmdBindInvocationMaskHUAWEI},
     {"vkCmdBindPipeline", &vkCmdBindPipeline},
     {"vkCmdBindPipelineShaderGroupNV", &vkCmdBindPipelineShaderGroupNV},
     {"vkCmdBindShadingRateImageNV", &vkCmdBindShadingRateImageNV},
@@ -2060,6 +2122,8 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkCmdDrawMeshTasksIndirectCountNV", &vkCmdDrawMeshTasksIndirectCountNV},
     {"vkCmdDrawMeshTasksIndirectNV", &vkCmdDrawMeshTasksIndirectNV},
     {"vkCmdDrawMeshTasksNV", &vkCmdDrawMeshTasksNV},
+    {"vkCmdDrawMultiEXT", &vkCmdDrawMultiEXT},
+    {"vkCmdDrawMultiIndexedEXT", &vkCmdDrawMultiIndexedEXT},
     {"vkCmdEndConditionalRenderingEXT", &vkCmdEndConditionalRenderingEXT},
     {"vkCmdEndDebugUtilsLabelEXT", &vkCmdEndDebugUtilsLabelEXT},
     {"vkCmdEndQuery", &vkCmdEndQuery},
@@ -2067,6 +2131,7 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkCmdEndRenderPass", &vkCmdEndRenderPass},
     {"vkCmdEndRenderPass2", &vkCmdEndRenderPass2},
     {"vkCmdEndRenderPass2KHR", &vkCmdEndRenderPass2KHR},
+    {"vkCmdEndRenderingKHR", &vkCmdEndRenderingKHR},
     {"vkCmdEndTransformFeedbackEXT", &vkCmdEndTransformFeedbackEXT},
     {"vkCmdExecuteCommands", &vkCmdExecuteCommands},
     {"vkCmdExecuteGeneratedCommandsNV", &vkCmdExecuteGeneratedCommandsNV},
@@ -2131,6 +2196,7 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkCmdSetViewportShadingRatePaletteNV", &vkCmdSetViewportShadingRatePaletteNV},
     {"vkCmdSetViewportWScalingNV", &vkCmdSetViewportWScalingNV},
     {"vkCmdSetViewportWithCountEXT", &vkCmdSetViewportWithCountEXT},
+    {"vkCmdSubpassShadingHUAWEI", &vkCmdSubpassShadingHUAWEI},
     {"vkCmdTraceRaysIndirectKHR", &vkCmdTraceRaysIndirectKHR},
     {"vkCmdTraceRaysKHR", &vkCmdTraceRaysKHR},
     {"vkCmdTraceRaysNV", &vkCmdTraceRaysNV},
@@ -2242,16 +2308,20 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkGetDescriptorSetLayoutSupport", &vkGetDescriptorSetLayoutSupport},
     {"vkGetDescriptorSetLayoutSupportKHR", &vkGetDescriptorSetLayoutSupportKHR},
     {"vkGetDeviceAccelerationStructureCompatibilityKHR", &vkGetDeviceAccelerationStructureCompatibilityKHR},
+    {"vkGetDeviceBufferMemoryRequirementsKHR", &vkGetDeviceBufferMemoryRequirementsKHR},
     {"vkGetDeviceGroupPeerMemoryFeatures", &vkGetDeviceGroupPeerMemoryFeatures},
     {"vkGetDeviceGroupPeerMemoryFeaturesKHR", &vkGetDeviceGroupPeerMemoryFeaturesKHR},
     {"vkGetDeviceGroupPresentCapabilitiesKHR", &vkGetDeviceGroupPresentCapabilitiesKHR},
     {"vkGetDeviceGroupSurfacePresentModesKHR", &vkGetDeviceGroupSurfacePresentModesKHR},
+    {"vkGetDeviceImageMemoryRequirementsKHR", &vkGetDeviceImageMemoryRequirementsKHR},
+    {"vkGetDeviceImageSparseMemoryRequirementsKHR", &vkGetDeviceImageSparseMemoryRequirementsKHR},
     {"vkGetDeviceMemoryCommitment", &vkGetDeviceMemoryCommitment},
     {"vkGetDeviceMemoryOpaqueCaptureAddress", &vkGetDeviceMemoryOpaqueCaptureAddress},
     {"vkGetDeviceMemoryOpaqueCaptureAddressKHR", &vkGetDeviceMemoryOpaqueCaptureAddressKHR},
     {"vkGetDeviceProcAddr", &vkGetDeviceProcAddr},
     {"vkGetDeviceQueue", &vkGetDeviceQueue},
     {"vkGetDeviceQueue2", &vkGetDeviceQueue2},
+    {"vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI", &vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI},
     {"vkGetEventStatus", &vkGetEventStatus},
     {"vkGetFenceStatus", &vkGetFenceStatus},
     {"vkGetGeneratedCommandsMemoryRequirementsNV", &vkGetGeneratedCommandsMemoryRequirementsNV},
@@ -2309,6 +2379,7 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkResetQueryPoolEXT", &vkResetQueryPoolEXT},
     {"vkSetDebugUtilsObjectNameEXT", &vkSetDebugUtilsObjectNameEXT},
     {"vkSetDebugUtilsObjectTagEXT", &vkSetDebugUtilsObjectTagEXT},
+    {"vkSetDeviceMemoryPriorityEXT", &vkSetDeviceMemoryPriorityEXT},
     {"vkSetEvent", &vkSetEvent},
     {"vkSetPrivateDataEXT", &vkSetPrivateDataEXT},
     {"vkSignalSemaphore", &vkSignalSemaphore},
@@ -2321,6 +2392,7 @@ static const struct vulkan_func vk_device_dispatch_table[] =
     {"vkUpdateDescriptorSetWithTemplateKHR", &vkUpdateDescriptorSetWithTemplateKHR},
     {"vkUpdateDescriptorSets", &vkUpdateDescriptorSets},
     {"vkWaitForFences", &vkWaitForFences},
+    {"vkWaitForPresentKHR", &vkWaitForPresentKHR},
     {"vkWaitSemaphores", &vkWaitSemaphores},
     {"vkWaitSemaphoresKHR", &vkWaitSemaphoresKHR},
     {"vkWriteAccelerationStructuresPropertiesKHR", &vkWriteAccelerationStructuresPropertiesKHR},

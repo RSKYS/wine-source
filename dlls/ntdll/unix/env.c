@@ -59,9 +59,11 @@
 #include "wine/condrv.h"
 #include "wine/debug.h"
 #include "unix_private.h"
+#include "error.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(environ);
 
+PEB *peb = NULL;
 USHORT *uctable = NULL, *lctable = NULL;
 SIZE_T startup_info_size = 0;
 BOOL is_prefix_bootstrap = FALSE;
@@ -161,7 +163,6 @@ static NTSTATUS open_nls_data_file( ULONG type, ULONG id, HANDLE *file )
                                      's','o','r','t','i','n','g','\\',0};
 
     NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
-    IO_STATUS_BLOCK io;
     OBJECT_ATTRIBUTES attr;
     UNICODE_STRING valueW;
     WCHAR buffer[ARRAY_SIZE(sortdirW) + 16];
@@ -178,10 +179,12 @@ static NTSTATUS open_nls_data_file( ULONG type, ULONG id, HANDLE *file )
 
     status = open_unix_file( file, path, GENERIC_READ, &attr, 0, FILE_SHARE_READ,
                              FILE_OPEN, FILE_SYNCHRONOUS_IO_ALERT, NULL, 0 );
-    if (status == STATUS_NO_SUCH_FILE)
-        /* try to open file in system dir */
-        status = NtOpenFile( file, GENERIC_READ, &attr, &io, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_ALERT );
+    free( path );
+    if (status != STATUS_NO_SUCH_FILE) return status;
 
+    if ((status = nt_to_unix_file_name( &attr, &path, FILE_OPEN ))) return status;
+    status = open_unix_file( file, path, GENERIC_READ, &attr, 0, FILE_SHARE_READ,
+                             FILE_OPEN, FILE_SYNCHRONOUS_IO_ALERT, NULL, 0 );
     free( path );
     return status;
 }
@@ -642,37 +645,11 @@ DWORD ntdll_umbstowcs( const char *src, DWORD srclen, WCHAR *dst, DWORD dstlen )
     }
     else  /* utf-8 */
     {
-        unsigned int res;
-        const char *srcend = src + srclen;
-        WCHAR *dstend = dst + dstlen;
-
-        while ((dst < dstend) && (src < srcend))
-        {
-            unsigned char ch = *src++;
-            if (ch < 0x80)  /* special fast case for 7-bit ASCII */
-            {
-                *dst++ = ch;
-                continue;
-            }
-            if ((res = decode_utf8_char( ch, &src, srcend )) <= 0xffff)
-            {
-                *dst++ = res;
-            }
-            else if (res <= 0x10ffff)  /* we need surrogates */
-            {
-                res -= 0x10000;
-                *dst++ = 0xd800 | (res >> 10);
-                if (dst == dstend) break;
-                *dst++ = 0xdc00 | (res & 0x3ff);
-            }
-            else
-            {
-                *dst++ = 0xfffd;
-            }
-        }
-        reslen = dstlen - (dstend - dst);
+        reslen = 0;
+        RtlUTF8ToUnicodeN( dst, dstlen * sizeof(WCHAR), &reslen, src, srclen );
+        reslen /= sizeof(WCHAR);
 #ifdef __APPLE__  /* work around broken Mac OS X filesystem that enforces NFD */
-        if (reslen && nfc_table) reslen = compose_string( nfc_table, dst - reslen, reslen );
+        if (reslen && nfc_table) reslen = compose_string( nfc_table, dst, reslen );
 #endif
     }
     return reslen;
@@ -778,6 +755,24 @@ int ntdll_wcstoumbs( const WCHAR *src, DWORD srclen, char *dst, DWORD dstlen, BO
         reslen = dstlen - (end - dst);
     }
     return reslen;
+}
+
+
+/***********************************************************************
+ *           ntdll_get_build_dir
+ */
+const char *ntdll_get_build_dir(void)
+{
+    return build_dir;
+}
+
+
+/***********************************************************************
+ *           ntdll_get_data_dir
+ */
+const char *ntdll_get_data_dir(void)
+{
+    return data_dir;
 }
 
 
@@ -1083,7 +1078,7 @@ static void init_locale(void)
         CFStringRef locale_string;
 
         if (country)
-            locale_string = CFStringCreateWithFormat(NULL, NULL, CFSTR("%@_%@"), lang, country);
+            locale_string = CFStringCreateWithFormat(NULL, NULL, CFSTR("%@-%@"), lang, country);
         else
             locale_string = CFStringCreateCopy(NULL, lang);
 
@@ -1112,7 +1107,7 @@ static void init_locale(void)
                     country = CFLocaleGetValue( locale, kCFLocaleCountryCode );
                 }
                 if (country)
-                    locale_string = CFStringCreateWithFormat( NULL, NULL, CFSTR("%@_%@"), lang, country );
+                    locale_string = CFStringCreateWithFormat( NULL, NULL, CFSTR("%@-%@"), lang, country );
                 else
                     locale_string = CFStringCreateCopy( NULL, lang );
                 CFStringGetCString( locale_string, user_locale, sizeof(user_locale), kCFStringEncodingUTF8 );
@@ -1913,13 +1908,206 @@ static inline DWORD append_string( void **ptr, const RTL_USER_PROCESS_PARAMETERS
     return str->Length;
 }
 
+#ifdef _WIN64
+static inline void dup_unicode_string( const UNICODE_STRING *src, WCHAR **dst, UNICODE_STRING32 *str )
+#else
+static inline void dup_unicode_string( const UNICODE_STRING *src, WCHAR **dst, UNICODE_STRING64 *str )
+#endif
+{
+    if (!src->Buffer) return;
+    str->Buffer = PtrToUlong( *dst );
+    str->Length = src->Length;
+    str->MaximumLength = src->MaximumLength;
+    memcpy( *dst, src->Buffer, src->MaximumLength );
+    *dst += src->MaximumLength / sizeof(WCHAR);
+}
+
+
+/*************************************************************************
+ *		get_dword_option
+ */
+static ULONG get_dword_option( HANDLE key, const WCHAR *name, ULONG defval )
+{
+    UNICODE_STRING str;
+    ULONG size;
+    WCHAR buffer[64];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+
+    init_unicode_string( &str, name );
+    size = sizeof(buffer) - sizeof(WCHAR);
+    if (NtQueryValueKey( key, &str, KeyValuePartialInformation, buffer, size, &size )) return defval;
+    if (info->Type != REG_DWORD) return defval;
+    return *(ULONG *)info->Data;
+}
+
+
+/*************************************************************************
+ *		load_global_options
+ */
+static void load_global_options( const UNICODE_STRING *image )
+{
+    static const WCHAR optionsW[] = {'M','a','c','h','i','n','e','\\','S','o','f','t','w','a','r','e','\\',
+        'M','i','c','r','o','s','o','f','t','\\','W','i','n','d','o','w','s',' ','N','T','\\',
+        'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\\',
+        'I','m','a','g','e',' ','F','i','l','e',' ','E','x','e','c','u','t','i','o','n',' ','O','p','t','i','o','n','s',0};
+    static const WCHAR sessionW[] = {'M','a','c','h','i','n','e','\\','S','y','s','t','e','m','\\',
+        'C','u','r','r','e','n','t','C','o','n','t','r','o','l','S','e','t','\\',
+        'C','o','n','t','r','o','l','\\','S','e','s','s','i','o','n',' ','M','a','n','a','g','e','r',0};
+    static const WCHAR globalflagW[] = {'G','l','o','b','a','l','F','l','a','g',0};
+    static const WCHAR critsectionW[] = {'C','r','i','t','i','c','a','l','S','e','c','t','i','o','n','T','i','m','e','o','u','t',0};
+    static const WCHAR heapreserveW[] = {'H','e','a','p','S','e','g','m','e','n','t','R','e','s','e','r','v','e',0};
+    static const WCHAR heapcommitW[] = {'H','e','a','p','S','e','g','m','e','n','t','C','o','m','m','i','t',0};
+    static const WCHAR heapdecommittotalW[] = {'H','e','a','p','D','e','C','o','m','m','i','t','T','o','t','a','l','F','r','e','e','T','h','r','e','s','h','o','l','d',0};
+    static const WCHAR heapdecommitblockW[] = {'H','e','a','p','D','e','C','o','m','m','i','t','F','r','e','e','B','l','o','c','k','T','h','r','e','s','h','o','l','d',0};
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING nameW;
+    HANDLE key;
+    ULONG i;
+
+    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
+    init_unicode_string( &nameW, sessionW );
+    if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
+    {
+        peb->NtGlobalFlag = get_dword_option( key, globalflagW, 0 );
+        peb->CriticalSectionTimeout.QuadPart = get_dword_option( key, critsectionW, 30 * 24 * 60 * 60 ) * (ULONGLONG)-10000000;
+        peb->HeapSegmentReserve = get_dword_option( key, heapreserveW, 0x100000 );
+        peb->HeapSegmentCommit = get_dword_option( key, heapcommitW, 0x10000 );
+        peb->HeapDeCommitTotalFreeThreshold = get_dword_option( key, heapdecommittotalW, 0x10000 );
+        peb->HeapDeCommitFreeBlockThreshold = get_dword_option( key, heapdecommitblockW, 0x1000 );
+        NtClose( key );
+    }
+    init_unicode_string( &nameW, optionsW );
+    if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
+    {
+        attr.RootDirectory = key;
+        for (i = image->Length / sizeof(WCHAR); i; i--) if (image->Buffer[i - 1] == '\\') break;
+        nameW.Buffer = image->Buffer + i;
+        nameW.Length = image->Length - i * sizeof(WCHAR);
+        if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
+        {
+            peb->NtGlobalFlag = get_dword_option( key, globalflagW, peb->NtGlobalFlag );
+            NtClose( key );
+        }
+        NtClose( attr.RootDirectory );
+    }
+}
+
+
+/*************************************************************************
+ *		build_wow64_parameters
+ */
+static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
+{
+#ifdef _WIN64
+    RTL_USER_PROCESS_PARAMETERS32 *wow64_params = NULL;
+#else
+    RTL_USER_PROCESS_PARAMETERS64 *wow64_params = NULL;
+#endif
+    NTSTATUS status;
+    WCHAR *dst;
+    SIZE_T size = (sizeof(*wow64_params)
+                   + params->CurrentDirectory.DosPath.MaximumLength
+                   + params->DllPath.MaximumLength
+                   + params->ImagePathName.MaximumLength
+                   + params->CommandLine.MaximumLength
+                   + params->WindowTitle.MaximumLength
+                   + params->Desktop.MaximumLength
+                   + params->ShellInfo.MaximumLength
+                   + params->RuntimeInfo.MaximumLength
+                   + params->EnvironmentSize);
+
+    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&wow64_params, 0, &size,
+                                      MEM_COMMIT, PAGE_READWRITE );
+    assert( !status );
+
+    wow64_params->AllocationSize  = size;
+    wow64_params->Size            = size;
+    wow64_params->Flags           = params->Flags;
+    wow64_params->DebugFlags      = params->DebugFlags;
+    wow64_params->ConsoleHandle   = HandleToULong( params->ConsoleHandle );
+    wow64_params->ConsoleFlags    = params->ConsoleFlags;
+    wow64_params->hStdInput       = HandleToULong( params->hStdInput );
+    wow64_params->hStdOutput      = HandleToULong( params->hStdOutput );
+    wow64_params->hStdError       = HandleToULong( params->hStdError );
+    wow64_params->dwX             = params->dwX;
+    wow64_params->dwY             = params->dwY;
+    wow64_params->dwXSize         = params->dwXSize;
+    wow64_params->dwYSize         = params->dwYSize;
+    wow64_params->dwXCountChars   = params->dwXCountChars;
+    wow64_params->dwYCountChars   = params->dwYCountChars;
+    wow64_params->dwFillAttribute = params->dwFillAttribute;
+    wow64_params->dwFlags         = params->dwFlags;
+    wow64_params->wShowWindow     = params->wShowWindow;
+
+    dst = (WCHAR *)(wow64_params + 1);
+    dup_unicode_string( &params->CurrentDirectory.DosPath, &dst, &wow64_params->CurrentDirectory.DosPath );
+    dup_unicode_string( &params->DllPath, &dst, &wow64_params->DllPath );
+    dup_unicode_string( &params->ImagePathName, &dst, &wow64_params->ImagePathName );
+    dup_unicode_string( &params->CommandLine, &dst, &wow64_params->CommandLine );
+    dup_unicode_string( &params->WindowTitle, &dst, &wow64_params->WindowTitle );
+    dup_unicode_string( &params->Desktop, &dst, &wow64_params->Desktop );
+    dup_unicode_string( &params->ShellInfo, &dst, &wow64_params->ShellInfo );
+    dup_unicode_string( &params->RuntimeInfo, &dst, &wow64_params->RuntimeInfo );
+
+    wow64_params->Environment = PtrToUlong( dst );
+    wow64_params->EnvironmentSize = params->EnvironmentSize;
+    memcpy( dst, params->Environment, params->EnvironmentSize );
+    return wow64_params;
+}
+
+
+/*************************************************************************
+ *		init_peb
+ */
+static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, void *module )
+{
+    peb->ImageBaseAddress           = module;
+    peb->ProcessParameters          = params;
+    peb->OSMajorVersion             = 6;
+    peb->OSMinorVersion             = 1;
+    peb->OSBuildNumber              = 0x1db1;
+    peb->OSPlatformId               = VER_PLATFORM_WIN32_NT;
+    peb->ImageSubSystem             = main_image_info.SubSystemType;
+    peb->ImageSubSystemMajorVersion = main_image_info.MajorSubsystemVersion;
+    peb->ImageSubSystemMinorVersion = main_image_info.MinorSubsystemVersion;
+
+    load_global_options( &params->ImagePathName );
+
+    if (NtCurrentTeb()->WowTebOffset)
+    {
+        void *wow64_params = build_wow64_parameters( params );
+#ifdef _WIN64
+        PEB32 *wow64_peb = (PEB32 *)((char *)peb + page_size);
+#else
+        PEB64 *wow64_peb = (PEB64 *)((char *)peb - page_size);
+#endif
+        wow64_peb->ImageBaseAddress                = PtrToUlong( peb->ImageBaseAddress );
+        wow64_peb->ProcessParameters               = PtrToUlong( wow64_params );
+        wow64_peb->NumberOfProcessors              = peb->NumberOfProcessors;
+        wow64_peb->NtGlobalFlag                    = peb->NtGlobalFlag;
+        wow64_peb->CriticalSectionTimeout.QuadPart = peb->CriticalSectionTimeout.QuadPart;
+        wow64_peb->HeapSegmentReserve              = peb->HeapSegmentReserve;
+        wow64_peb->HeapSegmentCommit               = peb->HeapSegmentCommit;
+        wow64_peb->HeapDeCommitTotalFreeThreshold  = peb->HeapDeCommitTotalFreeThreshold;
+        wow64_peb->HeapDeCommitFreeBlockThreshold  = peb->HeapDeCommitFreeBlockThreshold;
+        wow64_peb->OSMajorVersion                  = peb->OSMajorVersion;
+        wow64_peb->OSMinorVersion                  = peb->OSMinorVersion;
+        wow64_peb->OSBuildNumber                   = peb->OSBuildNumber;
+        wow64_peb->OSPlatformId                    = peb->OSPlatformId;
+        wow64_peb->ImageSubSystem                  = peb->ImageSubSystem;
+        wow64_peb->ImageSubSystemMajorVersion      = peb->ImageSubSystemMajorVersion;
+        wow64_peb->ImageSubSystemMinorVersion      = peb->ImageSubSystemMinorVersion;
+        wow64_peb->SessionId                       = peb->SessionId;
+    }
+}
+
 
 /*************************************************************************
  *		build_initial_params
  *
  * Build process parameters from scratch, for processes without a parent.
  */
-static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
+static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
 {
     static const WCHAR valueW[] = {'1',0};
     static const WCHAR pathW[] = {'P','A','T','H'};
@@ -1928,7 +2116,6 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     WCHAR *dst, *image, *cmdline, *path, *bootstrap;
     WCHAR *env = get_initial_environment( &env_pos, &env_size );
     WCHAR *curdir = get_initial_directory();
-    void *module = NULL;
     NTSTATUS status;
 
     /* store the initial PATH value */
@@ -1950,12 +2137,10 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     add_registry_environment( &env, &env_pos, &env_size );
     env[env_pos++] = 0;
 
-    status = load_main_exe( NULL, main_argv[1], curdir, &image, &module );
+    status = load_main_exe( NULL, main_argv[1], curdir, &image, module );
     if (!status)
     {
         if (main_image_info.ImageCharacteristics & IMAGE_FILE_DLL) status = STATUS_INVALID_IMAGE_FORMAT;
-        if (main_image_info.ImageFlags & IMAGE_FLAGS_ComPlusNativeReady)
-            main_image_info.Machine = native_machine;
         if (main_image_info.Machine != current_machine) status = STATUS_INVALID_IMAGE_FORMAT;
     }
 
@@ -1963,13 +2148,12 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     {
         static const char *args[] = { "start.exe", "/exec" };
         free( image );
-        if (module) NtUnmapViewOfSection( GetCurrentProcess(), module );
-        load_start_exe( &image, &module );
+        if (*module) NtUnmapViewOfSection( GetCurrentProcess(), *module );
+        load_start_exe( &image, module );
         prepend_argv( args, 2 );
     }
     else rebuild_argv();
 
-    NtCurrentTeb()->Peb->ImageBaseAddress = module;
     main_wargv = build_wargv( get_dos_path( image ));
     cmdline = build_command_line( main_wargv );
 
@@ -2021,7 +2205,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
 void init_startup_info(void)
 {
     WCHAR *src, *dst, *env, *image;
-    void *module;
+    void *module = NULL;
     NTSTATUS status;
     SIZE_T size, info_size, env_size, env_pos;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
@@ -2029,7 +2213,8 @@ void init_startup_info(void)
 
     if (!startup_info_size)
     {
-        NtCurrentTeb()->Peb->ProcessParameters = build_initial_params();
+        params = build_initial_params( &module );
+        init_peb( params, module );
         return;
     }
 
@@ -2116,7 +2301,6 @@ void init_startup_info(void)
     memcpy( dst, env, env_pos * sizeof(WCHAR) );
     free( env );
     free( info );
-    NtCurrentTeb()->Peb->ProcessParameters = params;
 
     status = load_main_exe( params->ImagePathName.Buffer, NULL,
                             params->CommandLine.Buffer, &image, &module );
@@ -2125,10 +2309,10 @@ void init_startup_info(void)
         MESSAGE( "wine: failed to start %s\n", debugstr_us(&params->ImagePathName) );
         NtTerminateProcess( GetCurrentProcess(), status );
     }
-    NtCurrentTeb()->Peb->ImageBaseAddress = module;
     rebuild_argv();
     main_wargv = build_wargv( get_dos_path( image ));
     free( image );
+    init_peb( params, module );
 }
 
 
@@ -2276,4 +2460,97 @@ NTSTATUS WINAPI NtQueryInstallUILanguage( LANGID *lang )
 {
     *lang = system_ui_language;
     return STATUS_SUCCESS;
+}
+
+/**********************************************************************
+ *      RtlUpcaseUnicodeChar  (ntdll.so)
+ */
+WCHAR WINAPI RtlUpcaseUnicodeChar( WCHAR wch )
+{
+    return ntdll_towupper( wch );
+}
+
+/**********************************************************************
+ *      RtlDowncaseUnicodeChar  (ntdll.so)
+ */
+WCHAR WINAPI RtlDowncaseUnicodeChar( WCHAR wch )
+{
+    return ntdll_towlower( wch );
+}
+
+/**********************************************************************
+ *      RtlUTF8ToUnicodeN  (ntdll.so)
+ */
+NTSTATUS WINAPI RtlUTF8ToUnicodeN( WCHAR *dst, DWORD dstlen, DWORD *reslen, const char *src, DWORD srclen )
+{
+    unsigned int res, len;
+    NTSTATUS status = STATUS_SUCCESS;
+    const char *srcend = src + srclen;
+    WCHAR *dstend;
+
+    if (!src) return STATUS_INVALID_PARAMETER_4;
+    if (!reslen) return STATUS_INVALID_PARAMETER;
+
+    dstlen /= sizeof(WCHAR);
+    dstend = dst + dstlen;
+    if (!dst)
+    {
+        for (len = 0; src < srcend; len++)
+        {
+            unsigned char ch = *src++;
+            if (ch < 0x80) continue;
+            if ((res = decode_utf8_char( ch, &src, srcend )) > 0x10ffff)
+                status = STATUS_SOME_NOT_MAPPED;
+            else
+                if (res > 0xffff) len++;
+        }
+        *reslen = len * sizeof(WCHAR);
+        return status;
+    }
+
+    while ((dst < dstend) && (src < srcend))
+    {
+        unsigned char ch = *src++;
+        if (ch < 0x80)  /* special fast case for 7-bit ASCII */
+        {
+            *dst++ = ch;
+            continue;
+        }
+        if ((res = decode_utf8_char( ch, &src, srcend )) <= 0xffff)
+        {
+            *dst++ = res;
+        }
+        else if (res <= 0x10ffff)  /* we need surrogates */
+        {
+            res -= 0x10000;
+            *dst++ = 0xd800 | (res >> 10);
+            if (dst == dstend) break;
+            *dst++ = 0xdc00 | (res & 0x3ff);
+        }
+        else
+        {
+            *dst++ = 0xfffd;
+            status = STATUS_SOME_NOT_MAPPED;
+        }
+    }
+    if (src < srcend) status = STATUS_BUFFER_TOO_SMALL;  /* overflow */
+    *reslen = (dstlen - (dstend - dst)) * sizeof(WCHAR);
+    return status;
+}
+
+/**********************************************************************
+ *      RtlNtStatusToDosError  (ntdll.so)
+ */
+ULONG WINAPI RtlNtStatusToDosError( NTSTATUS status )
+{
+    NtCurrentTeb()->LastStatusValue = status;
+
+    if (!status || (status & 0x20000000)) return status;
+    if ((status & 0xf0000000) == 0xd0000000) status &= ~0x10000000;
+
+    /* now some special cases */
+    if (HIWORD(status) == 0xc001 || HIWORD(status) == 0x8007 || HIWORD(status) == 0xc007)
+        return LOWORD( status );
+
+    return map_status( status );
 }

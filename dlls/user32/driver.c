@@ -84,7 +84,7 @@ static BOOL load_desktop_driver( HWND hwnd, HMODULE *module )
 static const USER_DRIVER *load_driver(void)
 {
     void *ptr;
-    HMODULE graphics_driver;
+    HMODULE graphics_driver = NULL;
     USER_DRIVER *driver, *prev;
 
     driver = HeapAlloc( GetProcessHeap(), 0, sizeof(*driver) );
@@ -95,7 +95,7 @@ static const USER_DRIVER *load_driver(void)
         USEROBJECTFLAGS flags;
         HWINSTA winstation;
 
-        winstation = GetProcessWindowStation();
+        winstation = NtUserGetProcessWindowStation();
         if (!GetUserObjectInformationA(winstation, UOI_FLAGS, &flags, sizeof(flags), NULL)
             || (flags.dwFlags & WSF_VISIBLE))
             driver->pCreateWindow = nodrv_CreateWindow;
@@ -305,6 +305,7 @@ static void CDECL nulldrv_GetDC( HDC hdc, HWND hwnd, HWND top_win, const RECT *w
 static DWORD CDECL nulldrv_MsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handles, DWORD timeout,
                                                         DWORD mask, DWORD flags )
 {
+    if (!count && !timeout) return WAIT_TIMEOUT;
     return WaitForMultipleObjectsEx( count, handles, flags & MWMO_WAITALL,
                                      timeout, flags & MWMO_ALERTABLE );
 }
@@ -356,7 +357,7 @@ static void CDECL nulldrv_SetWindowText( HWND hwnd, LPCWSTR text )
 
 static UINT CDECL nulldrv_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
 {
-    return swp;
+    return ~0; /* use default implementation */
 }
 
 static LRESULT CDECL nulldrv_SysCommand( HWND hwnd, WPARAM wparam, LPARAM lparam )
@@ -375,10 +376,11 @@ static LRESULT CDECL nulldrv_WindowMessage( HWND hwnd, UINT msg, WPARAM wparam, 
     return 0;
 }
 
-static void CDECL nulldrv_WindowPosChanging( HWND hwnd, HWND insert_after, UINT swp_flags,
+static BOOL CDECL nulldrv_WindowPosChanging( HWND hwnd, HWND insert_after, UINT swp_flags,
                                              const RECT *window_rect, const RECT *client_rect,
                                              RECT *visible_rect, struct window_surface **surface )
 {
+    return FALSE;
 }
 
 static void CDECL nulldrv_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags,

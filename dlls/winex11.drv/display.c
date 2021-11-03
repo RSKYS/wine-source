@@ -27,9 +27,11 @@
 #include "winuser.h"
 #include "rpc.h"
 #include "winreg.h"
+#include "cfgmgr32.h"
 #include "initguid.h"
 #include "devguid.h"
 #include "devpkey.h"
+#include "ntddvdeo.h"
 #include "setupapi.h"
 #define WIN32_NO_STATUS
 #include "winternl.h"
@@ -109,6 +111,8 @@ static const WCHAR monitor_hardware_idW[] = {
     'M','O','N','I','T','O','R','\\',
     'D','e','f','a','u','l','t','_','M','o','n','i','t','o','r',0,0};
 static const WCHAR driver_date_fmtW[] = {'%','u','-','%','u','-','%','u',0};
+static const WCHAR edidW[] = {'E','D','I','D',0};
+static const WCHAR bad_edidW[] = {'B','A','D','_','E','D','I','D',0};
 
 static struct x11drv_display_device_handler host_handler;
 struct x11drv_display_device_handler desktop_handler;
@@ -257,7 +261,7 @@ RECT get_host_primary_monitor_rect(void)
 
     if (gpus) host_handler.free_gpus(gpus);
     if (adapters) host_handler.free_adapters(adapters);
-    if (monitors) host_handler.free_monitors(monitors);
+    if (monitors) host_handler.free_monitors(monitors, monitor_count);
     return rect;
 }
 
@@ -403,11 +407,67 @@ void X11DRV_DisplayDevices_Update(BOOL send_display_change)
     }
 }
 
+/* Set device interface link state to enabled. The link state should be set via
+ * IoSetDeviceInterfaceState(). However, IoSetDeviceInterfaceState() requires a PnP driver, which
+ * currently doesn't exist for display devices. */
+static BOOL link_device(const WCHAR *instance, const GUID *guid)
+{
+    static const WCHAR device_instanceW[] = {'D','e','v','i','c','e','I','n','s','t','a','n','c','e',0};
+    static const WCHAR hash_controlW[] = {'#','\\','C','o','n','t','r','o','l',0};
+    static const WCHAR linkedW[] = {'L','i','n','k','e','d',0};
+    static const DWORD enabled = 1;
+    WCHAR device_key_name[MAX_PATH], device_instance[MAX_PATH];
+    HKEY iface_key, device_key, control_key;
+    DWORD length, index = 0;
+    BOOL ret = FALSE;
+    LSTATUS lr;
+
+    iface_key = SetupDiOpenClassRegKeyExW(guid, KEY_ALL_ACCESS, DIOCR_INTERFACE, NULL, NULL);
+    while (1)
+    {
+        length = ARRAY_SIZE(device_key_name);
+        lr = RegEnumKeyExW(iface_key, index++, device_key_name, &length, NULL, NULL, NULL, NULL);
+        if (lr)
+            break;
+
+        lr = RegOpenKeyExW(iface_key, device_key_name, 0, KEY_ALL_ACCESS, &device_key);
+        if (lr)
+            continue;
+
+        length = sizeof(device_instance);
+        lr = RegQueryValueExW(device_key, device_instanceW, NULL, NULL, (BYTE *)device_instance, &length);
+        if (lr || lstrcmpiW(device_instance, instance))
+        {
+            RegCloseKey(device_key);
+            continue;
+        }
+
+        lr = RegCreateKeyExW(device_key, hash_controlW, 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &control_key, NULL);
+        RegCloseKey(device_key);
+        if (lr)
+            break;
+
+        lr = RegSetValueExW(control_key, linkedW, 0, REG_DWORD, (const BYTE *)&enabled, sizeof(enabled));
+        if (!lr)
+            ret = TRUE;
+
+        RegCloseKey(control_key);
+        break;
+    }
+    RegCloseKey(iface_key);
+    return ret;
+}
+
 /* Initialize a GPU instance.
  * Return its GUID string in guid_string, driver value in driver parameter and LUID in gpu_luid */
 static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT gpu_index, WCHAR *guid_string,
                            WCHAR *driver, LUID *gpu_luid)
 {
+    static const WCHAR adapter_stringW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','A','d','a','p','t','e','r','S','t','r','i','n','g',0};
+    static const WCHAR bios_stringW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','B','i','o','s','S','t','r','i','n','g',0};
+    static const WCHAR chip_typeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','C','h','i','p','T','y','p','e',0};
+    static const WCHAR dac_typeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','D','a','c','T','y','p','e',0};
+    static const WCHAR ramdacW[] = {'I','n','t','e','r','g','r','a','t','e','d',' ','R','A','M','D','A','C',0};
     static const BOOL present = TRUE;
     SP_DEVINFO_DATA device_data = {sizeof(device_data)};
     WCHAR instanceW[MAX_PATH];
@@ -431,6 +491,20 @@ static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT g
         if (!SetupDiRegisterDeviceInfo(devinfo, &device_data, 0, NULL, NULL, NULL))
             goto done;
     }
+
+    /* Register GUID_DEVINTERFACE_DISPLAY_ADAPTER */
+    if (!SetupDiCreateDeviceInterfaceW(devinfo, &device_data, &GUID_DEVINTERFACE_DISPLAY_ADAPTER, NULL, 0, NULL))
+        goto done;
+
+    if (!link_device(instanceW, &GUID_DEVINTERFACE_DISPLAY_ADAPTER))
+        goto done;
+
+    /* Register GUID_DISPLAY_DEVICE_ARRIVAL */
+    if (!SetupDiCreateDeviceInterfaceW(devinfo, &device_data, &GUID_DISPLAY_DEVICE_ARRIVAL, NULL, 0, NULL))
+        goto done;
+
+    if (!link_device(instanceW, &GUID_DISPLAY_DEVICE_ARRIVAL))
+        goto done;
 
     /* Write HardwareID registry property, REG_MULTI_SZ */
     written = sprintfW(bufferW, gpu_hardware_id_fmtW, gpu->vendor_id, gpu->device_id);
@@ -469,9 +543,9 @@ static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT g
      * This is where HKLM\System\CurrentControlSet\Control\Video\{GPU GUID}\{Adapter Index} links to */
     hkey = SetupDiCreateDevRegKeyW(devinfo, &device_data, DICS_FLAG_GLOBAL, 0, DIREG_DRV, NULL, NULL);
 
+    size = (strlenW(gpu->name) + 1) * sizeof(WCHAR);
     /* Write DriverDesc value */
-    if (RegSetValueExW(hkey, driver_descW, 0, REG_SZ, (const BYTE *)gpu->name,
-                       (strlenW(gpu->name) + 1) * sizeof(WCHAR)))
+    if (RegSetValueExW(hkey, driver_descW, 0, REG_SZ, (const BYTE *)gpu->name, size))
         goto done;
     /* Write DriverDateData value, using current time as driver date, needed by Evoland */
     GetSystemTimeAsFileTime(&filetime);
@@ -482,8 +556,18 @@ static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT g
     sprintfW(bufferW, driver_date_fmtW, systemtime.wMonth, systemtime.wDay, systemtime.wYear);
     if (RegSetValueExW(hkey, driver_dateW, 0, REG_SZ, (BYTE *)bufferW, (strlenW(bufferW) + 1) * sizeof(WCHAR)))
         goto done;
+    /* The following hardware information value type may be REG_BINARY or REG_SZ */
+    if (RegSetValueExW(hkey, adapter_stringW, 0, REG_BINARY, (const BYTE *)gpu->name, size))
+        goto done;
+    if (RegSetValueExW(hkey, bios_stringW, 0, REG_BINARY, (const BYTE *)gpu->name, size))
+        goto done;
+    if (RegSetValueExW(hkey, chip_typeW, 0, REG_BINARY, (const BYTE *)gpu->name, size))
+        goto done;
+    if (RegSetValueExW(hkey, dac_typeW, 0, REG_BINARY, (const BYTE *)ramdacW, sizeof(ramdacW)))
+        goto done;
 
     RegCloseKey(hkey);
+    hkey = NULL;
 
     /* Retrieve driver value for adapters */
     if (!SetupDiGetDeviceRegistryPropertyW(devinfo, &device_data, SPDRP_DRIVER, NULL, (BYTE *)bufferW, sizeof(bufferW),
@@ -586,6 +670,7 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
 {
     SP_DEVINFO_DATA device_data = {sizeof(SP_DEVINFO_DATA)};
     WCHAR bufferW[MAX_PATH];
+    DWORD length;
     HKEY hkey;
     BOOL ret = FALSE;
 
@@ -593,6 +678,13 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
     sprintfW(bufferW, monitor_instance_fmtW, video_index, monitor_index);
     SetupDiCreateDeviceInfoW(devinfo, bufferW, &GUID_DEVCLASS_MONITOR, monitor->name, NULL, 0, &device_data);
     if (!SetupDiRegisterDeviceInfo(devinfo, &device_data, 0, NULL, NULL, NULL))
+        goto done;
+
+    /* Register GUID_DEVINTERFACE_MONITOR */
+    if (!SetupDiCreateDeviceInterfaceW(devinfo, &device_data, &GUID_DEVINTERFACE_MONITOR, NULL, 0, NULL))
+        goto done;
+
+    if (!link_device(bufferW, &GUID_DEVINTERFACE_MONITOR))
         goto done;
 
     /* Write HardwareID registry property */
@@ -609,6 +701,13 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &DEVPROPKEY_MONITOR_OUTPUT_ID,
                                    DEVPROP_TYPE_UINT32, (const BYTE *)&output_id, sizeof(output_id), 0))
         goto done;
+
+    hkey = SetupDiCreateDevRegKeyW(devinfo, &device_data, DICS_FLAG_GLOBAL, 0, DIREG_DEV, NULL, NULL);
+    if (monitor->edid)
+        RegSetValueExW(hkey, edidW, 0, REG_BINARY, monitor->edid, monitor->edid_len);
+    else
+        RegSetValueExW(hkey, bad_edidW, 0, REG_BINARY, NULL, 0);
+    RegCloseKey(hkey);
 
     /* Create driver key */
     hkey = SetupDiCreateDevRegKeyW(devinfo, &device_data, DICS_FLAG_GLOBAL, 0, DIREG_DRV, NULL, NULL);
@@ -629,9 +728,9 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
                                    (const BYTE *)&monitor->rc_work, sizeof(monitor->rc_work), 0))
         goto done;
     /* Adapter name */
-    sprintfW(bufferW, adapter_name_fmtW, video_index + 1);
+    length = sprintfW(bufferW, adapter_name_fmtW, video_index + 1);
     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, DEVPROP_TYPE_STRING,
-                                   (const BYTE *)bufferW, (strlenW(bufferW) + 1) * sizeof(WCHAR), 0))
+                                   (const BYTE *)bufferW, (length + 1) * sizeof(WCHAR), 0))
         goto done;
 
     ret = TRUE;
@@ -767,7 +866,7 @@ void X11DRV_DisplayDevices_Init(BOOL force)
                     goto done;
             }
 
-            handler->free_monitors(monitors);
+            handler->free_monitors(monitors, monitor_count);
             monitors = NULL;
             video_index++;
         }
@@ -787,5 +886,5 @@ done:
     if (adapters)
         handler->free_adapters(adapters);
     if (monitors)
-        handler->free_monitors(monitors);
+        handler->free_monitors(monitors, monitor_count);
 }

@@ -1327,6 +1327,7 @@ cards_nvidia_binary[] =
     {"GTX 1060",                    CARD_NVIDIA_GEFORCE_GTX1060},   /* GeForce 1000 - midend high */
     {"GTX 1050 Ti",                 CARD_NVIDIA_GEFORCE_GTX1050TI}, /* GeForce 1000 - midend */
     {"GTX 1050",                    CARD_NVIDIA_GEFORCE_GTX1050},   /* GeForce 1000 - midend */
+    {"GT 1030",                     CARD_NVIDIA_GEFORCE_GT1030},    /* GeForce 1000 - lowend */
     {"GTX 980 Ti",                  CARD_NVIDIA_GEFORCE_GTX980TI},  /* GeForce 900 - highend */
     {"GTX 980",                     CARD_NVIDIA_GEFORCE_GTX980},    /* GeForce 900 - highend */
     {"GTX 970M",                    CARD_NVIDIA_GEFORCE_GTX970M},   /* GeForce 900 - highend mobile*/
@@ -4119,8 +4120,8 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
     {
         UINT attrib_count = 0;
         GLint cfg_count;
-        int attribs[11];
-        int values[11];
+        int attribs[12];
+        int values[12];
         int attribute;
 
         attribute = WGL_NUMBER_PIXEL_FORMATS_ARB;
@@ -4138,6 +4139,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
         attribs[attrib_count++] = WGL_PIXEL_TYPE_ARB;
         attribs[attrib_count++] = WGL_DOUBLE_BUFFER_ARB;
         attribs[attrib_count++] = WGL_AUX_BUFFERS_ARB;
+        attribs[attrib_count++] = WGL_SWAP_METHOD_ARB;
 
         for (i = 0, adapter_gl->pixel_format_count = 0; i < cfg_count; ++i)
         {
@@ -4159,6 +4161,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
             cfg->iPixelType = values[8];
             cfg->doubleBuffer = values[9];
             cfg->auxBuffers = values[10];
+            cfg->swap_method = values[11];
 
             cfg->numSamples = 0;
             /* Check multisample support. */
@@ -4224,6 +4227,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
             cfg->iPixelType = (pfd.iPixelType == PFD_TYPE_RGBA) ? WGL_TYPE_RGBA_ARB : WGL_TYPE_COLORINDEX_ARB;
             cfg->doubleBuffer = (pfd.dwFlags & PFD_DOUBLEBUFFER) ? 1 : 0;
             cfg->auxBuffers = pfd.cAuxBuffers;
+            cfg->swap_method = WGL_SWAP_UNDEFINED_ARB;
             cfg->numSamples = 0;
 
             TRACE("iPixelFormat=%d, iPixelType=%#x, doubleBuffer=%d, RGBA=%d/%d/%d/%d, "
@@ -4571,6 +4575,7 @@ static void adapter_gl_uninit_3d(struct wined3d_device *device)
 {
     TRACE("device %p.\n", device);
 
+    wined3d_device_destroy_default_samplers(device);
     wined3d_cs_destroy_object(device->cs, wined3d_device_delete_opengl_contexts_cs, device);
     wined3d_cs_finish(device->cs, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -4591,6 +4596,12 @@ static void adapter_gl_copy_bo_address(struct wined3d_context *context,
         const struct wined3d_bo_address *dst, const struct wined3d_bo_address *src, size_t size)
 {
     wined3d_context_gl_copy_bo_address(wined3d_context_gl(context), dst, src, size);
+}
+
+static void adapter_gl_flush_bo_address(struct wined3d_context *context,
+        const struct wined3d_const_bo_address *data, size_t size)
+{
+    wined3d_context_gl_flush_bo_address(wined3d_context_gl(context), data, size);
 }
 
 static HRESULT adapter_gl_create_swapchain(struct wined3d_device *device,
@@ -5015,12 +5026,12 @@ static void adapter_gl_flush_context(struct wined3d_context *context)
 }
 
 static void adapter_gl_clear_uav(struct wined3d_context *context,
-        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value)
+        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp)
 {
     TRACE("context %p, view %p, clear_value %s.\n", context, view, debug_uvec4(clear_value));
 
-    wined3d_unordered_access_view_gl_clear_uint(wined3d_unordered_access_view_gl(view),
-            clear_value, wined3d_context_gl(context));
+    wined3d_unordered_access_view_gl_clear(wined3d_unordered_access_view_gl(view),
+            clear_value, wined3d_context_gl(context), fp);
 }
 
 static void adapter_gl_generate_mipmap(struct wined3d_context *context, struct wined3d_shader_resource_view *view)
@@ -5045,6 +5056,7 @@ static const struct wined3d_adapter_ops wined3d_adapter_gl_ops =
     .adapter_map_bo_address = adapter_gl_map_bo_address,
     .adapter_unmap_bo_address = adapter_gl_unmap_bo_address,
     .adapter_copy_bo_address = adapter_gl_copy_bo_address,
+    .adapter_flush_bo_address = adapter_gl_flush_bo_address,
     .adapter_create_swapchain = adapter_gl_create_swapchain,
     .adapter_destroy_swapchain = adapter_gl_destroy_swapchain,
     .adapter_create_buffer = adapter_gl_create_buffer,
@@ -5115,6 +5127,7 @@ static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_
     d3d_info->shader_color_key = !!(fragment_caps.wined3d_caps & WINED3D_FRAGMENT_CAP_COLOR_KEY);
     d3d_info->shader_double_precision = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_DOUBLE_PRECISION);
     d3d_info->shader_output_interpolation = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_OUTPUT_INTERPOLATION);
+    d3d_info->frag_coord_correction = !!gl_info->supported[ARB_FRAGMENT_COORD_CONVENTIONS];
     d3d_info->viewport_array_index_any_shader = !!gl_info->supported[ARB_SHADER_VIEWPORT_LAYER_ARRAY];
     d3d_info->texture_npot = !!gl_info->supported[ARB_TEXTURE_NON_POWER_OF_TWO];
     d3d_info->texture_npot_conditional = gl_info->supported[WINED3D_GL_NORMALIZED_TEXRECT]
@@ -5127,6 +5140,7 @@ static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_
     d3d_info->clip_control = !!gl_info->supported[ARB_CLIP_CONTROL];
     d3d_info->full_ffp_varyings = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_FULL_FFP_VARYINGS);
     d3d_info->scaled_resolve = !!gl_info->supported[EXT_FRAMEBUFFER_MULTISAMPLE_BLIT_SCALED];
+    d3d_info->pbo = !!gl_info->supported[ARB_PIXEL_BUFFER_OBJECT];
     d3d_info->feature_level = feature_level_from_caps(gl_info, &shader_caps, &fragment_caps);
 
     if (gl_info->supported[ARB_TEXTURE_MULTISAMPLE])

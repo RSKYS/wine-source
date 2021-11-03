@@ -1066,7 +1066,7 @@ static void macho_finish_stabs(struct module* module, struct hash_table* ht_symt
                 if (func->address == module->format_info[DFI_MACHO]->u.macho_info->load_addr)
                 {
                     TRACE("Adjusting function %p/%s!%s from 0x%08lx to 0x%08lx\n", func,
-                          debugstr_w(module->module.ModuleName), sym->hash_elt.name,
+                          debugstr_w(module->modulename), sym->hash_elt.name,
                           func->address, ste->addr);
                     func->address = ste->addr;
                     adjusted = TRUE;
@@ -1083,7 +1083,7 @@ static void macho_finish_stabs(struct module* module, struct hash_table* ht_symt
                     if (data->u.var.offset == module->format_info[DFI_MACHO]->u.macho_info->load_addr)
                     {
                         TRACE("Adjusting data symbol %p/%s!%s from 0x%08lx to 0x%08lx\n",
-                              data, debugstr_w(module->module.ModuleName), sym->hash_elt.name,
+                              data, debugstr_w(module->modulename), sym->hash_elt.name,
                               data->u.var.offset, ste->addr);
                         data->u.var.offset = ste->addr;
                         adjusted = TRUE;
@@ -1096,7 +1096,7 @@ static void macho_finish_stabs(struct module* module, struct hash_table* ht_symt
                         if (data->kind != new_kind)
                         {
                             WARN("Changing kind for %p/%s!%s from %d to %d\n", sym,
-                                 debugstr_w(module->module.ModuleName), sym->hash_elt.name,
+                                 debugstr_w(module->modulename), sym->hash_elt.name,
                                  (int)data->kind, (int)new_kind);
                             data->kind = new_kind;
                             adjusted = TRUE;
@@ -1155,7 +1155,7 @@ static void macho_finish_stabs(struct module* module, struct hash_table* ht_symt
                 symt_get_info(module, &sym->symt, TI_GET_DATAKIND, &kind);
                 if (size && kind == (ste->is_global ? DataIsGlobal : DataIsFileStatic))
                     FIXME("Duplicate in %s: %s<%08lx> %s<%s-%s>\n",
-                          debugstr_w(module->module.ModuleName),
+                          debugstr_w(module->modulename),
                           ste->ht_elt.name, ste->addr,
                           sym->hash_elt.name,
                           wine_dbgstr_longlong(addr), wine_dbgstr_longlong(size));
@@ -1232,9 +1232,7 @@ static BOOL try_dsym(struct process *pcs, const WCHAR* path, struct macho_file_m
     return FALSE;
 }
 
-static const WCHAR dsym_subpath[] = {'\\','C','o','n','t','e','n','t','s',
-                                     '\\','R','e','s','o','u','r','c','e','s',
-                                     '\\','D','W','A','R','F','\\',0};
+static const WCHAR dsym_subpath[] = L"'\\Contents\\Resources\\DWARF\\";
 
 static WCHAR *query_dsym(const GUID *uuid, const WCHAR *filename)
 {
@@ -1287,8 +1285,6 @@ static WCHAR *query_dsym(const GUID *uuid, const WCHAR *filename)
  */
 static void find_and_map_dsym(struct process *pcs, struct module* module)
 {
-    static const WCHAR dot_dsym[] = {'.','d','S','Y','M',0};
-    static const WCHAR dot_dwarf[] = {'.','d','w','a','r','f',0};
     struct macho_file_map* fmap = &module->format_info[DFI_MACHO]->u.macho_info->file_map.u.macho;
     const WCHAR* p;
     size_t len;
@@ -1300,19 +1296,19 @@ static void find_and_map_dsym(struct process *pcs, struct module* module)
         return;
 
     p = file_name(module->module.LoadedImageName);
-    len = lstrlenW(module->module.LoadedImageName) + lstrlenW(dot_dsym) + lstrlenW(dsym_subpath) + lstrlenW(p) + 1;
+    len = lstrlenW(module->module.LoadedImageName) + lstrlenW(L".dSYM") + lstrlenW(dsym_subpath) + lstrlenW(p) + 1;
     path = HeapAlloc(GetProcessHeap(), 0, len * sizeof(WCHAR));
     if (!path)
         return;
     lstrcpyW(path, module->module.LoadedImageName);
-    lstrcatW(path, dot_dsym);
+    lstrcatW(path, L".dSYM");
     lstrcatW(path, dsym_subpath);
     lstrcatW(path, p);
 
     if (try_dsym(pcs, path, fmap))
         goto found;
 
-    lstrcpyW(path + lstrlenW(module->module.LoadedImageName), dot_dwarf);
+    lstrcpyW(path + lstrlenW(module->module.LoadedImageName), L".dwarf");
 
     if (try_dsym(pcs, path, fmap))
         goto found;
@@ -1479,7 +1475,8 @@ static BOOL macho_load_file(struct process* pcs, const WCHAR* filename,
         if (!load_addr)
             load_addr = fmap.u.macho.segs_start;
         macho_info->module = module_new(pcs, filename, DMT_MACHO, FALSE, load_addr,
-                                        fmap.u.macho.segs_size, 0, calc_crc32(fmap.u.macho.handle));
+                                        fmap.u.macho.segs_size, 0, calc_crc32(fmap.u.macho.handle),
+                                        IMAGE_FILE_MACHINE_UNKNOWN);
         if (!macho_info->module)
         {
             HeapFree(GetProcessHeap(), 0, modfmt);
@@ -1551,7 +1548,6 @@ static BOOL macho_search_and_load_file(struct process* pcs, const WCHAR* filenam
 {
     BOOL                ret = FALSE;
     struct module*      module;
-    static const WCHAR  S_libstdcPPW[] = {'l','i','b','s','t','d','c','+','+','\0'};
     const WCHAR*        p;
     struct macho_load_params load_params;
 
@@ -1566,7 +1562,7 @@ static BOOL macho_search_and_load_file(struct process* pcs, const WCHAR* filenam
         return module->module.SymType;
     }
 
-    if (wcsstr(filename, S_libstdcPPW)) return FALSE; /* We know we can't do it */
+    if (wcsstr(filename, L"libstdc++")) return FALSE; /* We know we can't do it */
 
     load_params.process    = pcs;
     load_params.load_addr  = load_addr;
@@ -1885,7 +1881,15 @@ static BOOL macho_search_loader(struct process* pcs, struct macho_info* macho_in
         }
     }
 
-    if (!ret) ret = macho_search_and_load_file(pcs, get_wine_loader_name(pcs), 0, macho_info);
+    if (!ret)
+    {
+        WCHAR* loader = get_wine_loader_name(pcs);
+        if (loader)
+        {
+            ret = macho_search_and_load_file(pcs, loader, 0, macho_info);
+            HeapFree(GetProcessHeap(), 0, loader);
+        }
+    }
     return ret;
 }
 

@@ -246,7 +246,6 @@ static BOOL ME_UpdateLinkAttribute(ME_TextEditor *editor, ME_Cursor *start, int 
 
 HINSTANCE dll_instance = NULL;
 BOOL me_debug = FALSE;
-HANDLE me_heap = NULL;
 
 static ME_TextBuffer *ME_MakeText(void) {
   ME_TextBuffer *buf = heap_alloc(sizeof(*buf));
@@ -1172,7 +1171,7 @@ static HRESULT insert_static_object(ME_TextEditor *editor, HENHMETAFILE hemf, HB
     reobject.dwFlags = 0; /* FIXME */
     reobject.dwUser = 0;
 
-    ME_InsertOLEFromCursor(editor, &reobject, 0);
+    editor_insert_oleobj(editor, &reobject);
     hr = S_OK;
   }
 

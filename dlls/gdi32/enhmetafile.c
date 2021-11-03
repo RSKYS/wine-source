@@ -35,20 +35,33 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
+
 #include "windef.h"
 #include "winbase.h"
 #include "wingdi.h"
 #include "winnls.h"
 #include "winerror.h"
 #include "gdi_private.h"
+
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(enhmetafile);
 
+
+static CRITICAL_SECTION enhmetafile_cs;
+static CRITICAL_SECTION_DEBUG critsect_debug =
+{
+    0, 0, &enhmetafile_cs,
+    { &critsect_debug.ProcessLocksList, &critsect_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": enhmetafile_cs") }
+};
+static CRITICAL_SECTION enhmetafile_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
+
 typedef struct
 {
-    ENHMETAHEADER  *emh;
-    BOOL           on_disk;   /* true if metafile is on disk */
+    ENHMETAHEADER        *emh;
+    BOOL                  on_disk;   /* true if metafile is on disk */
 } ENHMETAFILEOBJ;
 
 static const struct emr_name {
@@ -276,7 +289,9 @@ HENHMETAFILE EMF_Create_HENHMETAFILE(ENHMETAHEADER *emh, DWORD filesize, BOOL on
     metaObj->emh = emh;
     metaObj->on_disk = on_disk;
 
-    if (!(hmf = alloc_gdi_handle( metaObj, OBJ_ENHMETAFILE, NULL )))
+    if ((hmf = NtGdiCreateClientObj( NTGDI_OBJ_ENHMETAFILE )))
+        set_gdi_client_ptr( hmf, metaObj );
+    else
         HeapFree( GetProcessHeap(), 0, metaObj );
     return hmf;
 }
@@ -286,15 +301,23 @@ HENHMETAFILE EMF_Create_HENHMETAFILE(ENHMETAHEADER *emh, DWORD filesize, BOOL on
  */
 static BOOL EMF_Delete_HENHMETAFILE( HENHMETAFILE hmf )
 {
-    ENHMETAFILEOBJ *metaObj = free_gdi_handle( hmf );
+    ENHMETAFILEOBJ *metafile;
 
-    if(!metaObj) return FALSE;
+    EnterCriticalSection( &enhmetafile_cs );
+    if (!(metafile = get_gdi_client_ptr( hmf, NTGDI_OBJ_ENHMETAFILE )) ||
+        !NtGdiDeleteClientObj( hmf ))
+    {
+        LeaveCriticalSection( &enhmetafile_cs );
+        SetLastError( ERROR_INVALID_HANDLE );
+        return FALSE;
+    }
 
-    if(metaObj->on_disk)
-        UnmapViewOfFile( metaObj->emh );
+    if (metafile->on_disk)
+        UnmapViewOfFile( metafile->emh );
     else
-        HeapFree( GetProcessHeap(), 0, metaObj->emh );
-    HeapFree( GetProcessHeap(), 0, metaObj );
+        HeapFree( GetProcessHeap(), 0, metafile->emh );
+    HeapFree( GetProcessHeap(), 0, metafile );
+    LeaveCriticalSection( &enhmetafile_cs );
     return TRUE;
 }
 
@@ -306,13 +329,16 @@ static BOOL EMF_Delete_HENHMETAFILE( HENHMETAFILE hmf )
 static ENHMETAHEADER *EMF_GetEnhMetaHeader( HENHMETAFILE hmf )
 {
     ENHMETAHEADER *ret = NULL;
-    ENHMETAFILEOBJ *metaObj = GDI_GetObjPtr( hmf, OBJ_ENHMETAFILE );
-    TRACE("hmf %p -> enhmetaObj %p\n", hmf, metaObj);
-    if (metaObj)
+    ENHMETAFILEOBJ *metafile;
+
+    EnterCriticalSection( &enhmetafile_cs );
+    if ((metafile = get_gdi_client_ptr( hmf, NTGDI_OBJ_ENHMETAFILE )))
     {
-        ret = metaObj->emh;
-        GDI_ReleaseObj( hmf );
+        TRACE( "hmf %p -> enhmetafile %p\n", hmf, metafile );
+        ret = metafile->emh;
     }
+    else SetLastError( ERROR_INVALID_HANDLE );
+    LeaveCriticalSection( &enhmetafile_cs );
     return ret;
 }
 
@@ -1415,7 +1441,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
       {
         const EMRSETCOLORADJUSTMENT *lpSetColorAdjust = (const EMRSETCOLORADJUSTMENT *)mr;
 
-        SetColorAdjustment( hdc, &lpSetColorAdjust->ColorAdjustment );
+        NtGdiSetColorAdjustment( hdc, &lpSetColorAdjust->ColorAdjustment );
 
         break;
       }
@@ -1790,8 +1816,8 @@ BOOL WINAPI PlayEnhMetaFileRecord(
       {
         const EMRRESIZEPALETTE *lpResizePalette = (const EMRRESIZEPALETTE *)mr;
 
-        ResizePalette( (handletable->objectHandle)[lpResizePalette->ihPal],
-                       (UINT)lpResizePalette->cEntries );
+        NtGdiResizePalette( handletable->objectHandle[lpResizePalette->ihPal],
+                            lpResizePalette->cEntries );
 
         break;
       }
@@ -1892,7 +1918,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
             PatBlt(hdc, pBitBlt->xDest, pBitBlt->yDest, pBitBlt->cxDest, pBitBlt->cyDest,
                    pBitBlt->dwRop);
         } else { /* BitBlt */
-            HDC hdcSrc = CreateCompatibleDC(hdc);
+            HDC hdcSrc = NtGdiCreateCompatibleDC( hdc );
             HBRUSH hBrush, hBrushOld;
             HBITMAP hBmp = 0, hBmpOld = 0;
             const BITMAPINFO *pbi = (const BITMAPINFO *)((const BYTE *)mr + pBitBlt->offBmiSrc);
@@ -1935,7 +1961,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
             PatBlt(hdc, pStretchBlt->xDest, pStretchBlt->yDest, pStretchBlt->cxDest, pStretchBlt->cyDest,
                    pStretchBlt->dwRop);
         } else { /* StretchBlt */
-            HDC hdcSrc = CreateCompatibleDC(hdc);
+            HDC hdcSrc = NtGdiCreateCompatibleDC( hdc );
             HBRUSH hBrush, hBrushOld;
             HBITMAP hBmp = 0, hBmpOld = 0;
             const BITMAPINFO *pbi = (const BITMAPINFO *)((const BYTE *)mr + pStretchBlt->offBmiSrc);
@@ -1978,7 +2004,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
         if(pAlphaBlend->offBmiSrc == 0) {
             FIXME("EMR_ALPHABLEND: offBmiSrc == 0\n");
         } else {
-            HDC hdcSrc = CreateCompatibleDC(hdc);
+            HDC hdcSrc = NtGdiCreateCompatibleDC( hdc );
             HBITMAP hBmp = 0, hBmpOld = 0;
             const BITMAPINFO *pbi = (const BITMAPINFO *)((const BYTE *)mr + pAlphaBlend->offBmiSrc);
             void *bits;
@@ -2004,7 +2030,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
     case EMR_MASKBLT:
     {
 	const EMRMASKBLT *pMaskBlt = (const EMRMASKBLT *)mr;
-	HDC hdcSrc = CreateCompatibleDC(hdc);
+	HDC hdcSrc = NtGdiCreateCompatibleDC( hdc );
 	HBRUSH hBrush, hBrushOld;
 	HBITMAP hBmp, hBmpOld, hBmpMask;
 	const BITMAPINFO *pbi;
@@ -2052,7 +2078,7 @@ BOOL WINAPI PlayEnhMetaFileRecord(
     case EMR_PLGBLT:
     {
 	const EMRPLGBLT *pPlgBlt = (const EMRPLGBLT *)mr;
-	HDC hdcSrc = CreateCompatibleDC(hdc);
+	HDC hdcSrc = NtGdiCreateCompatibleDC( hdc );
 	HBRUSH hBrush, hBrushOld;
 	HBITMAP hBmp, hBmpOld, hBmpMask;
 	const BITMAPINFO *pbi;
@@ -2391,28 +2417,29 @@ BOOL WINAPI EnumEnhMetaFile(
     info->state.next = NULL;
     info->save_level = 0;
     info->saved_state = NULL;
+    info->init_transform = info->state.world_transform;
 
     ht = (HANDLETABLE*) &info[1];
     ht->objectHandle[0] = hmf;
     for(i = 1; i < emh->nHandles; i++)
         ht->objectHandle[i] = NULL;
 
-    if(hdc)
+    if (hdc && !is_meta_dc( hdc ))
     {
-	savedMode = SetGraphicsMode(hdc, GM_ADVANCED);
-	GetWorldTransform(hdc, &savedXform);
+        savedMode = SetGraphicsMode(hdc, GM_ADVANCED);
+        GetWorldTransform(hdc, &savedXform);
         GetViewportExtEx(hdc, &vp_size);
         GetWindowExtEx(hdc, &win_size);
         GetViewportOrgEx(hdc, &vp_org);
         GetWindowOrgEx(hdc, &win_org);
         mapMode = GetMapMode(hdc);
 
-	/* save DC */
-	hPen = GetCurrentObject(hdc, OBJ_PEN);
-	hBrush = GetCurrentObject(hdc, OBJ_BRUSH);
-	hFont = GetCurrentObject(hdc, OBJ_FONT);
+        /* save DC */
+        hPen = GetCurrentObject(hdc, OBJ_PEN);
+        hBrush = GetCurrentObject(hdc, OBJ_BRUSH);
+        hFont = GetCurrentObject(hdc, OBJ_FONT);
 
-        hRgn = CreateRectRgn(0, 0, 0, 0);
+        hRgn = NtGdiCreateRectRgn(0, 0, 0, 0);
         if (!GetClipRgn(hdc, hRgn))
         {
             DeleteObject(hRgn);
@@ -2427,17 +2454,7 @@ BOOL WINAPI EnumEnhMetaFile(
         old_polyfill = SetPolyFillMode(hdc, ALTERNATE);
         old_stretchblt = SetStretchBltMode(hdc, BLACKONWHITE);
 
-        if ( IS_WIN9X() )
-        {
-            /* Win95 leaves the vp/win ext/org info alone */
-            info->init_transform.eM11 = 1.0;
-            info->init_transform.eM12 = 0.0;
-            info->init_transform.eM21 = 0.0;
-            info->init_transform.eM22 = 1.0;
-            info->init_transform.eDx  = 0.0;
-            info->init_transform.eDy  = 0.0;
-        }
-        else
+        if (!IS_WIN9X())
         {
             /* WinNT combines the vp/win ext/org info into a transform */
             double xscale, yscale;
@@ -2481,7 +2498,7 @@ BOOL WINAPI EnumEnhMetaFile(
         }
 
         /* WinNT resets the current vp/win org/ext */
-        if ( !IS_WIN9X() )
+        if (!IS_WIN9X())
         {
             SetMapMode(hdc, MM_TEXT);
             SetWindowOrgEx(hdc, 0, 0, NULL);
@@ -2513,7 +2530,7 @@ BOOL WINAPI EnumEnhMetaFile(
 	offset += emr->nSize;
     }
 
-    if (hdc)
+    if (hdc && !is_meta_dc( hdc ))
     {
         SetStretchBltMode(hdc, old_stretchblt);
         SetPolyFillMode(hdc, old_polyfill);
@@ -2530,9 +2547,9 @@ BOOL WINAPI EnumEnhMetaFile(
         ExtSelectClipRgn(hdc, hRgn, RGN_COPY);
         DeleteObject(hRgn);
 
-	SetWorldTransform(hdc, &savedXform);
-	if (savedMode)
-	    SetGraphicsMode(hdc, savedMode);
+        SetWorldTransform(hdc, &savedXform);
+        if (savedMode)
+            SetGraphicsMode(hdc, savedMode);
         SetMapMode(hdc, mapMode);
         SetWindowOrgEx(hdc, win_org.x, win_org.y, NULL);
         SetWindowExtEx(hdc, win_size.cx, win_size.cy, NULL);
@@ -2789,7 +2806,7 @@ static HENHMETAFILE extract_emf_from_comment( const BYTE *buf, UINT mf_size )
         chunk = (emf_in_wmf_comment *)(mr->rdParm + 2);
 
         if (mr->rdFunction != META_ESCAPE || mr->rdParm[0] != MFCOMMENT) goto done;
-        if (chunk->magic != WMFC_MAGIC) goto done;
+        if (chunk->comment_id != WMFC_MAGIC) goto done;
 
         if (!emf_bits)
         {

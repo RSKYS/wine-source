@@ -2870,7 +2870,7 @@ static void init_bind_test(int protocol, DWORD flags, DWORD t)
         url_a = "its:test.chm::/blank.html";
         break;
     case HTTPS_TEST:
-        url_a = (flags & BINDTEST_INVALID_CN) ? "https://" WINEHQ_IP "/favicon.ico" : "https://test.winehq.org/tests/hello.html";
+        url_a = (flags & BINDTEST_INVALID_CN) ? "https://" WINEHQ_IP "/robots.txt" : "https://test.winehq.org/tests/hello.html";
         break;
     case FTP_TEST:
         url_a = "ftp://ftp.winehq.org/welcome%2emsg";
@@ -4102,7 +4102,7 @@ START_TEST(url)
             trace("asynchronous https test...\n");
             test_BindToStorage(HTTPS_TEST, 0, TYMED_ISTREAM);
         }else {
-            win_skip("Skipping https testt\n");
+            win_skip("Skipping https tests\n");
         }
 
         bindf = BINDF_ASYNCHRONOUS | BINDF_ASYNCSTORAGE | BINDF_PULLDATA;

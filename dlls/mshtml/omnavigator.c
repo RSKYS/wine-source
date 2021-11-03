@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 
 #define COBJMACROS
 
@@ -305,6 +304,7 @@ static const tid_t HTMLDOMImplementation_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLDOMImplementation_dispex = {
+    L"DOMImplementation",
     NULL,
     DispHTMLDOMImplementation_tid,
     HTMLDOMImplementation_iface_tids
@@ -556,6 +556,7 @@ static const tid_t HTMLScreen_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLScreen_dispex = {
+    L"Screen",
     NULL,
     DispHTMLScreen_tid,
     HTMLScreen_iface_tids
@@ -719,6 +720,7 @@ static const tid_t OmHistory_iface_tids[] = {
     0
 };
 static dispex_static_data_t OmHistory_dispex = {
+    L"History",
     NULL,
     DispHTMLHistory_tid,
     OmHistory_iface_tids
@@ -875,6 +877,7 @@ static const tid_t HTMLPluginsCollection_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLPluginsCollection_dispex = {
+    L"PluginArray",
     NULL,
     DispCPlugins_tid,
     HTMLPluginsCollection_iface_tids
@@ -1019,6 +1022,7 @@ static const tid_t HTMLMimeTypesCollection_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLMimeTypesCollection_dispex = {
+    L"MimeTypeArray",
     NULL,
     IHTMLMimeTypesCollection_tid,
     HTMLMimeTypesCollection_iface_tids
@@ -1311,12 +1315,7 @@ static HRESULT WINAPI OmNavigator_toString(IOmNavigator *iface, BSTR *String)
 
     TRACE("(%p)->(%p)\n", This, String);
 
-    if(!String)
-        return E_INVALIDARG;
-
-    *String = SysAllocString(dispex_compat_mode(&This->dispex) < COMPAT_MODE_IE9
-                             ? L"[object]" : L"[object Navigator]");
-    return *String ? S_OK : E_OUTOFMEMORY;
+    return dispex_to_string(&This->dispex, String);
 }
 
 static HRESULT WINAPI OmNavigator_get_cpuClass(IOmNavigator *iface, BSTR *p)
@@ -1470,6 +1469,7 @@ static const tid_t OmNavigator_iface_tids[] = {
     0
 };
 static dispex_static_data_t OmNavigator_dispex = {
+    L"Navigator",
     NULL,
     DispHTMLNavigator_tid,
     OmNavigator_iface_tids
@@ -1801,8 +1801,10 @@ static HRESULT WINAPI HTMLPerformanceTiming_get_msFirstPaint(IHTMLPerformanceTim
 static HRESULT WINAPI HTMLPerformanceTiming_toString(IHTMLPerformanceTiming *iface, BSTR *string)
 {
     HTMLPerformanceTiming *This = impl_from_IHTMLPerformanceTiming(iface);
-    FIXME("(%p)->(%p)\n", This, string);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, string);
+
+    return dispex_to_string(&This->dispex, string);
 }
 
 static HRESULT WINAPI HTMLPerformanceTiming_toJSON(IHTMLPerformanceTiming *iface, VARIANT *p)
@@ -1850,6 +1852,7 @@ static const tid_t HTMLPerformanceTiming_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLPerformanceTiming_dispex = {
+    L"PerformanceTiming",
     NULL,
     IHTMLPerformanceTiming_tid,
     HTMLPerformanceTiming_iface_tids
@@ -1969,8 +1972,10 @@ static HRESULT WINAPI HTMLPerformanceNavigation_get_redirectCount(IHTMLPerforman
 static HRESULT WINAPI HTMLPerformanceNavigation_toString(IHTMLPerformanceNavigation *iface, BSTR *string)
 {
     HTMLPerformanceNavigation *This = impl_from_IHTMLPerformanceNavigation(iface);
-    FIXME("(%p)->(%p)\n", This, string);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, string);
+
+    return dispex_to_string(&This->dispex, string);
 }
 
 static HRESULT WINAPI HTMLPerformanceNavigation_toJSON(IHTMLPerformanceNavigation *iface, VARIANT *p)
@@ -1999,6 +2004,7 @@ static const tid_t HTMLPerformanceNavigation_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLPerformanceNavigation_dispex = {
+    L"PerformanceNavigation",
     NULL,
     IHTMLPerformanceNavigation_tid,
     HTMLPerformanceNavigation_iface_tids
@@ -2159,8 +2165,10 @@ static HRESULT WINAPI HTMLPerformance_get_timing(IHTMLPerformance *iface, IHTMLP
 static HRESULT WINAPI HTMLPerformance_toString(IHTMLPerformance *iface, BSTR *string)
 {
     HTMLPerformance *This = impl_from_IHTMLPerformance(iface);
-    FIXME("(%p)->(%p)\n", This, string);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, string);
+
+    return dispex_to_string(&This->dispex, string);
 }
 
 static HRESULT WINAPI HTMLPerformance_toJSON(IHTMLPerformance *iface, VARIANT *var)
@@ -2189,6 +2197,7 @@ static const tid_t HTMLPerformance_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLPerformance_dispex = {
+    L"Performance",
     NULL,
     IHTMLPerformance_tid,
     HTMLPerformance_iface_tids
@@ -2347,6 +2356,7 @@ static const tid_t HTMLNamespaceCollection_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLNamespaceCollection_dispex = {
+    L"MSNamespaceInfoCollection",
     NULL,
     DispHTMLNamespaceCollection_tid,
     HTMLNamespaceCollection_iface_tids
@@ -2365,4 +2375,263 @@ HRESULT create_namespace_collection(compat_mode_t compat_mode, IHTMLNamespaceCol
                   &HTMLNamespaceCollection_dispex, compat_mode);
     *ret = &namespaces->IHTMLNamespaceCollection_iface;
     return S_OK;
+}
+
+struct console {
+    DispatchEx dispex;
+    IWineMSHTMLConsole IWineMSHTMLConsole_iface;
+    LONG ref;
+};
+
+static inline struct console *impl_from_IWineMSHTMLConsole(IWineMSHTMLConsole *iface)
+{
+    return CONTAINING_RECORD(iface, struct console, IWineMSHTMLConsole_iface);
+}
+
+static HRESULT WINAPI console_QueryInterface(IWineMSHTMLConsole *iface, REFIID riid, void **ppv)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+
+    TRACE("(%p)->(%s %p)\n", console, debugstr_mshtml_guid(riid), ppv);
+
+    if(IsEqualGUID(&IID_IUnknown, riid)) {
+        *ppv = &console->IWineMSHTMLConsole_iface;
+    }else if(IsEqualGUID(&IID_IWineMSHTMLConsole, riid)) {
+        *ppv = &console->IWineMSHTMLConsole_iface;
+    }else if(dispex_query_interface(&console->dispex, riid, ppv)) {
+        return *ppv ? S_OK : E_NOINTERFACE;
+    }else {
+        WARN("(%p)->(%s %p)\n", console, debugstr_mshtml_guid(riid), ppv);
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+
+    IUnknown_AddRef((IUnknown*)*ppv);
+    return S_OK;
+}
+
+static ULONG WINAPI console_AddRef(IWineMSHTMLConsole *iface)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+    LONG ref = InterlockedIncrement(&console->ref);
+
+    TRACE("(%p) ref=%d\n", console, ref);
+
+    return ref;
+}
+
+static ULONG WINAPI console_Release(IWineMSHTMLConsole *iface)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+    LONG ref = InterlockedDecrement(&console->ref);
+
+    TRACE("(%p) ref=%d\n", console, ref);
+
+    if(!ref) {
+        release_dispex(&console->dispex);
+        heap_free(console);
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI console_GetTypeInfoCount(IWineMSHTMLConsole *iface, UINT *pctinfo)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+    FIXME("(%p)->(%p)\n", console, pctinfo);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI console_GetTypeInfo(IWineMSHTMLConsole *iface, UINT iTInfo,
+        LCID lcid, ITypeInfo **ppTInfo)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+
+    return IDispatchEx_GetTypeInfo(&console->dispex.IDispatchEx_iface, iTInfo, lcid, ppTInfo);
+}
+
+static HRESULT WINAPI console_GetIDsOfNames(IWineMSHTMLConsole *iface, REFIID riid,
+        LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+
+    return IDispatchEx_GetIDsOfNames(&console->dispex.IDispatchEx_iface, riid, rgszNames, cNames,
+            lcid, rgDispId);
+}
+
+static HRESULT WINAPI console_Invoke(IWineMSHTMLConsole *iface, DISPID dispIdMember,
+        REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
+        VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
+{
+    struct console *console = impl_from_IWineMSHTMLConsole(iface);
+
+    return IDispatchEx_Invoke(&console->dispex.IDispatchEx_iface, dispIdMember, riid, lcid, wFlags,
+            pDispParams, pVarResult, pExcepInfo, puArgErr);
+}
+
+static HRESULT WINAPI console_assert(IWineMSHTMLConsole *iface, VARIANT_BOOL *assertion, VARIANT *vararg_start)
+{
+    FIXME("iface %p, assertion %p, vararg_start %p stub.\n", iface, assertion, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_clear(IWineMSHTMLConsole *iface)
+{
+    FIXME("iface %p stub.\n", iface);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_count(IWineMSHTMLConsole *iface, VARIANT *label)
+{
+    FIXME("iface %p, label %p stub.\n", iface, label);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_debug(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_dir(IWineMSHTMLConsole *iface, VARIANT *object)
+{
+    FIXME("iface %p, object %p stub.\n", iface, object);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_dirxml(IWineMSHTMLConsole *iface, VARIANT *object)
+{
+    FIXME("iface %p, object %p stub.\n", iface, object);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_error(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_group(IWineMSHTMLConsole *iface, VARIANT *label)
+{
+    FIXME("iface %p, label %p stub.\n", iface, label);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_group_collapsed(IWineMSHTMLConsole *iface, VARIANT *label)
+{
+    FIXME("iface %p, label %p stub.\n", iface, label);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_group_end(IWineMSHTMLConsole *iface)
+{
+    FIXME("iface %p, stub.\n", iface);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_info(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_log(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_time(IWineMSHTMLConsole *iface, VARIANT *label)
+{
+    FIXME("iface %p, label %p stub.\n", iface, label);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_time_end(IWineMSHTMLConsole *iface, VARIANT *label)
+{
+    FIXME("iface %p, label %p stub.\n", iface, label);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_trace(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI console_warn(IWineMSHTMLConsole *iface, VARIANT *vararg_start)
+{
+    FIXME("iface %p, vararg_start %p stub.\n", iface, vararg_start);
+
+    return S_OK;
+}
+
+static const IWineMSHTMLConsoleVtbl WineMSHTMLConsoleVtbl = {
+    console_QueryInterface,
+    console_AddRef,
+    console_Release,
+    console_GetTypeInfoCount,
+    console_GetTypeInfo,
+    console_GetIDsOfNames,
+    console_Invoke,
+    console_assert,
+    console_clear,
+    console_count,
+    console_debug,
+    console_dir,
+    console_dirxml,
+    console_error,
+    console_group,
+    console_group_collapsed,
+    console_group_end,
+    console_info,
+    console_log,
+    console_time,
+    console_time_end,
+    console_trace,
+    console_warn,
+};
+
+static const tid_t console_iface_tids[] = {
+    IWineMSHTMLConsole_tid,
+    0
+};
+static dispex_static_data_t console_dispex = {
+    L"Console",
+    NULL,
+    IWineMSHTMLConsole_tid,
+    console_iface_tids
+};
+
+void create_console(compat_mode_t compat_mode, IWineMSHTMLConsole **ret)
+{
+    struct console *obj;
+
+    obj = heap_alloc_zero(sizeof(*obj));
+    if(!obj)
+    {
+        ERR("No memory.\n");
+        return;
+    }
+
+    obj->IWineMSHTMLConsole_iface.lpVtbl = &WineMSHTMLConsoleVtbl;
+    obj->ref = 1;
+    init_dispatch(&obj->dispex, (IUnknown*)&obj->IWineMSHTMLConsole_iface, &console_dispex, compat_mode);
+
+    *ret = &obj->IWineMSHTMLConsole_iface;
 }

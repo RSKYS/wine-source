@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 
 #define COBJMACROS
 #define NONAMELESSUNION
@@ -112,7 +111,7 @@ struct dispex_dynamic_data_t {
 
 #define FDEX_VERSION_MASK 0xf0000000
 
-static ITypeLib *typelib;
+static ITypeLib *typelib, *typelib_private;
 static ITypeInfo *typeinfos[LAST_tid];
 static struct list dispex_data_list = LIST_INIT(dispex_data_list);
 
@@ -120,14 +119,18 @@ static REFIID tid_ids[] = {
 #define XIID(iface) &IID_ ## iface,
 #define XDIID(iface) &DIID_ ## iface,
 TID_LIST
+    NULL,
+PRIVATE_TID_LIST
 #undef XIID
 #undef XDIID
 };
 
 static HRESULT load_typelib(void)
 {
+    WCHAR module_path[MAX_PATH + 3];
     HRESULT hres;
     ITypeLib *tl;
+    DWORD len;
 
     hres = LoadRegTypeLib(&LIBID_MSHTML, 4, 0, LOCALE_SYSTEM_DEFAULT, &tl);
     if(FAILED(hres)) {
@@ -137,7 +140,25 @@ static HRESULT load_typelib(void)
 
     if(InterlockedCompareExchangePointer((void**)&typelib, tl, NULL))
         ITypeLib_Release(tl);
-    return hres;
+
+    len = GetModuleFileNameW(hInst, module_path, MAX_PATH + 1);
+    if (!len || len == MAX_PATH + 1)
+    {
+        ERR("Could not get module file name, len %u.\n", len);
+        return E_FAIL;
+    }
+    lstrcatW(module_path, L"\\1");
+
+    hres = LoadTypeLibEx(module_path, REGKIND_NONE, &tl);
+    if(FAILED(hres)) {
+        ERR("LoadTypeLibEx failed for private typelib: %08x\n", hres);
+        return hres;
+    }
+
+    if(InterlockedCompareExchangePointer((void**)&typelib_private, tl, NULL))
+        ITypeLib_Release(tl);
+
+    return S_OK;
 }
 
 static HRESULT get_typeinfo(tid_t tid, ITypeInfo **typeinfo)
@@ -152,7 +173,7 @@ static HRESULT get_typeinfo(tid_t tid, ITypeInfo **typeinfo)
     if(!typeinfos[tid]) {
         ITypeInfo *ti;
 
-        hres = ITypeLib_GetTypeInfoOfGuid(typelib, tid_ids[tid], &ti);
+        hres = ITypeLib_GetTypeInfoOfGuid(tid > LAST_public_tid ? typelib_private : typelib, tid_ids[tid], &ti);
         if(FAILED(hres)) {
             ERR("GetTypeInfoOfGuid(%s) failed: %08x\n", debugstr_mshtml_guid(tid_ids[tid]), hres);
             return hres;
@@ -198,6 +219,7 @@ void release_typelib(void)
             ITypeInfo_Release(typeinfos[i]);
 
     ITypeLib_Release(typelib);
+    ITypeLib_Release(typelib_private);
     DeleteCriticalSection(&cs_dispex_static_data);
 }
 
@@ -211,6 +233,8 @@ HRESULT get_class_typeinfo(const CLSID *clsid, ITypeInfo **typeinfo)
         return hres;
 
     hres = ITypeLib_GetTypeInfoOfGuid(typelib, clsid, typeinfo);
+    if (FAILED(hres))
+        hres = ITypeLib_GetTypeInfoOfGuid(typelib_private, clsid, typeinfo);
     if(FAILED(hres))
         ERR("GetTypeInfoOfGuid failed: %08x\n", hres);
     return hres;
@@ -331,7 +355,7 @@ static void add_func_info(dispex_data_t *data, tid_t tid, const FUNCDESC *desc, 
 
                 hres = ITypeInfo_GetRefTypeInfo(dti, tdesc->u.lptdesc->u.hreftype, &ref_type_info);
                 if(FAILED(hres)) {
-                    ERR("Coulg not get referenced type info: %08x\n", hres);
+                    ERR("Could not get referenced type info: %08x\n", hres);
                     return;
                 }
 
@@ -691,15 +715,17 @@ HRESULT dispex_get_dynid(DispatchEx *This, const WCHAR *name, DISPID *id)
 static HRESULT dispex_value(DispatchEx *This, LCID lcid, WORD flags, DISPPARAMS *params,
         VARIANT *res, EXCEPINFO *ei, IServiceProvider *caller)
 {
+    HRESULT hres;
+
     if(This->info->desc->vtbl && This->info->desc->vtbl->value)
         return This->info->desc->vtbl->value(This, lcid, flags, params, res, ei, caller);
 
     switch(flags) {
     case DISPATCH_PROPERTYGET:
         V_VT(res) = VT_BSTR;
-        V_BSTR(res) = SysAllocString(L"[object]");
-        if(!V_BSTR(res))
-            return E_OUTOFMEMORY;
+        hres = dispex_to_string(This, &V_BSTR(res));
+        if(FAILED(hres))
+            return hres;
         break;
     default:
         FIXME("Unimplemented flags %x\n", flags);
@@ -862,6 +888,7 @@ static const dispex_static_data_vtbl_t function_dispex_vtbl = {
 static const tid_t function_iface_tids[] = {0};
 
 static dispex_static_data_t function_dispex = {
+    L"Function",
     &function_dispex_vtbl,
     NULL_tid,
     function_iface_tids
@@ -1280,9 +1307,9 @@ static HRESULT function_invoke(DispatchEx *This, func_info_t *func, WORD flags, 
         if(func->id == DISPID_VALUE) {
             BSTR ret;
 
-            ret = SysAllocString(L"[object]");
-            if(!ret)
-                return E_OUTOFMEMORY;
+            hres = dispex_to_string(This, &ret);
+            if(FAILED(hres))
+                return hres;
 
             V_VT(res) = VT_BSTR;
             V_BSTR(res) = ret;
@@ -1456,6 +1483,34 @@ compat_mode_t dispex_compat_mode(DispatchEx *dispex)
     return dispex->info != dispex->info->desc->delayed_init_info
         ? dispex->info->compat_mode
         : dispex->info->desc->vtbl->get_compat_mode(dispex);
+}
+
+HRESULT dispex_to_string(DispatchEx *dispex, BSTR *ret)
+{
+    static const WCHAR prefix[8] = L"[object ";
+    static const WCHAR suffix[] = L"]";
+    WCHAR buf[ARRAY_SIZE(prefix) + 28 + ARRAY_SIZE(suffix)], *p = buf;
+    compat_mode_t compat_mode = dispex_compat_mode(dispex);
+    const WCHAR *name = dispex->info->desc->name;
+    unsigned len;
+
+    if(!ret)
+        return E_INVALIDARG;
+
+    memcpy(p, prefix, sizeof(prefix));
+    p += ARRAY_SIZE(prefix);
+    if(compat_mode < COMPAT_MODE_IE9)
+        p--;
+    else {
+        len = wcslen(name);
+        assert(len <= 28);
+        memcpy(p, name, len * sizeof(WCHAR));
+        p += len;
+    }
+    memcpy(p, suffix, sizeof(suffix));
+
+    *ret = SysAllocString(buf);
+    return *ret ? S_OK : E_OUTOFMEMORY;
 }
 
 static dispex_data_t *ensure_dispex_info(dispex_static_data_t *desc, compat_mode_t compat_mode)
@@ -1712,7 +1767,7 @@ static HRESULT WINAPI DispatchEx_DeleteMemberByDispID(IDispatchEx *iface, DISPID
         DWORD idx = id - DISPID_DYNPROP_0;
         dynamic_prop_t *prop;
 
-        if(!get_dynamic_data(This) || idx > This->dynamic_data->prop_cnt)
+        if(!get_dynamic_data(This) || idx >= This->dynamic_data->prop_cnt)
             return S_OK;
 
         prop = This->dynamic_data->props + idx;

@@ -19,9 +19,10 @@
 
 #include "gst_private.h"
 
-#include "mfapi.h"
 #include "ks.h"
 #include "ksmedia.h"
+#include "initguid.h"
+#include "mfapi.h"
 
 #include "wine/debug.h"
 
@@ -354,12 +355,6 @@ static HRESULT WINAPI class_factory_CreateInstance(IClassFactory *iface, IUnknow
 static HRESULT WINAPI class_factory_LockServer(IClassFactory *iface, BOOL dolock)
 {
     TRACE("%p, %d.\n", iface, dolock);
-
-    if (dolock)
-        InterlockedIncrement(&object_locks);
-    else
-        InterlockedDecrement(&object_locks);
-
     return S_OK;
 }
 
@@ -568,6 +563,7 @@ static IMFMediaType *mf_media_type_from_wg_format_audio(const struct wg_format *
             IMFMediaType_SetUINT32(type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, format->u.audio.rate);
             IMFMediaType_SetUINT32(type, &MF_MT_AUDIO_NUM_CHANNELS, format->u.audio.channels);
             IMFMediaType_SetUINT32(type, &MF_MT_AUDIO_CHANNEL_MASK, format->u.audio.channel_mask);
+            IMFMediaType_SetUINT32(type, &MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
 
             return type;
         }
@@ -596,6 +592,7 @@ static IMFMediaType *mf_media_type_from_wg_format_video(const struct wg_format *
                     make_uint64(format->u.video.fps_n, format->u.video.fps_d));
             IMFMediaType_SetUINT32(type, &MF_MT_COMPRESSED, FALSE);
             IMFMediaType_SetUINT32(type, &MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+            IMFMediaType_SetUINT32(type, &MF_MT_VIDEO_ROTATION, MFVideoRotationFormat_0);
 
             return type;
         }

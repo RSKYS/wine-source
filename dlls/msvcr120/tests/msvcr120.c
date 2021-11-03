@@ -191,7 +191,7 @@ static int (CDECL *p__clearfp)(void);
 static _locale_t (__cdecl *p_wcreate_locale)(int, const wchar_t *);
 static void (__cdecl *p_free_locale)(_locale_t);
 static unsigned short (__cdecl *p_wctype)(const char*);
-static int (__cdecl *p_vsscanf)(const char*, const char *, __ms_va_list valist);
+static int (__cdecl *p_vsscanf)(const char*, const char *, va_list valist);
 static _Dcomplex* (__cdecl *p__Cbuild)(_Dcomplex*, double, double);
 static double (__cdecl *p_creal)(_Dcomplex);
 static double (__cdecl *p_nexttoward)(double, double);
@@ -601,6 +601,7 @@ static void test__strtof(void)
     const char float3[] = "-3.402823466e+38";
     const char float4[] = "1.7976931348623158e+308";  /* DBL_MAX */
 
+    BOOL is_arabic;
     char *end;
     float f;
 
@@ -638,8 +639,12 @@ static void test__strtof(void)
     f = p_wcstof(L"12.0", NULL);
     ok(f == 12.0, "f = %lf\n", f);
 
-    f = p_wcstof(L"\x0662\x0663", NULL);
-    ok(f == 0, "f = %lf\n", f);
+    f = p_wcstof(L"\x0662\x0663", NULL); /* 23 in Arabic numerals */
+    is_arabic = (PRIMARYLANGID(GetSystemDefaultLangID()) == LANG_ARABIC);
+    todo_wine_if(is_arabic) ok(f == (is_arabic ? 23.0 : 0.0), "f = %lf\n", f);
+
+    f = p_wcstof(L"\x0662\x34\x0663", NULL); /* Arabic + Roman numerals mix */
+    todo_wine_if(is_arabic) ok(f == (is_arabic ? 243.0 : 0.0), "f = %lf\n", f);
 
     if(!p_setlocale(LC_ALL, "Arabic")) {
         win_skip("Arabic locale not available\n");
@@ -649,8 +654,8 @@ static void test__strtof(void)
     f = p_wcstof(L"12.0", NULL);
     ok(f == 12.0, "f = %lf\n", f);
 
-    f = p_wcstof(L"\x0662\x0663", NULL);
-    ok(f == 0, "f = %lf\n", f);
+    f = p_wcstof(L"\x0662\x0663", NULL); /* 23 in Arabic numerals */
+    todo_wine_if(is_arabic) ok(f == (is_arabic ? 23.0 : 0.0), "f = %lf\n", f);
 
     p_setlocale(LC_ALL, "C");
 }
@@ -1109,10 +1114,10 @@ static void test_wctype(void)
 static int WINAPIV _vsscanf_wrapper(const char *buffer, const char *format, ...)
 {
     int ret;
-    __ms_va_list valist;
-    __ms_va_start(valist, format);
+    va_list valist;
+    va_start(valist, format);
     ret = p_vsscanf(buffer, format, valist);
-    __ms_va_end(valist);
+    va_end(valist);
     return ret;
 }
 

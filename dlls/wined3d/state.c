@@ -62,8 +62,10 @@ ULONG CDECL wined3d_blend_state_decref(struct wined3d_blend_state *state)
 
     if (!refcount)
     {
+        wined3d_mutex_lock();
         state->parent_ops->wined3d_object_destroyed(state->parent);
         wined3d_cs_destroy_object(device->cs, wined3d_blend_state_destroy_object, state);
+        wined3d_mutex_unlock();
     }
 
     return refcount;
@@ -136,8 +138,10 @@ ULONG CDECL wined3d_depth_stencil_state_decref(struct wined3d_depth_stencil_stat
 
     if (!refcount)
     {
+        wined3d_mutex_lock();
         state->parent_ops->wined3d_object_destroyed(state->parent);
         wined3d_cs_destroy_object(device->cs, wined3d_depth_stencil_state_destroy_object, state);
+        wined3d_mutex_unlock();
     }
 
     return refcount;
@@ -199,8 +203,10 @@ ULONG CDECL wined3d_rasterizer_state_decref(struct wined3d_rasterizer_state *sta
 
     if (!refcount)
     {
+        wined3d_mutex_lock();
         state->parent_ops->wined3d_object_destroyed(state->parent);
         wined3d_cs_destroy_object(device->cs, wined3d_rasterizer_state_destroy_object, state);
+        wined3d_mutex_unlock();
     }
 
     return refcount;
@@ -278,11 +284,7 @@ static void state_lighting(struct wined3d_context *context, const struct wined3d
 
     /* Lighting is not enabled if transformed vertices are drawn, but lighting
      * does not affect the stream sources, so it is not grouped for
-     * performance reasons. This state reads the decoded vertex declaration,
-     * so if it is dirty don't do anything. The vertex declaration applying
-     * function calls this function for updating. */
-    if (isStateDirty(context, STATE_VDECL))
-        return;
+     * performance reasons. */
 
     if (state->render_states[WINED3D_RS_LIGHTING]
             && !context->stream_info.position_transformed)
@@ -1076,7 +1078,7 @@ static void state_stencil(struct wined3d_context *context, const struct wined3d_
     if (!(func_back = wined3d_gl_compare_func(d->desc.back.func)))
         func_back = GL_ALWAYS;
     mask = d->desc.stencil_read_mask;
-    ref = state->stencil_ref & ((1 << state->fb.depth_stencil->format->stencil_size) - 1);
+    ref = state->stencil_ref & wined3d_mask_from_size(state->fb.depth_stencil->format->stencil_size);
     stencilFail = gl_stencil_op(d->desc.front.fail_op);
     depthFail = gl_stencil_op(d->desc.front.depth_fail_op);
     stencilPass = gl_stencil_op(d->desc.front.pass_op);
@@ -1510,12 +1512,6 @@ static void state_colormat(struct wined3d_context *context, const struct wined3d
     const struct wined3d_gl_info *gl_info = context_gl->gl_info;
     GLenum Parm = 0;
 
-    /* Depends on the decoded vertex declaration to read the existence of
-     * diffuse data. The vertex declaration will call this function if the
-     * fixed function pipeline is used. */
-    if (isStateDirty(&context_gl->c, STATE_VDECL))
-        return;
-
     context_gl->untracked_material_count = 0;
     if ((context_gl->c.stream_info.use_map & (1u << WINED3D_FFP_DIFFUSE))
             && state->render_states[WINED3D_RS_COLORVERTEX])
@@ -1655,9 +1651,6 @@ static void state_linepattern_w(struct wined3d_context *context, const struct wi
 static void state_normalize(struct wined3d_context *context, const struct wined3d_state *state, DWORD state_id)
 {
     const struct wined3d_gl_info *gl_info = wined3d_context_gl(context)->gl_info;
-
-    if (isStateDirty(context, STATE_VDECL))
-        return;
 
     /* Without vertex normals, we set the current normal to 0/0/0 to remove the diffuse factor
      * from the opengl lighting equation, as d3d does. Normalization of 0/0/0 can lead to a division
@@ -3444,10 +3437,9 @@ static void transform_texture(struct wined3d_context *context, const struct wine
     unsigned int mapped_stage = context_gl->tex_unit_map[tex];
     struct wined3d_matrix mat;
 
-    /* Ignore this when a vertex shader is used, or if the streams aren't sorted out yet */
-    if (use_vs(state) || isStateDirty(context, STATE_VDECL))
+    if (use_vs(state))
     {
-        TRACE("Using a vertex shader, or stream sources not sorted out yet, skipping\n");
+        TRACE("Using a vertex shader, skipping.\n");
         return;
     }
 
@@ -4013,8 +4005,6 @@ static void transform_projection(struct wined3d_context *context, const struct w
 
 static void streamsrc(struct wined3d_context *context, const struct wined3d_state *state, DWORD state_id)
 {
-    if (isStateDirty(context, STATE_VDECL))
-        return;
     wined3d_context_gl_update_stream_sources(wined3d_context_gl(context), state);
 }
 
@@ -4468,7 +4458,7 @@ static void indexbuffer(struct wined3d_context *context, const struct wined3d_st
 
     buffer_gl = wined3d_buffer_gl(state->index_buffer);
     GL_EXTCALL(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer_gl->bo.id));
-    buffer_gl->bo_user.valid = true;
+    buffer_gl->b.bo_user.valid = true;
 }
 
 static void depth_clip(const struct wined3d_rasterizer_state *r, const struct wined3d_gl_info *gl_info)
@@ -4574,15 +4564,18 @@ static void state_cb(struct wined3d_context *context, const struct wined3d_state
     wined3d_gl_limits_get_uniform_block_range(&gl_info->limits, shader_type, &base, &count);
     for (i = 0; i < count; ++i)
     {
-        if (!state->cb[shader_type][i])
+        const struct wined3d_constant_buffer_state *buffer_state = &state->cb[shader_type][i];
+
+        if (!buffer_state->buffer)
         {
             GL_EXTCALL(glBindBufferBase(GL_UNIFORM_BUFFER, base + i, 0));
             continue;
         }
 
-        buffer_gl = wined3d_buffer_gl(state->cb[shader_type][i]);
-        GL_EXTCALL(glBindBufferBase(GL_UNIFORM_BUFFER, base + i, buffer_gl->bo.id));
-        buffer_gl->bo_user.valid = true;
+        buffer_gl = wined3d_buffer_gl(buffer_state->buffer);
+        GL_EXTCALL(glBindBufferRange(GL_UNIFORM_BUFFER, base + i, buffer_gl->bo.id,
+                buffer_state->offset, buffer_state->size));
+        buffer_gl->b.bo_user.valid = true;
     }
     checkGLcall("bind constant buffers");
 }
@@ -4656,7 +4649,7 @@ static void state_so(struct wined3d_context *context, const struct wined3d_state
         }
         size = buffer_gl->b.resource.size - offset;
         GL_EXTCALL(glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, i, buffer_gl->bo.id, offset, size));
-        buffer_gl->bo_user.valid = true;
+        buffer_gl->b.bo_user.valid = true;
     }
     checkGLcall("bind transform feedback buffers");
 }

@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 
 #define COBJMACROS
 
@@ -708,7 +707,7 @@ static WCHAR *find_wine_gecko_reg(void)
     if(res != ERROR_SUCCESS)
         return NULL;
 
-    size = ARRAY_SIZE(buffer);
+    size = sizeof(buffer);
     res = RegQueryValueExW(hkey, L"GeckoPath", NULL, &type, (LPBYTE)buffer, &size);
     RegCloseKey(hkey);
     if(res != ERROR_SUCCESS || type != REG_SZ)

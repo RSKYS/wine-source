@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 #include <math.h>
 
 #define COBJMACROS
@@ -47,32 +46,119 @@ typedef struct {
     HRESULT (*constructor)(HTMLDocumentNode*,nsIDOMElement*,HTMLElement**);
 } tag_desc_t;
 
+static HRESULT HTMLElement_Ctor(HTMLDocumentNode*,nsIDOMElement*,HTMLElement**);
+
 static const tag_desc_t tag_descs[] = {
-    {L"A",         HTMLAnchorElement_Create},
-    {L"AREA",      HTMLAreaElement_Create},
-    {L"BODY",      HTMLBodyElement_Create},
-    {L"BUTTON",    HTMLButtonElement_Create},
-    {L"EMBED",     HTMLEmbedElement_Create},
-    {L"FORM",      HTMLFormElement_Create},
-    {L"FRAME",     HTMLFrameElement_Create},
-    {L"HEAD",      HTMLHeadElement_Create},
-    {L"HTML",      HTMLHtmlElement_Create},
-    {L"IFRAME",    HTMLIFrame_Create},
-    {L"IMG",       HTMLImgElement_Create},
-    {L"INPUT",     HTMLInputElement_Create},
-    {L"LABEL",     HTMLLabelElement_Create},
-    {L"LINK",      HTMLLinkElement_Create},
-    {L"META",      HTMLMetaElement_Create},
-    {L"OBJECT",    HTMLObjectElement_Create},
-    {L"OPTION",    HTMLOptionElement_Create},
-    {L"SCRIPT",    HTMLScriptElement_Create},
-    {L"SELECT",    HTMLSelectElement_Create},
-    {L"STYLE",     HTMLStyleElement_Create},
-    {L"TABLE",     HTMLTable_Create},
-    {L"TD",        HTMLTableCell_Create},
-    {L"TEXTAREA",  HTMLTextAreaElement_Create},
-    {L"TITLE",     HTMLTitleElement_Create},
-    {L"TR",        HTMLTableRow_Create}
+    {L"A",              HTMLAnchorElement_Create},
+    {L"ABBR",           HTMLElement_Ctor},
+    {L"ACRONYM",        HTMLElement_Ctor},
+    {L"ADDRESS",        HTMLElement_Ctor},
+    {L"APPLET",         HTMLElement_Ctor},
+    {L"AREA",           HTMLAreaElement_Create},
+    {L"ARTICLE",        HTMLElement_Ctor},
+    {L"ASIDE",          HTMLElement_Ctor},
+    {L"AUDIO",          HTMLElement_Ctor},
+    {L"B",              HTMLElement_Ctor},
+    {L"BASE",           HTMLElement_Ctor},
+    {L"BASEFONT",       HTMLElement_Ctor},
+    {L"BDO",            HTMLElement_Ctor},
+    {L"BIG",            HTMLElement_Ctor},
+    {L"BLOCKQUOTE",     HTMLElement_Ctor},
+    {L"BODY",           HTMLBodyElement_Create},
+    {L"BR",             HTMLElement_Ctor},
+    {L"BUTTON",         HTMLButtonElement_Create},
+    {L"CANVAS",         HTMLElement_Ctor},
+    {L"CAPTION",        HTMLElement_Ctor},
+    {L"CENTER",         HTMLElement_Ctor},
+    {L"CITE",           HTMLElement_Ctor},
+    {L"CODE",           HTMLElement_Ctor},
+    {L"COL",            HTMLElement_Ctor},
+    {L"COLGROUP",       HTMLElement_Ctor},
+    {L"DATALIST",       HTMLElement_Ctor},
+    {L"DD",             HTMLElement_Ctor},
+    {L"DEL",            HTMLElement_Ctor},
+    {L"DFN",            HTMLElement_Ctor},
+    {L"DIR",            HTMLElement_Ctor},
+    {L"DIV",            HTMLElement_Ctor},
+    {L"DL",             HTMLElement_Ctor},
+    {L"DT",             HTMLElement_Ctor},
+    {L"EM",             HTMLElement_Ctor},
+    {L"EMBED",          HTMLEmbedElement_Create},
+    {L"FIELDSET",       HTMLElement_Ctor},
+    {L"FIGCAPTION",     HTMLElement_Ctor},
+    {L"FIGURE",         HTMLElement_Ctor},
+    {L"FONT",           HTMLElement_Ctor},
+    {L"FOOTER",         HTMLElement_Ctor},
+    {L"FORM",           HTMLFormElement_Create},
+    {L"FRAME",          HTMLFrameElement_Create},
+    {L"FRAMESET",       HTMLElement_Ctor},
+    {L"H1",             HTMLElement_Ctor},
+    {L"H2",             HTMLElement_Ctor},
+    {L"H3",             HTMLElement_Ctor},
+    {L"H4",             HTMLElement_Ctor},
+    {L"H5",             HTMLElement_Ctor},
+    {L"H6",             HTMLElement_Ctor},
+    {L"HEAD",           HTMLHeadElement_Create},
+    {L"HEADER",         HTMLElement_Ctor},
+    {L"HR",             HTMLElement_Ctor},
+    {L"HTML",           HTMLHtmlElement_Create},
+    {L"I",              HTMLElement_Ctor},
+    {L"IFRAME",         HTMLIFrame_Create},
+    {L"IMG",            HTMLImgElement_Create},
+    {L"INPUT",          HTMLInputElement_Create},
+    {L"INS",            HTMLElement_Ctor},
+    {L"KBD",            HTMLElement_Ctor},
+    {L"LABEL",          HTMLLabelElement_Create},
+    {L"LEGEND",         HTMLElement_Ctor},
+    {L"LI",             HTMLElement_Ctor},
+    {L"LINK",           HTMLLinkElement_Create},
+    {L"MAP",            HTMLElement_Ctor},
+    {L"MARK",           HTMLElement_Ctor},
+    {L"META",           HTMLMetaElement_Create},
+    {L"NAV",            HTMLElement_Ctor},
+    {L"NOFRAMES",       HTMLElement_Ctor},
+    {L"NOSCRIPT",       HTMLElement_Ctor},
+    {L"OBJECT",         HTMLObjectElement_Create},
+    {L"OL",             HTMLElement_Ctor},
+    {L"OPTGROUP",       HTMLElement_Ctor},
+    {L"OPTION",         HTMLOptionElement_Create},
+    {L"P",              HTMLElement_Ctor},
+    {L"PARAM",          HTMLElement_Ctor},
+    {L"PRE",            HTMLElement_Ctor},
+    {L"PROGRESS",       HTMLElement_Ctor},
+    {L"Q",              HTMLElement_Ctor},
+    {L"RP",             HTMLElement_Ctor},
+    {L"RT",             HTMLElement_Ctor},
+    {L"RUBY",           HTMLElement_Ctor},
+    {L"S",              HTMLElement_Ctor},
+    {L"SAMP",           HTMLElement_Ctor},
+    {L"SCRIPT",         HTMLScriptElement_Create},
+    {L"SECTION",        HTMLElement_Ctor},
+    {L"SELECT",         HTMLSelectElement_Create},
+    {L"SMALL",          HTMLElement_Ctor},
+    {L"SOURCE",         HTMLElement_Ctor},
+    {L"SPAN",           HTMLElement_Ctor},
+    {L"STRIKE",         HTMLElement_Ctor},
+    {L"STRONG",         HTMLElement_Ctor},
+    {L"STYLE",          HTMLStyleElement_Create},
+    {L"SUB",            HTMLElement_Ctor},
+    {L"SUP",            HTMLElement_Ctor},
+    {L"TABLE",          HTMLTable_Create},
+    {L"TBODY",          HTMLElement_Ctor},
+    {L"TD",             HTMLTableCell_Create},
+    {L"TEXTAREA",       HTMLTextAreaElement_Create},
+    {L"TFOOT",          HTMLElement_Ctor},
+    {L"TH",             HTMLElement_Ctor},
+    {L"THEAD",          HTMLElement_Ctor},
+    {L"TITLE",          HTMLTitleElement_Create},
+    {L"TR",             HTMLTableRow_Create},
+    {L"TRACK",          HTMLElement_Ctor},
+    {L"TT",             HTMLElement_Ctor},
+    {L"U",              HTMLElement_Ctor},
+    {L"UL",             HTMLElement_Ctor},
+    {L"VAR",            HTMLElement_Ctor},
+    {L"VIDEO",          HTMLElement_Ctor},
+    {L"WBR",            HTMLElement_Ctor}
 };
 
 static const tag_desc_t *get_tag_desc(const WCHAR *tag_name)
@@ -528,6 +614,7 @@ static const tid_t HTMLRect_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLRect_dispex = {
+    L"ClientRect",
     NULL,
     IHTMLRect_tid,
     HTMLRect_iface_tids
@@ -789,6 +876,7 @@ static const tid_t HTMLRectCollection_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLRectCollection_dispex = {
+    L"ClientRectList",
     &HTMLRectCollection_dispex_vtbl,
     IHTMLRectCollection_tid,
     HTMLRectCollection_iface_tids
@@ -2113,8 +2201,21 @@ static HRESULT WINAPI HTMLElement_get_ondragstart(IHTMLElement *iface, VARIANT *
 static HRESULT WINAPI HTMLElement_toString(IHTMLElement *iface, BSTR *String)
 {
     HTMLElement *This = impl_from_IHTMLElement(iface);
-    FIXME("(%p)->(%p)\n", This, String);
-    return E_NOTIMPL;
+    HRESULT hres;
+    VARIANT var;
+
+    TRACE("(%p)->(%p)\n", This, String);
+
+    if(!String)
+        return E_INVALIDARG;
+
+    hres = IDispatchEx_InvokeEx(&This->node.event_target.dispex.IDispatchEx_iface, DISPID_VALUE,
+                                LOCALE_SYSTEM_DEFAULT, DISPATCH_PROPERTYGET, NULL, &var, NULL, NULL);
+    if(SUCCEEDED(hres)) {
+        assert(V_VT(&var) == VT_BSTR);
+        *String = V_BSTR(&var);
+    }
+    return hres;
 }
 
 static HRESULT WINAPI HTMLElement_put_onbeforeupdate(IHTMLElement *iface, VARIANT v)
@@ -6066,6 +6167,8 @@ HRESULT HTMLElement_QI(HTMLDOMNode *iface, REFIID riid, void **ppv)
         *ppv = &This->IProvideMultipleClassInfo_iface;
     }else if(IsEqualGUID(&IID_IProvideMultipleClassInfo, riid)) {
         *ppv = &This->IProvideMultipleClassInfo_iface;
+    }else if(IsEqualGUID(&IID_IWineHTMLElementPrivate, riid)) {
+        *ppv = &This->IWineHTMLElementPrivate_iface;
     }else {
         return HTMLDOMNode_QI(&This->node, riid, ppv);
     }
@@ -6367,7 +6470,10 @@ void HTMLElement_init_dispex_info(dispex_data_t *info, compat_mode_t mode)
     }
 
     if(mode >= COMPAT_MODE_IE10)
+    {
         dispex_info_add_interface(info, IHTMLElement7_tid, NULL);
+        dispex_info_add_interface(info, IWineHTMLElementPrivate_tid, NULL);
+    }
 }
 
 static const tid_t HTMLElement_iface_tids[] = {
@@ -6391,7 +6497,400 @@ static event_target_vtbl_t HTMLElement_event_target_vtbl = {
     HTMLElement_set_current_event
 };
 
+struct token_list {
+    DispatchEx dispex;
+    IWineDOMTokenList IWineDOMTokenList_iface;
+    IHTMLElement *element;
+
+    LONG ref;
+};
+
+static inline struct token_list *impl_from_IWineDOMTokenList(IWineDOMTokenList *iface)
+{
+    return CONTAINING_RECORD(iface, struct token_list, IWineDOMTokenList_iface);
+}
+
+static HRESULT WINAPI token_list_QueryInterface(IWineDOMTokenList *iface, REFIID riid, void **ppv)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+
+    TRACE("(%p)->(%s %p)\n", token_list, debugstr_mshtml_guid(riid), ppv);
+
+    if(IsEqualGUID(&IID_IUnknown, riid)) {
+        *ppv = &token_list->IWineDOMTokenList_iface;
+    }else if(IsEqualGUID(&IID_IWineDOMTokenList, riid)) {
+        *ppv = &token_list->IWineDOMTokenList_iface;
+    }else if(dispex_query_interface(&token_list->dispex, riid, ppv)) {
+        return *ppv ? S_OK : E_NOINTERFACE;
+    }else {
+        WARN("(%p)->(%s %p)\n", token_list, debugstr_mshtml_guid(riid), ppv);
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+
+    IUnknown_AddRef((IUnknown*)*ppv);
+    return S_OK;
+}
+
+static ULONG WINAPI token_list_AddRef(IWineDOMTokenList *iface)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+    LONG ref = InterlockedIncrement(&token_list->ref);
+
+    TRACE("(%p) ref=%d\n", token_list, ref);
+
+    return ref;
+}
+
+static ULONG WINAPI token_list_Release(IWineDOMTokenList *iface)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+    LONG ref = InterlockedDecrement(&token_list->ref);
+
+    TRACE("(%p) ref=%d\n", token_list, ref);
+
+    if(!ref) {
+        IHTMLElement_Release(token_list->element);
+        release_dispex(&token_list->dispex);
+        heap_free(token_list);
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI token_list_GetTypeInfoCount(IWineDOMTokenList *iface, UINT *pctinfo)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+    FIXME("(%p)->(%p)\n", token_list, pctinfo);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI token_list_GetTypeInfo(IWineDOMTokenList *iface, UINT iTInfo,
+        LCID lcid, ITypeInfo **ppTInfo)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+
+    return IDispatchEx_GetTypeInfo(&token_list->dispex.IDispatchEx_iface, iTInfo, lcid, ppTInfo);
+}
+
+static HRESULT WINAPI token_list_GetIDsOfNames(IWineDOMTokenList *iface, REFIID riid,
+        LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+
+    return IDispatchEx_GetIDsOfNames(&token_list->dispex.IDispatchEx_iface, riid, rgszNames, cNames,
+            lcid, rgDispId);
+}
+
+static HRESULT WINAPI token_list_Invoke(IWineDOMTokenList *iface, DISPID dispIdMember,
+        REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
+        VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+
+    return IDispatchEx_Invoke(&token_list->dispex.IDispatchEx_iface, dispIdMember, riid, lcid, wFlags,
+            pDispParams, pVarResult, pExcepInfo, puArgErr);
+}
+
+static const WCHAR *find_token(const WCHAR *list, const WCHAR *token, unsigned int token_len)
+{
+    const WCHAR *ptr, *next;
+
+    if (!list || !token)
+        return NULL;
+
+    ptr = list;
+    while (*ptr)
+    {
+        while (iswspace(*ptr))
+            ++ptr;
+        if (!*ptr)
+            break;
+        next = ptr + 1;
+        while (*next && !iswspace(*next))
+            ++next;
+
+        if (next - ptr == token_len && !wcsncmp(ptr, token, token_len))
+            return ptr;
+        ptr = next;
+    }
+    return NULL;
+}
+
+static HRESULT token_list_add_remove(IWineDOMTokenList *iface, BSTR token, BOOL remove)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+    unsigned int i, len, old_len, new_len;
+    const WCHAR *old_pos;
+    BSTR new, old;
+    HRESULT hr;
+
+    TRACE("iface %p, token %s, remove %#x.\n", iface, debugstr_w(token), remove);
+
+    len = token ? lstrlenW(token) : 0;
+    if (!len)
+    {
+        WARN("Empty token.\n");
+        return E_INVALIDARG;
+    }
+
+    for (i = 0; i < len; ++i)
+        if (iswspace(token[i]))
+        {
+            WARN("Token has spaces.\n");
+            return E_INVALIDARG;
+        }
+
+    if (FAILED(hr = IHTMLElement_get_className(token_list->element, &old)))
+        return hr;
+
+    TRACE("old %s.\n", debugstr_w(old));
+
+    if (((old_pos = find_token(old, token, len)) && !remove)
+            || (!old_pos && remove))
+    {
+        SysFreeString(old);
+        return S_OK;
+    }
+
+    old_len = old ? lstrlenW(old) : 0;
+    if (remove)
+    {
+        while (old_pos != old && iswspace(old_pos[-1]))
+        {
+            --old_pos;
+            ++len;
+        }
+        while (iswspace(old_pos[len]))
+            ++len;
+
+        if (old_pos != old && old_pos[len])
+            --len;
+
+        new_len = old_len - len;
+    }
+    else
+    {
+        new_len = old_len + len + !!old_len;
+    }
+
+    if (!(new = SysAllocStringLen(NULL, new_len)))
+    {
+        ERR("No memory.\n");
+        SysFreeString(old);
+        return E_OUTOFMEMORY;
+    }
+
+    if (remove)
+    {
+        memcpy(new, old, sizeof(*new) * (old_pos - old));
+        memcpy(new + (old_pos - old), old_pos + len, sizeof(*new) * (old_len - (old_pos - old) - len + 1));
+    }
+    else
+    {
+        memcpy(new, old, sizeof(*new) * old_len);
+        if (old_len)
+            new[old_len++]= L' ';
+        memcpy(new + old_len, token, sizeof(*new) * len);
+        new[old_len + len] = 0;
+    }
+
+    SysFreeString(old);
+
+    TRACE("new %s.\n", debugstr_w(new));
+
+    hr = IHTMLElement_put_className(token_list->element, new);
+    SysFreeString(new);
+    return hr;
+}
+
+static HRESULT WINAPI token_list_add(IWineDOMTokenList *iface, BSTR token)
+{
+    return token_list_add_remove(iface, token, FALSE);
+}
+
+static HRESULT WINAPI token_list_remove(IWineDOMTokenList *iface, BSTR token)
+{
+    return token_list_add_remove(iface, token, TRUE);
+}
+
+static HRESULT WINAPI token_list_toString(IWineDOMTokenList *iface, BSTR *String)
+{
+    struct token_list *token_list = impl_from_IWineDOMTokenList(iface);
+
+    TRACE("(%p)->(%p)\n", token_list, String);
+
+    return IHTMLElement_get_className(token_list->element, String);
+}
+
+static const IWineDOMTokenListVtbl WineDOMTokenListVtbl = {
+    token_list_QueryInterface,
+    token_list_AddRef,
+    token_list_Release,
+    token_list_GetTypeInfoCount,
+    token_list_GetTypeInfo,
+    token_list_GetIDsOfNames,
+    token_list_Invoke,
+    token_list_add,
+    token_list_remove,
+    token_list_toString
+};
+
+static inline struct token_list *token_list_from_DispatchEx(DispatchEx *iface)
+{
+    return CONTAINING_RECORD(iface, struct token_list, dispex);
+}
+
+static HRESULT token_list_value(DispatchEx *dispex, LCID lcid, WORD flags, DISPPARAMS *params,
+        VARIANT *res, EXCEPINFO *ei, IServiceProvider *caller)
+{
+    struct token_list *token_list = token_list_from_DispatchEx(dispex);
+    HRESULT hres;
+
+    switch(flags) {
+    case DISPATCH_PROPERTYGET:
+        hres = IHTMLElement_get_className(token_list->element, &V_BSTR(res));
+        if(FAILED(hres))
+            return hres;
+        V_VT(res) = VT_BSTR;
+        break;
+    default:
+        FIXME("Unimplemented flags %x\n", flags);
+        return E_NOTIMPL;
+    }
+
+    return S_OK;
+}
+
+static const dispex_static_data_vtbl_t token_list_dispex_vtbl = {
+    token_list_value
+};
+
+static const tid_t token_list_iface_tids[] = {
+    IWineDOMTokenList_tid,
+    0
+};
+static dispex_static_data_t token_list_dispex = {
+    L"DOMTokenList",
+    &token_list_dispex_vtbl,
+    IWineDOMTokenList_tid,
+    token_list_iface_tids
+};
+
+static HRESULT create_token_list(compat_mode_t compat_mode, IHTMLElement *element, IWineDOMTokenList **ret)
+{
+    struct token_list *obj;
+
+    obj = heap_alloc_zero(sizeof(*obj));
+    if(!obj)
+    {
+        ERR("No memory.\n");
+        return E_OUTOFMEMORY;
+    }
+
+    obj->IWineDOMTokenList_iface.lpVtbl = &WineDOMTokenListVtbl;
+    obj->ref = 1;
+    init_dispatch(&obj->dispex, (IUnknown*)&obj->IWineDOMTokenList_iface, &token_list_dispex, compat_mode);
+    IHTMLElement_AddRef(element);
+    obj->element = element;
+
+    *ret = &obj->IWineDOMTokenList_iface;
+    return S_OK;
+}
+
+static inline HTMLElement *impl_from_IWineHTMLElementPrivateVtbl(IWineHTMLElementPrivate *iface)
+{
+    return CONTAINING_RECORD(iface, HTMLElement, IWineHTMLElementPrivate_iface);
+}
+
+static HRESULT WINAPI htmlelement_private_QueryInterface(IWineHTMLElementPrivate *iface,
+        REFIID riid, void **ppv)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return IHTMLElement_QueryInterface(&This->IHTMLElement_iface, riid, ppv);
+}
+
+static ULONG WINAPI htmlelement_private_AddRef(IWineHTMLElementPrivate *iface)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return IHTMLElement_AddRef(&This->IHTMLElement_iface);
+}
+
+static ULONG WINAPI htmlelement_private_Release(IWineHTMLElementPrivate *iface)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return IHTMLElement_Release(&This->IHTMLElement_iface);
+}
+
+static HRESULT WINAPI htmlelement_private_GetTypeInfoCount(IWineHTMLElementPrivate *iface, UINT *pctinfo)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return HTMLElement_GetTypeInfoCount(&This->IHTMLElement_iface, pctinfo);
+}
+
+static HRESULT WINAPI htmlelement_private_GetTypeInfo(IWineHTMLElementPrivate *iface, UINT iTInfo,
+                                              LCID lcid, ITypeInfo **ppTInfo)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return HTMLElement_GetTypeInfo(&This->IHTMLElement_iface, iTInfo, lcid, ppTInfo);
+}
+
+static HRESULT WINAPI htmlelement_private_GetIDsOfNames(IWineHTMLElementPrivate *iface, REFIID riid,
+                                                LPOLESTR *rgszNames, UINT cNames,
+                                                LCID lcid, DISPID *rgDispId)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return HTMLElement_GetIDsOfNames(&This->IHTMLElement_iface, riid, rgszNames, cNames, lcid,
+            rgDispId);
+}
+
+static HRESULT WINAPI htmlelement_private_Invoke(IWineHTMLElementPrivate *iface, DISPID dispIdMember,
+                            REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
+                            VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    return HTMLElement_Invoke(&This->IHTMLElement_iface, dispIdMember, riid, lcid, wFlags,
+            pDispParams, pVarResult, pExcepInfo, puArgErr);
+}
+
+static HRESULT WINAPI htmlelement_private_get_classList(IWineHTMLElementPrivate *iface, IDispatch **class_list)
+{
+    HTMLElement *This = impl_from_IWineHTMLElementPrivateVtbl(iface);
+
+    TRACE("iface %p, class_list %p.\n", iface, class_list);
+
+    return create_token_list(dispex_compat_mode(&This->node.event_target.dispex), &This->IHTMLElement_iface,
+            (IWineDOMTokenList **)class_list);
+}
+
+static const IWineHTMLElementPrivateVtbl WineHTMLElementPrivateVtbl = {
+    htmlelement_private_QueryInterface,
+    htmlelement_private_AddRef,
+    htmlelement_private_Release,
+    htmlelement_private_GetTypeInfoCount,
+    htmlelement_private_GetTypeInfo,
+    htmlelement_private_GetIDsOfNames,
+    htmlelement_private_Invoke,
+    htmlelement_private_get_classList,
+};
+
 static dispex_static_data_t HTMLElement_dispex = {
+    L"HTMLElement",
+    &HTMLElement_event_target_vtbl.dispex_vtbl,
+    DispHTMLUnknownElement_tid,
+    HTMLElement_iface_tids,
+    HTMLElement_init_dispex_info
+};
+
+static dispex_static_data_t HTMLUnknownElement_dispex = {
+    L"HTMLUnknownElement",
     &HTMLElement_event_target_vtbl.dispex_vtbl,
     DispHTMLUnknownElement_tid,
     HTMLElement_iface_tids,
@@ -6410,6 +6909,7 @@ void HTMLElement_Init(HTMLElement *This, HTMLDocumentNode *doc, nsIDOMElement *n
     This->IElementSelector_iface.lpVtbl = &ElementSelectorVtbl;
     This->IElementTraversal_iface.lpVtbl = &ElementTraversalVtbl;
     This->IProvideMultipleClassInfo_iface.lpVtbl = &ProvideMultipleClassInfoVtbl;
+    This->IWineHTMLElementPrivate_iface.lpVtbl = &WineHTMLElementPrivateVtbl;
 
     if(dispex_data && !dispex_data->vtbl)
         dispex_data->vtbl = &HTMLElement_event_target_vtbl.dispex_vtbl;
@@ -6418,7 +6918,7 @@ void HTMLElement_Init(HTMLElement *This, HTMLDocumentNode *doc, nsIDOMElement *n
         nsIDOMHTMLElement *html_element;
         nsresult nsres;
 
-        HTMLDOMNode_Init(doc, &This->node, (nsIDOMNode*)nselem, dispex_data ? dispex_data : &HTMLElement_dispex);
+        HTMLDOMNode_Init(doc, &This->node, (nsIDOMNode*)nselem, dispex_data ? dispex_data : &HTMLUnknownElement_dispex);
 
         /* No AddRef, share reference with HTMLDOMNode */
         assert((nsIDOMNode*)nselem == This->node.nsnode);
@@ -6473,7 +6973,7 @@ HRESULT HTMLElement_Create(HTMLDocumentNode *doc, nsIDOMNode *nsnode, BOOL use_g
             elem = heap_alloc_zero(sizeof(HTMLElement));
             if(elem) {
                 elem->node.vtbl = &HTMLElementImplVtbl;
-                HTMLElement_Init(elem, doc, nselem, &HTMLElement_dispex);
+                HTMLElement_Init(elem, doc, nselem, &HTMLUnknownElement_dispex);
                 hres = S_OK;
             }else {
                 hres = E_OUTOFMEMORY;
@@ -6489,6 +6989,21 @@ HRESULT HTMLElement_Create(HTMLDocumentNode *doc, nsIDOMNode *nsnode, BOOL use_g
         return hres;
 
     *ret = elem;
+    return S_OK;
+}
+
+static HRESULT HTMLElement_Ctor(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)
+{
+    HTMLElement *ret;
+
+    ret = heap_alloc_zero(sizeof(*ret));
+    if(!ret)
+        return E_OUTOFMEMORY;
+
+    ret->node.vtbl = &HTMLElementImplVtbl;
+    HTMLElement_Init(ret, doc, nselem, &HTMLElement_dispex);
+
+    *elem = ret;
     return S_OK;
 }
 
@@ -6665,6 +7180,7 @@ static const tid_t HTMLFiltersCollection_iface_tids[] = {
     0
 };
 static dispex_static_data_t HTMLFiltersCollection_dispex = {
+    L"FiltersCollection",
     &HTMLFiltersCollection_dispex_vtbl,
     IHTMLFiltersCollection_tid,
     HTMLFiltersCollection_iface_tids
@@ -6681,7 +7197,7 @@ static HRESULT create_filters_collection(compat_mode_t compat_mode, IHTMLFilters
     collection->ref = 1;
 
     init_dispatch(&collection->dispex, (IUnknown*)&collection->IHTMLFiltersCollection_iface,
-                  &HTMLFiltersCollection_dispex, compat_mode);
+                  &HTMLFiltersCollection_dispex, min(compat_mode, COMPAT_MODE_IE8));
 
     *ret = &collection->IHTMLFiltersCollection_iface;
     return S_OK;
@@ -6858,7 +7374,7 @@ static inline HRESULT get_domattr(HTMLAttributeCollection *This, DISPID id, LONG
             return E_UNEXPECTED;
         }
 
-        hres = HTMLDOMAttribute_Create(NULL, This->elem, id, attr);
+        hres = HTMLDOMAttribute_Create(NULL, This->elem, id, dispex_compat_mode(&This->elem->node.event_target.dispex), attr);
         if(FAILED(hres))
             return hres;
     }
@@ -7238,6 +7754,7 @@ static const tid_t HTMLAttributeCollection_iface_tids[] = {
 };
 
 static dispex_static_data_t HTMLAttributeCollection_dispex = {
+    L"NamedNodeMap",
     &HTMLAttributeCollection_dispex_vtbl,
     DispHTMLAttributeCollection_tid,
     HTMLAttributeCollection_iface_tids

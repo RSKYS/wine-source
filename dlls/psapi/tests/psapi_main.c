@@ -161,7 +161,6 @@ static void test_EnumProcessModules(void)
 
         ret = GetModuleFileNameExA(pi.hProcess, hMod, name, sizeof(name));
         ok(ret, "got error %u\n", GetLastError());
-todo_wine
         ok(!strcmp(name, buffer), "got %s\n", name);
 
         ret = GetModuleInformation(pi.hProcess, hMod, &info, sizeof(info));
@@ -371,7 +370,7 @@ static BOOL nt_get_mapped_file_name(HANDLE process, LPVOID addr, LPWSTR name, DW
     buf = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buf_len);
 
     ret_len = 0xdeadbeef;
-    status = pNtQueryVirtualMemory(process, addr, MemorySectionName, buf, buf_len, &ret_len);
+    status = pNtQueryVirtualMemory(process, addr, MemoryMappedFilenameInformation, buf, buf_len, &ret_len);
     ok(!status, "NtQueryVirtualMemory error %x\n", status);
 
     section_name = (MEMORY_SECTION_NAME *)buf;

@@ -217,8 +217,8 @@ int WINAPI SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL bRedraw )
     {
         UINT swp_flags = SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED|SWP_NOCLIENTSIZE|SWP_NOCLIENTMOVE;
         if (!bRedraw) swp_flags |= SWP_NOREDRAW;
-        SetWindowPos( hwnd, 0, 0, 0, 0, 0, swp_flags );
         USER_Driver->pSetWindowRgn( hwnd, hrgn, bRedraw );
+        SetWindowPos( hwnd, 0, 0, 0, 0, 0, swp_flags );
         if (hrgn) DeleteObject( hrgn );
     }
     return ret;
@@ -676,6 +676,33 @@ BOOL WINAPI MoveWindow( HWND hwnd, INT x, INT y, INT cx, INT cy,
 
 
 /*******************************************************************
+ *           get_work_rect
+ *
+ * Get the work area that a maximized window can cover, depending on style.
+ */
+static BOOL get_work_rect( HWND hwnd, RECT *rect )
+{
+    HMONITOR monitor = MonitorFromWindow( hwnd, MONITOR_DEFAULTTOPRIMARY );
+    MONITORINFO mon_info;
+    DWORD style;
+
+    if (!monitor) return FALSE;
+
+    mon_info.cbSize = sizeof(mon_info);
+    GetMonitorInfoW( monitor, &mon_info );
+    *rect = mon_info.rcMonitor;
+
+    style = GetWindowLongW( hwnd, GWL_STYLE );
+    if (style & WS_MAXIMIZEBOX)
+    {
+        if ((style & WS_CAPTION) == WS_CAPTION || !(style & (WS_CHILD | WS_POPUP)))
+            *rect = mon_info.rcWork;
+    }
+    return TRUE;
+}
+
+
+/*******************************************************************
  *           WINPOS_GetMinMaxInfo
  *
  * Get the minimized and maximized information for a window.
@@ -683,8 +710,8 @@ BOOL WINAPI MoveWindow( HWND hwnd, INT x, INT y, INT cx, INT cy,
 MINMAXINFO WINPOS_GetMinMaxInfo( HWND hwnd )
 {
     DPI_AWARENESS_CONTEXT context;
+    RECT rc_work, rc_primary;
     MINMAXINFO MinMax;
-    HMONITOR monitor;
     INT xinc, yinc;
     LONG style = GetWindowLongW( hwnd, GWL_STYLE );
     LONG adjustedStyle;
@@ -738,24 +765,11 @@ MINMAXINFO WINPOS_GetMinMaxInfo( HWND hwnd )
 
     /* if the app didn't change the values, adapt them for the current monitor */
 
-    if ((monitor = MonitorFromWindow( hwnd, MONITOR_DEFAULTTOPRIMARY )))
+    if (get_work_rect( hwnd, &rc_work ))
     {
-        RECT rc_work;
-        MONITORINFO mon_info;
-
-        mon_info.cbSize = sizeof(mon_info);
-        GetMonitorInfoW( monitor, &mon_info );
-
-        rc_work = mon_info.rcMonitor;
-
-        if (style & WS_MAXIMIZEBOX)
-        {
-            if ((style & WS_CAPTION) == WS_CAPTION || !(style & (WS_CHILD | WS_POPUP)))
-                rc_work = mon_info.rcWork;
-        }
-
-        if (MinMax.ptMaxSize.x == GetSystemMetrics(SM_CXSCREEN) + 2 * xinc &&
-            MinMax.ptMaxSize.y == GetSystemMetrics(SM_CYSCREEN) + 2 * yinc)
+        rc_primary = get_primary_monitor_rect();
+        if (MinMax.ptMaxSize.x == (rc_primary.right - rc_primary.left) + 2 * xinc &&
+            MinMax.ptMaxSize.y == (rc_primary.bottom - rc_primary.top) + 2 * yinc)
         {
             MinMax.ptMaxSize.x = (rc_work.right - rc_work.left) + 2 * xinc;
             MinMax.ptMaxSize.y = (rc_work.bottom - rc_work.top) + 2 * yinc;
@@ -1044,7 +1058,7 @@ static BOOL show_window( HWND hwnd, INT cmd )
     BOOL wasVisible = (style & WS_VISIBLE) != 0;
     BOOL showFlag = TRUE;
     RECT newPos = {0, 0, 0, 0};
-    UINT swp = 0;
+    UINT new_swp, swp = 0;
 
     TRACE("hwnd=%p, cmd=%d, wasVisible %d\n", hwnd, cmd, wasVisible);
 
@@ -1117,7 +1131,18 @@ static BOOL show_window( HWND hwnd, INT cmd )
         if (!IsWindow( hwnd )) goto done;
     }
 
-    swp = USER_Driver->pShowWindow( hwnd, cmd, &newPos, swp );
+    if (IsRectEmpty( &newPos )) new_swp = swp;
+    else if ((new_swp = USER_Driver->pShowWindow( hwnd, cmd, &newPos, swp )) == ~0)
+    {
+        if (GetWindowLongW( hwnd, GWL_STYLE ) & WS_CHILD) new_swp = swp;
+        else if (IsIconic( hwnd ) && (newPos.left != -32000 || newPos.top != -32000))
+        {
+            OffsetRect( &newPos, -32000 - newPos.left, -32000 - newPos.top );
+            new_swp = swp & ~(SWP_NOMOVE | SWP_NOCLIENTMOVE);
+        }
+        else new_swp = swp;
+    }
+    swp = new_swp;
 
     parent = GetAncestor( hwnd, GA_PARENT );
     if (parent && !IsWindowVisible( parent ) && !(swp & SWP_STATECHANGED))
@@ -1260,6 +1285,47 @@ UINT WINAPI GetInternalWindowPos( HWND hwnd, LPRECT rectWnd,
 }
 
 
+static RECT get_maximized_work_rect( HWND hwnd )
+{
+    RECT work_rect = { 0 };
+
+    if ((GetWindowLongW( hwnd, GWL_STYLE ) & (WS_MINIMIZE | WS_MAXIMIZE)) == WS_MAXIMIZE)
+    {
+        if (!get_work_rect( hwnd, &work_rect ))
+            work_rect = get_primary_monitor_rect();
+    }
+    return work_rect;
+}
+
+
+/*******************************************************************
+ *           update_maximized_pos
+ *
+ * For top level windows covering the work area, we might have to
+ * "forget" the maximized position. Windows presumably does this
+ * to avoid situations where the border style changes, which would
+ * lead the window to be outside the screen, or the window gets
+ * reloaded on a different screen, and the "saved" position no
+ * longer applies to it (despite being maximized).
+ *
+ * Some applications (e.g. Imperiums: Greek Wars) depend on this.
+ */
+static void update_maximized_pos( WND *wnd, RECT *work_rect )
+{
+    if (wnd->parent && wnd->parent != GetDesktopWindow())
+        return;
+
+    if (wnd->dwStyle & WS_MAXIMIZE)
+    {
+        if (wnd->window_rect.left  <= work_rect->left  && wnd->window_rect.top    <= work_rect->top &&
+            wnd->window_rect.right >= work_rect->right && wnd->window_rect.bottom >= work_rect->bottom)
+            wnd->max_pos.x = wnd->max_pos.y = -1;
+    }
+    else
+        wnd->max_pos.x = wnd->max_pos.y = -1;
+}
+
+
 /***********************************************************************
  *		GetWindowPlacement (USER32.@)
  *
@@ -1268,6 +1334,7 @@ UINT WINAPI GetInternalWindowPos( HWND hwnd, LPRECT rectWnd,
  */
 BOOL WINAPI GetWindowPlacement( HWND hwnd, WINDOWPLACEMENT *wndpl )
 {
+    RECT work_rect = get_maximized_work_rect( hwnd );
     WND *pWnd = WIN_GetPtr( hwnd );
 
     if (!pWnd) return FALSE;
@@ -1325,6 +1392,7 @@ BOOL WINAPI GetWindowPlacement( HWND hwnd, WINDOWPLACEMENT *wndpl )
     {
         pWnd->normal_rect = pWnd->window_rect;
     }
+    update_maximized_pos( pWnd, &work_rect );
 
     wndpl->length  = sizeof(*wndpl);
     if( pWnd->dwStyle & WS_MINIMIZE )
@@ -1396,6 +1464,7 @@ static void make_point_onscreen( POINT *pt )
 static BOOL WINPOS_SetPlacement( HWND hwnd, const WINDOWPLACEMENT *wndpl, UINT flags )
 {
     DWORD style;
+    RECT work_rect = get_maximized_work_rect( hwnd );
     WND *pWnd = WIN_GetPtr( hwnd );
     WINDOWPLACEMENT wp = *wndpl;
 
@@ -1413,7 +1482,11 @@ static BOOL WINPOS_SetPlacement( HWND hwnd, const WINDOWPLACEMENT *wndpl, UINT f
     if (!pWnd || pWnd == WND_OTHER_PROCESS || pWnd == WND_DESKTOP) return FALSE;
 
     if (flags & PLACE_MIN) pWnd->min_pos = point_thread_to_win_dpi( hwnd, wp.ptMinPosition );
-    if (flags & PLACE_MAX) pWnd->max_pos = point_thread_to_win_dpi( hwnd, wp.ptMaxPosition );
+    if (flags & PLACE_MAX)
+    {
+        pWnd->max_pos = point_thread_to_win_dpi( hwnd, wp.ptMaxPosition );
+        update_maximized_pos( pWnd, &work_rect );
+    }
     if (flags & PLACE_RECT) pWnd->normal_rect = rect_thread_to_win_dpi( hwnd, wp.rcNormalPosition );
 
     style = pWnd->dwStyle;
@@ -2103,8 +2176,16 @@ BOOL set_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags,
         window_surface_add_ref( new_surface );
     }
     visible_rect = *window_rect;
-    USER_Driver->pWindowPosChanging( hwnd, insert_after, swp_flags,
-                                     window_rect, client_rect, &visible_rect, &new_surface );
+    if (!(ret = USER_Driver->pWindowPosChanging( hwnd, insert_after, swp_flags,
+                                                 window_rect, client_rect, &visible_rect, &new_surface )))
+    {
+        if (IsRectEmpty( window_rect )) visible_rect = *window_rect;
+        else
+        {
+            visible_rect = get_virtual_screen_rect();
+            IntersectRect( &visible_rect, &visible_rect, window_rect );
+        }
+    }
 
     WIN_GetRectangles( hwnd, COORDS_SCREEN, &old_window_rect, NULL );
     if (IsRectEmpty( &valid_rects[0] )) valid_rects = NULL;
@@ -2114,6 +2195,17 @@ BOOL set_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags,
         if (new_surface) window_surface_release( new_surface );
         return FALSE;
     }
+
+    /* create or update window surface for top-level windows if the driver doesn't implement WindowPosChanging */
+    if (!ret && new_surface && !IsRectEmpty( &visible_rect ) &&
+        (!(GetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED) ||
+           GetLayeredWindowAttributes( hwnd, NULL, NULL, NULL )))
+    {
+        window_surface_release( new_surface );
+        if ((new_surface = win->surface)) window_surface_add_ref( new_surface );
+        create_offscreen_window_surface( &visible_rect, &new_surface );
+    }
+
     old_visible_rect = win->visible_rect;
     old_client_rect = win->client_rect;
     old_surface = win->surface;

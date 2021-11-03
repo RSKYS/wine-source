@@ -37,9 +37,11 @@ struct unix_funcs
     void (WINAPI *p_vkCmdBeginRenderPass)(VkCommandBuffer, const VkRenderPassBeginInfo *, VkSubpassContents);
     void (WINAPI *p_vkCmdBeginRenderPass2)(VkCommandBuffer, const VkRenderPassBeginInfo *, const VkSubpassBeginInfo *);
     void (WINAPI *p_vkCmdBeginRenderPass2KHR)(VkCommandBuffer, const VkRenderPassBeginInfo *, const VkSubpassBeginInfo *);
+    void (WINAPI *p_vkCmdBeginRenderingKHR)(VkCommandBuffer, const VkRenderingInfoKHR *);
     void (WINAPI *p_vkCmdBeginTransformFeedbackEXT)(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *);
     void (WINAPI *p_vkCmdBindDescriptorSets)(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet *, uint32_t, const uint32_t *);
     void (WINAPI *p_vkCmdBindIndexBuffer)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType);
+    void (WINAPI *p_vkCmdBindInvocationMaskHUAWEI)(VkCommandBuffer, VkImageView, VkImageLayout);
     void (WINAPI *p_vkCmdBindPipeline)(VkCommandBuffer, VkPipelineBindPoint, VkPipeline);
     void (WINAPI *p_vkCmdBindPipelineShaderGroupNV)(VkCommandBuffer, VkPipelineBindPoint, VkPipeline, uint32_t);
     void (WINAPI *p_vkCmdBindShadingRateImageNV)(VkCommandBuffer, VkImageView, VkImageLayout);
@@ -89,6 +91,8 @@ struct unix_funcs
     void (WINAPI *p_vkCmdDrawMeshTasksIndirectCountNV)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (WINAPI *p_vkCmdDrawMeshTasksIndirectNV)(VkCommandBuffer, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (WINAPI *p_vkCmdDrawMeshTasksNV)(VkCommandBuffer, uint32_t, uint32_t);
+    void (WINAPI *p_vkCmdDrawMultiEXT)(VkCommandBuffer, uint32_t, const VkMultiDrawInfoEXT *, uint32_t, uint32_t, uint32_t);
+    void (WINAPI *p_vkCmdDrawMultiIndexedEXT)(VkCommandBuffer, uint32_t, const VkMultiDrawIndexedInfoEXT *, uint32_t, uint32_t, uint32_t, const int32_t *);
     void (WINAPI *p_vkCmdEndConditionalRenderingEXT)(VkCommandBuffer);
     void (WINAPI *p_vkCmdEndDebugUtilsLabelEXT)(VkCommandBuffer);
     void (WINAPI *p_vkCmdEndQuery)(VkCommandBuffer, VkQueryPool, uint32_t);
@@ -96,6 +100,7 @@ struct unix_funcs
     void (WINAPI *p_vkCmdEndRenderPass)(VkCommandBuffer);
     void (WINAPI *p_vkCmdEndRenderPass2)(VkCommandBuffer, const VkSubpassEndInfo *);
     void (WINAPI *p_vkCmdEndRenderPass2KHR)(VkCommandBuffer, const VkSubpassEndInfo *);
+    void (WINAPI *p_vkCmdEndRenderingKHR)(VkCommandBuffer);
     void (WINAPI *p_vkCmdEndTransformFeedbackEXT)(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *);
     void (WINAPI *p_vkCmdExecuteCommands)(VkCommandBuffer, uint32_t, const VkCommandBuffer *);
     void (WINAPI *p_vkCmdExecuteGeneratedCommandsNV)(VkCommandBuffer, VkBool32, const VkGeneratedCommandsInfoNV *);
@@ -160,6 +165,7 @@ struct unix_funcs
     void (WINAPI *p_vkCmdSetViewportShadingRatePaletteNV)(VkCommandBuffer, uint32_t, uint32_t, const VkShadingRatePaletteNV *);
     void (WINAPI *p_vkCmdSetViewportWScalingNV)(VkCommandBuffer, uint32_t, uint32_t, const VkViewportWScalingNV *);
     void (WINAPI *p_vkCmdSetViewportWithCountEXT)(VkCommandBuffer, uint32_t, const VkViewport *);
+    void (WINAPI *p_vkCmdSubpassShadingHUAWEI)(VkCommandBuffer);
     void (WINAPI *p_vkCmdTraceRaysIndirectKHR)(VkCommandBuffer, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, VkDeviceAddress);
     void (WINAPI *p_vkCmdTraceRaysKHR)(VkCommandBuffer, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, const VkStridedDeviceAddressRegionKHR *, uint32_t, uint32_t, uint32_t);
     void (WINAPI *p_vkCmdTraceRaysNV)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, VkDeviceSize, VkBuffer, VkDeviceSize, VkDeviceSize, VkBuffer, VkDeviceSize, VkDeviceSize, uint32_t, uint32_t, uint32_t);
@@ -289,15 +295,19 @@ struct unix_funcs
     void (WINAPI *p_vkGetDescriptorSetLayoutSupport)(VkDevice, const VkDescriptorSetLayoutCreateInfo *, VkDescriptorSetLayoutSupport *);
     void (WINAPI *p_vkGetDescriptorSetLayoutSupportKHR)(VkDevice, const VkDescriptorSetLayoutCreateInfo *, VkDescriptorSetLayoutSupport *);
     void (WINAPI *p_vkGetDeviceAccelerationStructureCompatibilityKHR)(VkDevice, const VkAccelerationStructureVersionInfoKHR *, VkAccelerationStructureCompatibilityKHR *);
+    void (WINAPI *p_vkGetDeviceBufferMemoryRequirementsKHR)(VkDevice, const VkDeviceBufferMemoryRequirementsKHR *, VkMemoryRequirements2 *);
     void (WINAPI *p_vkGetDeviceGroupPeerMemoryFeatures)(VkDevice, uint32_t, uint32_t, uint32_t, VkPeerMemoryFeatureFlags *);
     void (WINAPI *p_vkGetDeviceGroupPeerMemoryFeaturesKHR)(VkDevice, uint32_t, uint32_t, uint32_t, VkPeerMemoryFeatureFlags *);
     VkResult (WINAPI *p_vkGetDeviceGroupPresentCapabilitiesKHR)(VkDevice, VkDeviceGroupPresentCapabilitiesKHR *);
     VkResult (WINAPI *p_vkGetDeviceGroupSurfacePresentModesKHR)(VkDevice, VkSurfaceKHR, VkDeviceGroupPresentModeFlagsKHR *);
+    void (WINAPI *p_vkGetDeviceImageMemoryRequirementsKHR)(VkDevice, const VkDeviceImageMemoryRequirementsKHR *, VkMemoryRequirements2 *);
+    void (WINAPI *p_vkGetDeviceImageSparseMemoryRequirementsKHR)(VkDevice, const VkDeviceImageMemoryRequirementsKHR *, uint32_t *, VkSparseImageMemoryRequirements2 *);
     void (WINAPI *p_vkGetDeviceMemoryCommitment)(VkDevice, VkDeviceMemory, VkDeviceSize *);
     uint64_t (WINAPI *p_vkGetDeviceMemoryOpaqueCaptureAddress)(VkDevice, const VkDeviceMemoryOpaqueCaptureAddressInfo *);
     uint64_t (WINAPI *p_vkGetDeviceMemoryOpaqueCaptureAddressKHR)(VkDevice, const VkDeviceMemoryOpaqueCaptureAddressInfo *);
     void (WINAPI *p_vkGetDeviceQueue)(VkDevice, uint32_t, uint32_t, VkQueue *);
     void (WINAPI *p_vkGetDeviceQueue2)(VkDevice, const VkDeviceQueueInfo2 *, VkQueue *);
+    VkResult (WINAPI *p_vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI)(VkDevice, VkRenderPass, VkExtent2D *);
     VkResult (WINAPI *p_vkGetEventStatus)(VkDevice, VkEvent);
     VkResult (WINAPI *p_vkGetFenceStatus)(VkDevice, VkFence);
     void (WINAPI *p_vkGetGeneratedCommandsMemoryRequirementsNV)(VkDevice, const VkGeneratedCommandsMemoryRequirementsInfoNV *, VkMemoryRequirements2 *);
@@ -397,6 +407,7 @@ struct unix_funcs
     void (WINAPI *p_vkResetQueryPoolEXT)(VkDevice, VkQueryPool, uint32_t, uint32_t);
     VkResult (WINAPI *p_vkSetDebugUtilsObjectNameEXT)(VkDevice, const VkDebugUtilsObjectNameInfoEXT *);
     VkResult (WINAPI *p_vkSetDebugUtilsObjectTagEXT)(VkDevice, const VkDebugUtilsObjectTagInfoEXT *);
+    void (WINAPI *p_vkSetDeviceMemoryPriorityEXT)(VkDevice, VkDeviceMemory, float);
     VkResult (WINAPI *p_vkSetEvent)(VkDevice, VkEvent);
     VkResult (WINAPI *p_vkSetPrivateDataEXT)(VkDevice, VkObjectType, uint64_t, VkPrivateDataSlotEXT, uint64_t);
     VkResult (WINAPI *p_vkSignalSemaphore)(VkDevice, const VkSemaphoreSignalInfo *);
@@ -410,9 +421,14 @@ struct unix_funcs
     void (WINAPI *p_vkUpdateDescriptorSetWithTemplateKHR)(VkDevice, VkDescriptorSet, VkDescriptorUpdateTemplate, const void *);
     void (WINAPI *p_vkUpdateDescriptorSets)(VkDevice, uint32_t, const VkWriteDescriptorSet *, uint32_t, const VkCopyDescriptorSet *);
     VkResult (WINAPI *p_vkWaitForFences)(VkDevice, uint32_t, const VkFence *, VkBool32, uint64_t);
+    VkResult (WINAPI *p_vkWaitForPresentKHR)(VkDevice, VkSwapchainKHR, uint64_t, uint64_t);
     VkResult (WINAPI *p_vkWaitSemaphores)(VkDevice, const VkSemaphoreWaitInfo *, uint64_t);
     VkResult (WINAPI *p_vkWaitSemaphoresKHR)(VkDevice, const VkSemaphoreWaitInfo *, uint64_t);
     VkResult (WINAPI *p_vkWriteAccelerationStructuresPropertiesKHR)(VkDevice, uint32_t, const VkAccelerationStructureKHR *, VkQueryType, size_t, void *, size_t);
+
+    /* winevulkan specific functions */
+    BOOL (WINAPI *p_is_available_instance_function)(VkInstance, const char *);
+    BOOL (WINAPI *p_is_available_device_function)(VkDevice, const char *);
 };
 
 #endif /* __WINE_VULKAN_LOADER_THUNKS_H */

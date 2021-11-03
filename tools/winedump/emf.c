@@ -19,19 +19,12 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
-#include "winedump.h"
 
 #include <stdio.h>
-#ifdef HAVE_UNISTD_H
-# include <unistd.h>
-#endif
-#ifdef HAVE_SYS_TYPES_H
-# include <sys/types.h>
-#endif
 #include <fcntl.h>
 #include <stdarg.h>
 
+#include "winedump.h"
 #include "windef.h"
 #include "winbase.h"
 #include "wingdi.h"
@@ -378,6 +371,7 @@ static int dump_emfrecord(void)
     case EMR_EXTTEXTOUTW:
     {
         const EMREXTTEXTOUTW *etoW = PRD(offset, sizeof(*etoW));
+        const int *dx = (const int *)((const BYTE *)etoW + etoW->emrtext.offDx);
 
         printf("%-20s %08x\n", "EMR_EXTTEXTOUTW", length);
         printf("bounds (%d,%d - %d,%d) mode %#x x_scale %f y_scale %f pt (%d,%d) rect (%d,%d - %d,%d) flags %#x, %s\n",
@@ -388,6 +382,14 @@ static int dump_emfrecord(void)
                etoW->emrtext.rcl.right, etoW->emrtext.rcl.bottom,
                etoW->emrtext.fOptions,
                debugstr_wn((LPCWSTR)((const BYTE *)etoW + etoW->emrtext.offString), etoW->emrtext.nChars));
+        printf("dx_offset %u {", etoW->emrtext.offDx);
+        for (i = 0; i < etoW->emrtext.nChars; ++i)
+        {
+            printf("%d", dx[i]);
+            if (i != etoW->emrtext.nChars - 1)
+                putchar(',');
+        }
+        printf("}\n");
 	break;
     }
 

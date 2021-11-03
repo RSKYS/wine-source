@@ -23,16 +23,19 @@
 #endif
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <signal.h>
-#ifdef HAVE_LINK_H
-# include <link.h>
-#endif
+#include <string.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dlfcn.h>
 #ifdef HAVE_PWD_H
 # include <pwd.h>
 #endif
@@ -53,6 +56,10 @@
 #endif
 #ifdef HAVE_SYS_WAIT_H
 #include <sys/wait.h>
+#endif
+#include <limits.h>
+#ifdef HAVE_SYS_SYSCTL_H
+# include <sys/sysctl.h>
 #endif
 #ifdef __APPLE__
 # include <CoreFoundation/CoreFoundation.h>
@@ -105,13 +112,256 @@ static const char so_dir[] = "";
 
 void     (WINAPI *pDbgUiRemoteBreakin)( void *arg ) = NULL;
 NTSTATUS (WINAPI *pKiRaiseUserExceptionDispatcher)(void) = NULL;
-void     (WINAPI *pKiUserApcDispatcher)(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PNTAPCFUNC) = NULL;
 NTSTATUS (WINAPI *pKiUserExceptionDispatcher)(EXCEPTION_RECORD*,CONTEXT*) = NULL;
+void     (WINAPI *pKiUserApcDispatcher)(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PNTAPCFUNC) = NULL;
+void     (WINAPI *pKiUserCallbackDispatcher)(ULONG,void*,ULONG) = NULL;
 void     (WINAPI *pLdrInitializeThunk)(CONTEXT*,void**,ULONG_PTR,ULONG_PTR) = NULL;
 void     (WINAPI *pRtlUserThreadStart)( PRTL_THREAD_START_ROUTINE entry, void *arg ) = NULL;
+void     (WINAPI *p__wine_ctrl_routine)(void*);
+SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock = NULL;
 
 static NTSTATUS (CDECL *p__wine_set_unix_funcs)( int version, const struct unix_funcs *funcs );
-static void *syscall_dispatcher;
+static void *p__wine_syscall_dispatcher;
+
+static void * const syscalls[] =
+{
+    NtAcceptConnectPort,
+    NtAccessCheck,
+    NtAccessCheckAndAuditAlarm,
+    NtAddAtom,
+    NtAdjustGroupsToken,
+    NtAdjustPrivilegesToken,
+    NtAlertResumeThread,
+    NtAlertThread,
+    NtAllocateLocallyUniqueId,
+    NtAllocateUuids,
+    NtAllocateVirtualMemory,
+    NtAllocateVirtualMemoryEx,
+    NtAreMappedFilesTheSame,
+    NtAssignProcessToJobObject,
+    NtCallbackReturn,
+    NtCancelIoFile,
+    NtCancelIoFileEx,
+    NtCancelTimer,
+    NtClearEvent,
+    NtClose,
+    NtCompleteConnectPort,
+    NtConnectPort,
+    NtContinue,
+    NtCreateDebugObject,
+    NtCreateDirectoryObject,
+    NtCreateEvent,
+    NtCreateFile,
+    NtCreateIoCompletion,
+    NtCreateJobObject,
+    NtCreateKey,
+    NtCreateKeyTransacted,
+    NtCreateKeyedEvent,
+    NtCreateLowBoxToken,
+    NtCreateMailslotFile,
+    NtCreateMutant,
+    NtCreateNamedPipeFile,
+    NtCreatePagingFile,
+    NtCreatePort,
+    NtCreateSection,
+    NtCreateSemaphore,
+    NtCreateSymbolicLinkObject,
+    NtCreateThread,
+    NtCreateThreadEx,
+    NtCreateTimer,
+    NtCreateUserProcess,
+    NtDebugActiveProcess,
+    NtDebugContinue,
+    NtDelayExecution,
+    NtDeleteAtom,
+    NtDeleteFile,
+    NtDeleteKey,
+    NtDeleteValueKey,
+    NtDeviceIoControlFile,
+    NtDisplayString,
+    NtDuplicateObject,
+    NtDuplicateToken,
+    NtEnumerateKey,
+    NtEnumerateValueKey,
+    NtFilterToken,
+    NtFindAtom,
+    NtFlushBuffersFile,
+    NtFlushInstructionCache,
+    NtFlushKey,
+    NtFlushProcessWriteBuffers,
+    NtFlushVirtualMemory,
+    NtFreeVirtualMemory,
+    NtFsControlFile,
+    NtGetContextThread,
+    NtGetCurrentProcessorNumber,
+    NtGetNextThread,
+    NtGetNlsSectionPtr,
+    NtGetWriteWatch,
+    NtImpersonateAnonymousToken,
+    NtInitiatePowerAction ,
+    NtIsProcessInJob,
+    NtListenPort,
+    NtLoadDriver,
+    NtLoadKey,
+    NtLoadKey2,
+    NtLockFile,
+    NtLockVirtualMemory,
+    NtMakeTemporaryObject,
+    NtMapViewOfSection,
+    NtNotifyChangeDirectoryFile,
+    NtNotifyChangeKey,
+    NtNotifyChangeMultipleKeys,
+    NtOpenDirectoryObject,
+    NtOpenEvent,
+    NtOpenFile,
+    NtOpenIoCompletion,
+    NtOpenJobObject,
+    NtOpenKey,
+    NtOpenKeyEx,
+    NtOpenKeyTransacted,
+    NtOpenKeyTransactedEx,
+    NtOpenKeyedEvent,
+    NtOpenMutant,
+    NtOpenProcess,
+    NtOpenProcessToken,
+    NtOpenProcessTokenEx,
+    NtOpenSection,
+    NtOpenSemaphore,
+    NtOpenSymbolicLinkObject ,
+    NtOpenThread,
+    NtOpenThreadToken,
+    NtOpenThreadTokenEx,
+    NtOpenTimer,
+    NtPowerInformation,
+    NtPrivilegeCheck,
+    NtProtectVirtualMemory,
+    NtPulseEvent,
+    NtQueryAttributesFile,
+    NtQueryDefaultLocale,
+    NtQueryDefaultUILanguage,
+    NtQueryDirectoryFile,
+    NtQueryDirectoryObject,
+    NtQueryEaFile,
+    NtQueryEvent,
+    NtQueryFullAttributesFile,
+    NtQueryInformationAtom,
+    NtQueryInformationFile,
+    NtQueryInformationJobObject,
+    NtQueryInformationProcess,
+    NtQueryInformationThread,
+    NtQueryInformationToken,
+    NtQueryInstallUILanguage,
+    NtQueryIoCompletion,
+    NtQueryKey,
+    NtQueryLicenseValue,
+    NtQueryMultipleValueKey,
+    NtQueryMutant,
+    NtQueryObject,
+    NtQueryPerformanceCounter,
+    NtQuerySection,
+    NtQuerySecurityObject,
+    NtQuerySemaphore ,
+    NtQuerySymbolicLinkObject,
+    NtQuerySystemEnvironmentValue,
+    NtQuerySystemEnvironmentValueEx,
+    NtQuerySystemInformation,
+    NtQuerySystemInformationEx,
+    NtQuerySystemTime,
+    NtQueryTimer,
+    NtQueryTimerResolution,
+    NtQueryValueKey,
+    NtQueryVirtualMemory,
+    NtQueryVolumeInformationFile,
+    NtQueueApcThread,
+    NtRaiseException,
+    NtRaiseHardError,
+    NtReadFile,
+    NtReadFileScatter,
+    NtReadVirtualMemory,
+    NtRegisterThreadTerminatePort,
+    NtReleaseKeyedEvent,
+    NtReleaseMutant,
+    NtReleaseSemaphore,
+    NtRemoveIoCompletion,
+    NtRemoveIoCompletionEx,
+    NtRemoveProcessDebug,
+    NtRenameKey,
+    NtReplaceKey,
+    NtReplyWaitReceivePort,
+    NtRequestWaitReplyPort,
+    NtResetEvent,
+    NtResetWriteWatch,
+    NtRestoreKey,
+    NtResumeProcess,
+    NtResumeThread,
+    NtSaveKey,
+    NtSecureConnectPort,
+    NtSetContextThread,
+    NtSetDefaultLocale,
+    NtSetDefaultUILanguage,
+    NtSetEaFile,
+    NtSetEvent,
+    NtSetInformationDebugObject,
+    NtSetInformationFile,
+    NtSetInformationJobObject,
+    NtSetInformationKey,
+    NtSetInformationObject,
+    NtSetInformationProcess,
+    NtSetInformationThread,
+    NtSetInformationToken,
+    NtSetIntervalProfile,
+    NtSetIoCompletion,
+    NtSetLdtEntries,
+    NtSetSecurityObject,
+    NtSetSystemInformation,
+    NtSetSystemTime,
+    NtSetThreadExecutionState,
+    NtSetTimer,
+    NtSetTimerResolution,
+    NtSetValueKey,
+    NtSetVolumeInformationFile,
+    NtShutdownSystem,
+    NtSignalAndWaitForSingleObject,
+    NtSuspendProcess,
+    NtSuspendThread,
+    NtSystemDebugControl,
+    NtTerminateJobObject,
+    NtTerminateProcess,
+    NtTerminateThread,
+    NtTestAlert,
+    NtTraceControl,
+    NtUnloadDriver,
+    NtUnloadKey,
+    NtUnlockFile,
+    NtUnlockVirtualMemory,
+    NtUnmapViewOfSection,
+    NtWaitForDebugEvent,
+    NtWaitForKeyedEvent,
+    NtWaitForMultipleObjects,
+    NtWaitForSingleObject,
+#ifndef _WIN64
+    NtWow64AllocateVirtualMemory64,
+    NtWow64GetNativeSystemInformation,
+    NtWow64ReadVirtualMemory64,
+    NtWow64WriteVirtualMemory64,
+#endif
+    NtWriteFile,
+    NtWriteFileGather,
+    NtWriteVirtualMemory,
+    NtYieldExecution,
+    __wine_dbg_write,
+    __wine_unix_call,
+    __wine_unix_spawnvp,
+    wine_nt_to_unix_file_name,
+    wine_server_call,
+    wine_server_fd_to_handle,
+    wine_server_handle_to_fd,
+    wine_unix_to_nt_file_name,
+};
+
+static BYTE syscall_args[ARRAY_SIZE(syscalls)];
+
+SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4];
 
 #ifdef __GNUC__
 static void fatal_error( const char *err, ... ) __attribute__((noreturn, format(printf,1,2)));
@@ -353,7 +603,14 @@ static void init_paths( char *argv[] )
 #if (defined(__linux__) && !defined(__ANDROID__)) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
         bin_dir = realpath_dirname( "/proc/self/exe" );
 #elif defined (__FreeBSD__) || defined(__DragonFly__)
-        bin_dir = realpath_dirname( "/proc/curproc/file" );
+        {
+            static int pathname[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
+            size_t path_size = PATH_MAX;
+            char *path = malloc( path_size );
+            if (path && !sysctl( pathname, sizeof(pathname)/sizeof(pathname[0]), path, &path_size, NULL, 0 ))
+                bin_dir = realpath_dirname( path );
+            free( path );
+        }
 #else
         bin_dir = realpath_dirname( argv0 );
 #endif
@@ -710,20 +967,6 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     return STATUS_SUCCESS;
 }
 
-static const IMAGE_EXPORT_DIRECTORY *get_export_dir( HMODULE module )
-{
-    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)module;
-    const IMAGE_NT_HEADERS *nt;
-    DWORD addr;
-
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
-    nt = (IMAGE_NT_HEADERS *)((const BYTE *)dos + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
-    addr = nt->OptionalHeader.DataDirectory[IMAGE_FILE_EXPORT_DIRECTORY].VirtualAddress;
-    if (!addr) return NULL;
-    return (IMAGE_EXPORT_DIRECTORY *)((BYTE *)module + addr);
-}
-
 static ULONG_PTR find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports, DWORD ordinal )
 {
     const DWORD *functions = (const DWORD *)((BYTE *)module + exports->AddressOfFunctions);
@@ -771,19 +1014,29 @@ static inline void *get_rva( void *module, ULONG_PTR addr )
     return (BYTE *)module + addr;
 }
 
+static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
+{
+    const IMAGE_NT_HEADERS *nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
+    const IMAGE_DATA_DIRECTORY *data;
+
+    if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        data = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[dir];
+    else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+        data = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[dir];
+    else
+        return NULL;
+    if (!data->VirtualAddress || !data->Size) return NULL;
+    if (size) *size = data->Size;
+    return get_rva( module, data->VirtualAddress );
+}
+
 static NTSTATUS fixup_ntdll_imports( const char *name, HMODULE module )
 {
-    const IMAGE_NT_HEADERS *nt;
     const IMAGE_IMPORT_DESCRIPTOR *descr;
-    const IMAGE_DATA_DIRECTORY *dir;
     const IMAGE_THUNK_DATA *import_list;
     IMAGE_THUNK_DATA *thunk_list;
 
-    nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_IMPORT_DIRECTORY];
-    if (!dir->VirtualAddress || !dir->Size) return STATUS_SUCCESS;
-
-    descr = get_rva( module, dir->VirtualAddress );
+    if (!(descr = get_module_data_dir( module, IMAGE_FILE_IMPORT_DIRECTORY, NULL ))) return STATUS_SUCCESS;
     for (; descr->Name && descr->FirstThunk; descr++)
     {
         thunk_list = get_rva( module, descr->FirstThunk );
@@ -822,9 +1075,7 @@ static NTSTATUS fixup_ntdll_imports( const char *name, HMODULE module )
 
 static void load_ntdll_functions( HMODULE module )
 {
-    void **ptr;
-
-    ntdll_exports = get_export_dir( module );
+    ntdll_exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, NULL );
     assert( ntdll_exports );
 
 #define GET_FUNC(name) \
@@ -835,24 +1086,53 @@ static void load_ntdll_functions( HMODULE module )
     GET_FUNC( KiRaiseUserExceptionDispatcher );
     GET_FUNC( KiUserExceptionDispatcher );
     GET_FUNC( KiUserApcDispatcher );
+    GET_FUNC( KiUserCallbackDispatcher );
     GET_FUNC( LdrInitializeThunk );
+    GET_FUNC( LdrSystemDllInitBlock );
     GET_FUNC( RtlUserThreadStart );
+    GET_FUNC( __wine_ctrl_routine );
     GET_FUNC( __wine_set_unix_funcs );
-#undef GET_FUNC
-#define SET_PTR(name,val) \
-    if ((ptr = (void *)find_named_export( module, ntdll_exports, #name ))) *ptr = val; \
-    else ERR( "%s not found\n", #name )
-
-    SET_PTR( __wine_syscall_dispatcher, syscall_dispatcher );
+    GET_FUNC( __wine_syscall_dispatcher );
 #ifdef __i386__
-    SET_PTR( __wine_ldt_copy, &__wine_ldt_copy );
+    {
+        void **p__wine_ldt_copy;
+        GET_FUNC( __wine_ldt_copy );
+        *p__wine_ldt_copy = &__wine_ldt_copy;
+    }
 #endif
-#undef SET_PTR
+#undef GET_FUNC
+}
+
+static void load_ntdll_wow64_functions( HMODULE module )
+{
+    const IMAGE_EXPORT_DIRECTORY *exports;
+
+    exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, NULL );
+    assert( exports );
+
+    pLdrSystemDllInitBlock->ntdll_handle = (ULONG_PTR)module;
+
+#define GET_FUNC(name) pLdrSystemDllInitBlock->p##name = find_named_export( module, exports, #name )
+    GET_FUNC( KiUserApcDispatcher );
+    GET_FUNC( KiUserCallbackDispatcher );
+    GET_FUNC( KiUserExceptionDispatcher );
+    GET_FUNC( LdrInitializeThunk );
+    GET_FUNC( LdrSystemDllInitBlock );
+    GET_FUNC( RtlUserThreadStart );
+    GET_FUNC( RtlpFreezeTimeBias );
+    GET_FUNC( RtlpQueryProcessDebugInformationRemote );
+#undef GET_FUNC
+
+    p__wine_ctrl_routine = (void *)find_named_export( module, exports, "__wine_ctrl_routine" );
+
+    /* also set the 32-bit LdrSystemDllInitBlock */
+    memcpy( (void *)(ULONG_PTR)pLdrSystemDllInitBlock->pLdrSystemDllInitBlock,
+            pLdrSystemDllInitBlock, sizeof(*pLdrSystemDllInitBlock) );
 }
 
 /* reimplementation of LdrProcessRelocationBlock */
-static IMAGE_BASE_RELOCATION *process_relocation_block( void *module, IMAGE_BASE_RELOCATION *rel,
-                                                        INT_PTR delta )
+static const IMAGE_BASE_RELOCATION *process_relocation_block( void *module, const IMAGE_BASE_RELOCATION *rel,
+                                                              INT_PTR delta )
 {
     char *page = get_rva( module, rel->VirtualAddress );
     UINT count = (rel->SizeOfBlock - sizeof(*rel)) / sizeof(USHORT);
@@ -874,11 +1154,9 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( void *module, IMAGE_BASE
         case IMAGE_REL_BASED_HIGHLOW:
             *(int *)(page + offset) += delta;
             break;
-#ifdef _WIN64
         case IMAGE_REL_BASED_DIR64:
-            *(INT_PTR *)(page + offset) += delta;
+            *(INT64 *)(page + offset) += delta;
             break;
-#elif defined(__arm__)
         case IMAGE_REL_BASED_THUMB_MOV32:
         {
             DWORD *inst = (DWORD *)(page + offset);
@@ -896,7 +1174,6 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( void *module, IMAGE_BASE
                                                ((hi << 20) & 0x70000000) + ((hi << 16) & 0xff0000);
             break;
         }
-#endif
         default:
             FIXME("Unknown/unsupported relocation %x\n", *relocs);
             return NULL;
@@ -908,18 +1185,15 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( void *module, IMAGE_BASE
 
 static void relocate_ntdll( void *module )
 {
-    IMAGE_DOS_HEADER *dos = module;
-    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((char *)dos + dos->e_lfanew);
-    IMAGE_DATA_DIRECTORY *relocs = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-    IMAGE_BASE_RELOCATION *rel, *end;
-    IMAGE_SECTION_HEADER *sec;
-    ULONG protect_old[96], i;
+    const IMAGE_NT_HEADERS *nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
+    const IMAGE_BASE_RELOCATION *rel, *end;
+    const IMAGE_SECTION_HEADER *sec;
+    ULONG protect_old[96], i, size;
     INT_PTR delta;
 
-    ERR( "ntdll could not be mapped at preferred address (%p/%p), expect trouble\n",
-         module, (void *)nt->OptionalHeader.ImageBase );
+    ERR( "ntdll could not be mapped at preferred address (%p), expect trouble\n", module );
 
-    if (!relocs->Size || !relocs->VirtualAddress) return;
+    if (!(rel = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_BASERELOC, &size ))) return;
 
     sec = (IMAGE_SECTION_HEADER *)((char *)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
@@ -929,8 +1203,7 @@ static void relocate_ntdll( void *module )
         NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &protect_old[i] );
     }
 
-    rel = get_rva( module, relocs->VirtualAddress );
-    end = get_rva( module, relocs->VirtualAddress + relocs->Size );
+    end = (IMAGE_BASE_RELOCATION *)((const char *)rel + size);
     delta = (char *)module - (char *)nt->OptionalHeader.ImageBase;
     while (rel && rel < end - 1 && rel->SizeOfBlock) rel = process_relocation_block( module, rel, delta );
 
@@ -1000,7 +1273,7 @@ static void fill_builtin_image_info( void *module, pe_image_info_t *info )
     const IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((const BYTE *)dos + dos->e_lfanew);
 
     info->base            = nt->OptionalHeader.ImageBase;
-    info->entry_point     = info->base + nt->OptionalHeader.AddressOfEntryPoint;
+    info->entry_point     = nt->OptionalHeader.AddressOfEntryPoint;
     info->map_size        = nt->OptionalHeader.SizeOfImage;
     info->stack_size      = nt->OptionalHeader.SizeOfStackReserve;
     info->stack_commit    = nt->OptionalHeader.SizeOfStackCommit;
@@ -1102,24 +1375,54 @@ static NTSTATUS CDECL init_unix_lib( void *module, DWORD reason, const void *ptr
 
     if (!entry)
     {
-        if (!name) return STATUS_DLL_NOT_FOUND;
-        if (!(handle = dlopen( name, RTLD_NOW ))) return STATUS_DLL_NOT_FOUND;
+        if (!name || !handle) return STATUS_DLL_NOT_FOUND;
 
         if (!(nt = dlsym( handle, "__wine_spec_nt_header" )) ||
             !(entry = dlsym( handle, "__wine_init_unix_lib" )))
-        {
-            dlclose( handle );
-            set_builtin_unix_info( module, NULL, NULL, NULL );
             return STATUS_INVALID_IMAGE_FORMAT;
-        }
+
         TRACE( "loaded %s for %p\n", debugstr_a(name), module );
         unix_module = (void *)((nt->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
         map_so_dll( nt, unix_module );
         fixup_ntdll_imports( name, unix_module );
-        set_builtin_unix_info( module, NULL, handle, entry );
+        set_builtin_unix_entry( module, entry );
     }
     init_func = entry;
     return init_func( module, reason, ptr_in, ptr_out );
+}
+
+
+/***********************************************************************
+ *           ntdll_init_syscalls
+ */
+NTSTATUS ntdll_init_syscalls( ULONG id, SYSTEM_SERVICE_TABLE *table, void **dispatcher )
+{
+    struct syscall_info
+    {
+        void  *dispatcher;
+        USHORT limit;
+        BYTE  args[1];
+    } *info = (struct syscall_info *)dispatcher;
+
+    if (id > 3) return STATUS_INVALID_PARAMETER;
+    if (info->limit != table->ServiceLimit)
+    {
+        ERR( "syscall count mismatch %u / %lu\n", info->limit, table->ServiceLimit );
+        NtTerminateProcess( GetCurrentProcess(), STATUS_INVALID_PARAMETER );
+    }
+    info->dispatcher = __wine_syscall_dispatcher;
+    memcpy( table->ArgumentTable, info->args, table->ServiceLimit );
+    KeServiceDescriptorTable[id] = *table;
+    return STATUS_SUCCESS;
+}
+
+
+/***********************************************************************
+ *           __wine_unix_call
+ */
+NTSTATUS WINAPI __wine_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
+{
+    return ((unixlib_entry_t*)(UINT_PTR)handle)[code]( args );
 }
 
 
@@ -1258,12 +1561,14 @@ static NTSTATUS open_builtin_pe_file( const char *name, OBJECT_ATTRIBUTES *attr,
  *           open_builtin_so_file
  */
 static NTSTATUS open_builtin_so_file( const char *name, OBJECT_ATTRIBUTES *attr, void **module,
-                                      SECTION_IMAGE_INFORMATION *image_info, BOOL prefer_native )
+                                      SECTION_IMAGE_INFORMATION *image_info,
+                                      WORD machine, BOOL prefer_native )
 {
     NTSTATUS status;
     int fd;
 
     *module = NULL;
+    if (machine != current_machine) return STATUS_DLL_NOT_FOUND;
     if ((fd = open( name, O_RDONLY )) == -1) return STATUS_DLL_NOT_FOUND;
 
     if (check_library_arch( fd ))
@@ -1334,7 +1639,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, void **module, SIZE_T
         status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info, machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         strcpy( file + pos + len + 1, ".so" );
-        status = open_builtin_so_file( ptr, &attr, module, image_info, prefer_native );
+        status = open_builtin_so_file( ptr, &attr, module, image_info, machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
 
         /* now as a program */
@@ -1348,7 +1653,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, void **module, SIZE_T
         status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info, machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         strcpy( file + pos + len + 1, ".so" );
-        status = open_builtin_so_file( ptr, &attr, module, image_info, prefer_native );
+        status = open_builtin_so_file( ptr, &attr, module, image_info, machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
     }
 
@@ -1365,11 +1670,10 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, void **module, SIZE_T
         ptr = prepend( ptr, dll_paths[i], strlen(dll_paths[i]) );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         strcpy( file + pos + len + 1, ".so" );
-        status = open_builtin_so_file( ptr, &attr, module, image_info, prefer_native );
+        status = open_builtin_so_file( ptr, &attr, module, image_info, machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         file[pos + len + 1] = 0;
         ptr = prepend( file + pos, dll_paths[i], strlen(dll_paths[i]) );
-        if (status != STATUS_DLL_NOT_FOUND) goto done;
         status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info, machine, prefer_native );
         if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH)
         {
@@ -1378,7 +1682,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, void **module, SIZE_T
         }
         if (status != STATUS_DLL_NOT_FOUND) goto done;
         strcpy( file + pos + len + 1, ".so" );
-        status = open_builtin_so_file( ptr, &attr, module, image_info, prefer_native );
+        status = open_builtin_so_file( ptr, &attr, module, image_info, machine, prefer_native );
         if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;
         else if (status != STATUS_DLL_NOT_FOUND) goto done;
     }
@@ -1388,8 +1692,13 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, void **module, SIZE_T
 done:
     if (status >= 0 && ext)
     {
+        void *handle;
+
         strcpy( ext, ".so" );
-        set_builtin_unix_info( *module, ptr, NULL, NULL );
+        if ((handle = dlopen( ptr, RTLD_NOW )))
+        {
+            if (set_builtin_unix_handle( *module, ptr, handle )) dlclose( handle );
+        }
     }
     free( file );
     return status;
@@ -1458,7 +1767,7 @@ NTSTATUS load_builtin( const pe_image_info_t *image_info, WCHAR *filename,
  *
  * cf. GetSystemWow64Directory2.
  */
-const WCHAR *get_machine_wow64_dir( WORD machine )
+static const WCHAR *get_machine_wow64_dir( WORD machine )
 {
     static const WCHAR system32[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\','s','y','s','t','e','m','3','2','\\',0};
     static const WCHAR syswow64[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\','s','y','s','w','o','w','6','4','\\',0};
@@ -1537,7 +1846,11 @@ static NTSTATUS open_main_image( WCHAR *image, void **module, SECTION_IMAGE_INFO
         *module = NULL;
         status = NtMapViewOfSection( mapping, NtCurrentProcess(), module, 0, 0, NULL, &size,
                                      ViewShare, 0, PAGE_EXECUTE_READ );
-        if (!status) NtQuerySection( mapping, SectionImageInformation, info, sizeof(*info), NULL );
+        if (!status)
+        {
+            NtQuerySection( mapping, SectionImageInformation, info, sizeof(*info), NULL );
+            if (info->u.s.ComPlusNativeReady) info->Machine = native_machine;
+        }
         NtClose( mapping );
     }
     else if (status == STATUS_INVALID_IMAGE_NOT_MZ && loadorder != LO_NATIVE)
@@ -1702,7 +2015,8 @@ static void CDECL init_builtin_dll( void *module )
 #ifdef __FreeBSD__
         /* On older FreeBSD versions, l_addr was the absolute load address, now it's the relocation offset. */
         if (offsetof(struct link_map, l_addr) == 0)
-            if (!get_relocbase(map->l_addr, &relocbase)) return;
+            if (!get_relocbase(map->l_addr, &relocbase))
+                return;
 #endif
         switch (dyn->d_tag)
         {
@@ -1749,7 +2063,7 @@ static void load_ntdll(void)
     if (status == STATUS_DLL_NOT_FOUND)
     {
         sprintf( name, "%s/ntdll.dll.so", ntdll_dir );
-        status = open_builtin_so_file( name, &attr, &module, &info, FALSE );
+        status = open_builtin_so_file( name, &attr, &module, &info, current_machine, FALSE );
     }
     if (status == STATUS_IMAGE_NOT_AT_BASE) relocate_ntdll( module );
     else if (status) fatal_error( "failed to load %s error %x\n", name, status );
@@ -1760,9 +2074,43 @@ static void load_ntdll(void)
 
 
 /***********************************************************************
+ *           load_wow64_ntdll
+ */
+static void load_wow64_ntdll( USHORT machine )
+{
+    static const WCHAR ntdllW[] = {'n','t','d','l','l','.','d','l','l',0};
+    SECTION_IMAGE_INFORMATION info;
+    UNICODE_STRING nt_name;
+    void *module;
+    NTSTATUS status;
+    SIZE_T size;
+    WCHAR *path = malloc( sizeof("\\??\\C:\\windows\\system32\\ntdll.dll") * sizeof(WCHAR) );
+
+    wcscpy( path, get_machine_wow64_dir( machine ));
+    wcscat( path, ntdllW );
+    init_unicode_string( &nt_name, path );
+    status = find_builtin_dll( &nt_name, &module, &size, &info, machine, FALSE );
+    switch (status)
+    {
+    case STATUS_IMAGE_NOT_AT_BASE:
+        relocate_ntdll( module );
+        /* fall through */
+    case STATUS_SUCCESS:
+        load_ntdll_wow64_functions( module );
+        TRACE("loaded %s at %p\n", debugstr_w(path), module );
+        break;
+    default:
+        ERR( "failed to load %s error %x\n", debugstr_w(path), status );
+        break;
+    }
+    free( path );
+}
+
+
+/***********************************************************************
  *           get_image_address
  */
-ULONG_PTR get_image_address(void)
+static ULONG_PTR get_image_address(void)
 {
 #ifdef HAVE_GETAUXVAL
     ULONG_PTR size, num, phdr_addr = getauxval( AT_PHDR );
@@ -1786,19 +2134,6 @@ ULONG_PTR get_image_address(void)
 #endif
     return 0;
 }
-
-
-/* math function wrappers */
-static double CDECL ntdll_atan( double d )  { return atan( d ); }
-static double CDECL ntdll_ceil( double d )  { return ceil( d ); }
-static double CDECL ntdll_cos( double d )   { return cos( d ); }
-static double CDECL ntdll_fabs( double d )  { return fabs( d ); }
-static double CDECL ntdll_floor( double d ) { return floor( d ); }
-static double CDECL ntdll_log( double d )   { return log( d ); }
-static double CDECL ntdll_pow( double x, double y ) { return pow( x, y ); }
-static double CDECL ntdll_sin( double d )   { return sin( d ); }
-static double CDECL ntdll_sqrt( double d )  { return sqrt( d ); }
-static double CDECL ntdll_tan( double d )   { return tan( d ); }
 
 
 /***********************************************************************
@@ -1825,25 +2160,10 @@ static struct unix_funcs unix_funcs =
     fast_RtlReleaseSRWLockShared,
     fast_RtlWakeConditionVariable,
     fast_wait_cv,
-    ntdll_atan,
-    ntdll_ceil,
-    ntdll_cos,
-    ntdll_fabs,
-    ntdll_floor,
-    ntdll_log,
-    ntdll_pow,
-    ntdll_sin,
-    ntdll_sqrt,
-    ntdll_tan,
-    virtual_release_address_space,
     load_so_dll,
     init_builtin_dll,
     init_unix_lib,
     unwind_builtin_dll,
-    __wine_dbg_get_channel_flags,
-    __wine_dbg_strdup,
-    __wine_dbg_output,
-    __wine_dbg_header,
 };
 
 
@@ -1852,8 +2172,8 @@ static struct unix_funcs unix_funcs =
  */
 static void start_main_thread(void)
 {
+    SYSTEM_SERVICE_TABLE syscall_table = { (ULONG_PTR *)syscalls, NULL, ARRAY_SIZE(syscalls), syscall_args };
     NTSTATUS status;
-    INITIAL_TEB stack;
     TEB *teb = virtual_alloc_first_teb();
 
     signal_init_threading();
@@ -1863,20 +2183,19 @@ static void start_main_thread(void)
     startup_info_size = server_init_process();
     virtual_map_user_shared_data();
     init_cpu_info();
-    syscall_dispatcher = signal_init_syscalls();
     init_files();
     load_libwine();
     init_startup_info();
     if (p___wine_main_argc) *p___wine_main_argc = main_argc;
     if (p___wine_main_argv) *p___wine_main_argv = main_argv;
     if (p___wine_main_wargv) *p___wine_main_wargv = main_wargv;
+    *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
     set_load_order_app_name( main_wargv[0] );
-    virtual_alloc_thread_stack( &stack, is_win64 ? 0x7fffffff : 0, 0, 0, NULL );
-    teb->Tib.StackBase = stack.StackBase;
-    teb->Tib.StackLimit = stack.StackLimit;
-    teb->DeallocationStack = stack.DeallocationStack;
+    init_thread_stack( teb, is_win64 ? 0x7fffffff : 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
     load_ntdll();
+    if (main_image_info.Machine != current_machine) load_wow64_ntdll( main_image_info.Machine );
+    ntdll_init_syscalls( 0, &syscall_table, p__wine_syscall_dispatcher );
     status = p__wine_set_unix_funcs( NTDLL_UNIXLIB_VERSION, &unix_funcs );
     if (status == STATUS_REVISION_MISMATCH)
     {
@@ -2102,11 +2421,7 @@ static int pre_exec(void)
     int temp;
 
     check_vmsplit( &temp );
-#ifdef __i386__
-    return 1;  /* we have a preloader on x86 */
-#else
-    return 0;
-#endif
+    return 1;  /* we have a preloader on x86/arm */
 }
 
 #elif defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
@@ -2169,7 +2484,6 @@ static void check_command_line( int argc, char *argv[] )
     }
     if (!strcmp( argv[1], "--version" ))
     {
-        extern const char wine_build[];
         printf( "%s\n", wine_build );
         exit(0);
     }

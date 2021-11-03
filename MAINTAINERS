@@ -29,7 +29,7 @@ Maintainers List
 		-----------------------------------
 
 ARM, ARM64
-M:	André Hentschel <nerv@dawncrow.de>
+M:	André Zwing <nerv@dawncrow.de>
 F:	dlls/dbghelp/cpu_arm*
 F:	dlls/msvcrt/except_arm.c
 F:	dlls/ntdll/signal_arm*
@@ -87,10 +87,6 @@ F:	dlls/d3dx11*/
 F:	dlls/d3dx9*/
 F:	dlls/d3dxof/
 
-DirectInput
-P:	Andrew Eikum <aeikum@codeweavers.com>
-F:	dlls/dinput/
-
 DirectMusic
 M:	Michael Stefaniuc <mstefani@winehq.org>
 F:	dlls/dm*/
@@ -128,6 +124,26 @@ F:	dlls/mscoree/
 GDI
 M:	Huw Davies <huw@codeweavers.com>
 F:	dlls/gdi32/
+F:	dlls/win32u/bitblt.c
+F:	dlls/win32u/bitmap.c
+F:	dlls/win32u/brush.c
+F:	dlls/win32u/clipping.c
+F:	dlls/win32u/dc.c
+F:	dlls/win32u/dib.c
+F:	dlls/win32u/dibdrv/
+F:	dlls/win32u/driver.c
+F:	dlls/win32u/emfdrv.c
+F:	dlls/win32u/font.c
+F:	dlls/win32u/freetype.c
+F:	dlls/win32u/gdiobj.c
+F:	dlls/win32u/mapping.c
+F:	dlls/win32u/opentype.c
+F:	dlls/win32u/painting.c
+F:	dlls/win32u/palette.c
+F:	dlls/win32u/path.c
+F:	dlls/win32u/pen.c
+F:	dlls/win32u/printdrv.c
+F:	dlls/win32u/region.c
 
 GDIPlus
 M:	Esme Povirk <vincent@codeweavers.com>
@@ -139,14 +155,22 @@ F:	dlls/gphoto2.ds/
 
 HID support
 M:	Aric Stewart <aric@codeweavers.com>
+P:	Rémi Bernon <rbernon@codeweavers.com>
 F:	dlls/hid/
 F:	dlls/hidclass.sys/
+F:	dlls/hidparse.sys/
 F:	dlls/winehid.sys/
 
 HTTP server
 M:	Zebediah Figura <z.figura12@gmail.com>
 F:	dlls/httpapi/
 F:	dlls/http.sys/
+
+Input events
+P:	Rémi Bernon <rbernon@codeweavers.com>
+F:	dlls/user32/input.c
+F:	dlls/user32/rawinput.c
+F:	server/queue.c
 
 Input methods
 M:	Aric Stewart <aric@codeweavers.com>
@@ -155,6 +179,15 @@ F:	dlls/imm32/
 JavaScript
 M:	Jacek Caban <jacek@codeweavers.com>
 F:	dlls/jscript/
+
+Joystick input
+M:	Rémi Bernon <rbernon@codeweavers.com>
+P:	Andrew Eikum <aeikum@codeweavers.com>
+F:	dlls/dinput*/
+F:	dlls/windows.gaming.input/
+F:	dlls/winebus.sys/
+F:	dlls/winexinput.sys/
+F:	dlls/xinput*/
 
 Mac OS X graphics driver
 M:	Ken Thomases <ken@codeweavers.com>
@@ -175,14 +208,19 @@ P:	Zebediah Figura <z.figura12@gmail.com>
 F:	dlls/msi/
 
 Netstat
-M:	André Hentschel <nerv@dawncrow.de>
+M:	André Zwing <nerv@dawncrow.de>
 F:	programs/netstat/
 
 Network
 P:	Bruno Jesus <00cpxxx@gmail.com>
 P:	Erich E. Hoover <erich.e.hoover@wine-staging.com>
-F:	dlls/iphlpapi/
 F:	dlls/ws2_32/
+
+Network Store Interface
+M:	Huw Davies <huw@codeweavers.com>
+F:	dlls/iphlpapi/
+F:	dlls/nsi/
+F:	dlls/nsiproxy.sys/
 
 OLE Embedding
 M:	Huw Davies <huw@codeweavers.com>
@@ -239,7 +277,6 @@ RPC Runtime
 P:	Huw Davies <huw@codeweavers.com>
 P:	Zebediah Figura <z.figura12@gmail.com>
 F:	dlls/rpcrt4
-F:	tools/widl
 
 TWAIN
 P:	Esme Povirk <vincent@codeweavers.com>
@@ -269,6 +306,12 @@ F:	dlls/ieframe/
 F:	dlls/mshtml/
 F:	dlls/shdocvw/
 
+WIDL
+P:	Huw Davies <huw@codeweavers.com>
+P:	Rémi Bernon <rbernon@codeweavers.com>
+P:	Zebediah Figura <z.figura12@gmail.com>
+F:	tools/widl
+
 Windows Imaging Component
 M:	Esme Povirk <vincent@codeweavers.com>
 F:	dlls/windowscodecs/
@@ -291,13 +334,17 @@ F:	dlls/mfreadwrite/
 F:	dlls/mfuuid/
 F:	dlls/rtworkq/
 
+Wine debugger (GDB backend)
+P:	Rémi Bernon <rbernon@codeweavers.com>
+F:	programs/winedbg/gdbproxy.c
+
 Wine server, IPC
 M:	Alexandre Julliard <julliard@winehq.org>
 P:	Erich E. Hoover <erich.e.hoover@wine-staging.com>
 F:	server/
 
 Winemaker
-M:	André Hentschel <nerv@dawncrow.de>
+M:	André Zwing <nerv@dawncrow.de>
 F:	tools/winemaker/
 
 WinHTTP
@@ -309,11 +356,12 @@ P:	Jacek Caban <jacek@codeweavers.com>
 F:	dlls/wininet/
 
 WPcap
-M:	André Hentschel <nerv@dawncrow.de>
+M:	André Zwing <nerv@dawncrow.de>
 F:	dlls/wpcap/
 
 X11 Driver
 M:	Alexandre Julliard <julliard@winehq.org>
+P:	Rémi Bernon <rbernon@codeweavers.com>
 F:	dlls/winex11.drv/
 
 XML parsing

@@ -25,6 +25,7 @@
 #include "winnls.h"
 #include "windns.h"
 #include "nb30.h"
+#include "ws2def.h"
 
 #include "wine/debug.h"
 #include "dnsapi.h"
@@ -64,7 +65,7 @@ static DNS_STATUS do_query_netbios( PCSTR name, DNS_RECORDA **recp )
 
     for (i = 0; i < header->node_count; i++)
     {
-        record = heap_alloc_zero( sizeof(DNS_RECORDA) );
+        record = calloc( 1, sizeof(DNS_RECORDA) );
         if (!record)
         {
             status = ERROR_NOT_ENOUGH_MEMORY;
@@ -109,7 +110,7 @@ static const char *debugstr_query_request(const DNS_QUERY_REQUEST *req)
         return "(null)";
 
     return wine_dbg_sprintf("{%d %s %s %x%08x %p %d %p %p}", req->Version,
-            debugstr_w(req->QueryName), type_to_str(req->QueryType),
+            debugstr_w(req->QueryName), debugstr_type(req->QueryType),
             (UINT32)(req->QueryOptions>>32u), (UINT32)req->QueryOptions, req->pDnsServerList,
             req->InterfaceIndex, req->pQueryCompletionCallback, req->pQueryContext);
 }
@@ -135,7 +136,7 @@ DNS_STATUS WINAPI DnsQuery_A( PCSTR name, WORD type, DWORD options, PVOID server
     DNS_RECORDW *resultW;
     DNS_STATUS status;
 
-    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_a(name), type_to_str( type ),
+    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_a(name), debugstr_type( type ),
            options, servers, result, reserved );
 
     if (!name || !result)
@@ -155,7 +156,7 @@ DNS_STATUS WINAPI DnsQuery_A( PCSTR name, WORD type, DWORD options, PVOID server
         DnsRecordListFree( (DNS_RECORD *)resultW, DnsFreeRecordList );
     }
 
-    heap_free( nameW );
+    free( nameW );
     return status;
 }
 
@@ -167,16 +168,42 @@ DNS_STATUS WINAPI DnsQuery_UTF8( PCSTR name, WORD type, DWORD options, PVOID ser
                                  PDNS_RECORDA *result, PVOID *reserved )
 {
     DNS_STATUS ret = DNS_ERROR_RCODE_NOT_IMPLEMENTED;
+    unsigned char answer[4096];
+    DWORD len = sizeof(answer);
+    struct set_serverlist_params servlist_params = { servers };
+    struct query_params query_params = { name, type, options, answer, &len };
 
-    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_a(name), type_to_str( type ),
+    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_a(name), debugstr_type( type ),
            options, servers, result, reserved );
 
     if (!name || !result)
         return ERROR_INVALID_PARAMETER;
 
-    if ((ret = resolv_funcs->set_serverlist( servers ))) return ret;
+    if ((ret = RESOLV_CALL( set_serverlist, &servlist_params ))) return ret;
 
-    ret = resolv_funcs->query( name, type, options, result );
+    ret = RESOLV_CALL( query, &query_params );
+    if (!ret)
+    {
+        DNS_MESSAGE_BUFFER *buffer = (DNS_MESSAGE_BUFFER *)answer;
+
+        if (len < sizeof(buffer->MessageHead)) return DNS_ERROR_BAD_PACKET;
+        DNS_BYTE_FLIP_HEADER_COUNTS( &buffer->MessageHead );
+        switch (buffer->MessageHead.ResponseCode)
+        {
+        case DNS_RCODE_NOERROR:  ret = DnsExtractRecordsFromMessage_UTF8( buffer, len, result ); break;
+        case DNS_RCODE_FORMERR:  ret = DNS_ERROR_RCODE_FORMAT_ERROR; break;
+        case DNS_RCODE_SERVFAIL: ret = DNS_ERROR_RCODE_SERVER_FAILURE; break;
+        case DNS_RCODE_NXDOMAIN: ret = DNS_ERROR_RCODE_NAME_ERROR; break;
+        case DNS_RCODE_NOTIMPL:  ret = DNS_ERROR_RCODE_NOT_IMPLEMENTED; break;
+        case DNS_RCODE_REFUSED:  ret = DNS_ERROR_RCODE_REFUSED; break;
+        case DNS_RCODE_YXDOMAIN: ret = DNS_ERROR_RCODE_YXDOMAIN; break;
+        case DNS_RCODE_YXRRSET:  ret = DNS_ERROR_RCODE_YXRRSET; break;
+        case DNS_RCODE_NXRRSET:  ret = DNS_ERROR_RCODE_NXRRSET; break;
+        case DNS_RCODE_NOTAUTH:  ret = DNS_ERROR_RCODE_NOTAUTH; break;
+        case DNS_RCODE_NOTZONE:  ret = DNS_ERROR_RCODE_NOTZONE; break;
+        default:                 ret = DNS_ERROR_RCODE_NOT_IMPLEMENTED; break;
+        }
+    }
 
     if (ret == DNS_ERROR_RCODE_NAME_ERROR && type == DNS_TYPE_A &&
         !(options & DNS_QUERY_NO_NETBT))
@@ -199,7 +226,7 @@ DNS_STATUS WINAPI DnsQuery_W( PCWSTR name, WORD type, DWORD options, PVOID serve
     DNS_RECORDA *resultA;
     DNS_STATUS status;
 
-    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_w(name), type_to_str( type ),
+    TRACE( "(%s,%s,0x%08x,%p,%p,%p)\n", debugstr_w(name), debugstr_type( type ),
            options, servers, result, reserved );
 
     if (!name || !result)
@@ -219,7 +246,7 @@ DNS_STATUS WINAPI DnsQuery_W( PCWSTR name, WORD type, DWORD options, PVOID serve
         DnsRecordListFree( (DNS_RECORD *)resultA, DnsFreeRecordList );
     }
 
-    heap_free( nameU );
+    free( nameU );
     return status;
 }
 
@@ -259,6 +286,46 @@ static DNS_STATUS get_hostname_w( COMPUTER_NAME_FORMAT format, PWSTR buffer, PDW
     return ERROR_SUCCESS;
 }
 
+static DNS_STATUS get_dns_server_list( IP4_ARRAY *out, DWORD *len )
+{
+    char buf[FIELD_OFFSET(DNS_ADDR_ARRAY, AddrArray[3])];
+    DNS_ADDR_ARRAY *servers = (DNS_ADDR_ARRAY *)buf;
+    DWORD ret, needed, i, num, array_len = sizeof(buf);
+    struct get_serverlist_params params = { AF_INET, servers, &array_len };
+    for (;;)
+    {
+        ret = RESOLV_CALL( get_serverlist, &params );
+        if (ret != ERROR_SUCCESS && ret != ERROR_MORE_DATA) goto err;
+        num = (array_len - FIELD_OFFSET(DNS_ADDR_ARRAY, AddrArray[0])) / sizeof(DNS_ADDR);
+        needed = FIELD_OFFSET(IP4_ARRAY, AddrArray[num]);
+        if (!out || *len < needed)
+        {
+            *len = needed;
+            ret = !out ? ERROR_SUCCESS : ERROR_MORE_DATA;
+            goto err;
+        }
+        if (!ret) break;
+
+        if ((char *)servers != buf) free( servers );
+        servers = malloc( array_len );
+        if (!servers)
+        {
+            ret = ERROR_NOT_ENOUGH_MEMORY;
+            goto err;
+        }
+    }
+
+    out->AddrCount = num;
+    for (i = 0; i < num; i++)
+        out->AddrArray[i] = ((SOCKADDR_IN *)servers->AddrArray[i].MaxSa)->sin_addr.s_addr;
+    *len = needed;
+    ret = ERROR_SUCCESS;
+
+err:
+    if ((char *)servers != buf) free( servers );
+    return ret;
+}
+
 /******************************************************************************
  * DnsQueryConfig          [DNSAPI.@]
  *
@@ -276,10 +343,8 @@ DNS_STATUS WINAPI DnsQueryConfig( DNS_CONFIG_TYPE config, DWORD flag, PCWSTR ada
     switch (config)
     {
     case DnsConfigDnsServerList:
-    {
-        ret = resolv_funcs->get_serverlist( buffer, len );
-        break;
-    }
+        return get_dns_server_list( buffer, len );
+
     case DnsConfigHostName_A:
     case DnsConfigHostName_UTF8:
         return get_hostname_a( ComputerNameDnsHostname, buffer, len );
@@ -304,7 +369,6 @@ DNS_STATUS WINAPI DnsQueryConfig( DNS_CONFIG_TYPE config, DWORD flag, PCWSTR ada
     case DnsConfigAdapterDomainName_A:
     case DnsConfigAdapterDomainName_W:
     case DnsConfigAdapterDomainName_UTF8:
-    case DnsConfigSearchList:
     case DnsConfigAdapterInfo:
     case DnsConfigPrimaryHostNameRegistrationEnabled:
     case DnsConfigAdapterHostNameRegistrationEnabled:
@@ -312,6 +376,26 @@ DNS_STATUS WINAPI DnsQueryConfig( DNS_CONFIG_TYPE config, DWORD flag, PCWSTR ada
         FIXME( "unimplemented config type %d\n", config );
         break;
 
+    case DnsConfigDnsServersUnspec:
+    {
+        struct get_serverlist_params params = { AF_UNSPEC, buffer, len };
+        return RESOLV_CALL( get_serverlist, &params );
+    }
+    case DnsConfigDnsServersIpv4:
+    {
+        struct get_serverlist_params params = { AF_INET, buffer, len };
+        return RESOLV_CALL( get_serverlist, &params );
+    }
+    case DnsConfigDnsServersIpv6:
+    {
+        struct get_serverlist_params params = { AF_INET6, buffer, len };
+        return RESOLV_CALL( get_serverlist, &params );
+    }
+    case DnsConfigSearchList:
+    {
+        struct get_searchlist_params params = { buffer, len };
+        return RESOLV_CALL( get_searchlist, &params );
+    }
     default:
         WARN( "unknown config type: %d\n", config );
         break;

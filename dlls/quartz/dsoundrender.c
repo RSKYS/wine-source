@@ -283,7 +283,7 @@ static HRESULT DSoundRender_SendSampleData(struct dsound_render *This,
     return S_OK;
 }
 
-static HRESULT WINAPI DSoundRender_PrepareReceive(struct dsound_render *This, IMediaSample *pSample)
+static HRESULT DSoundRender_PrepareReceive(struct dsound_render *This, IMediaSample *pSample)
 {
     HRESULT hr;
     AM_MEDIA_TYPE *amt;
@@ -320,7 +320,7 @@ static HRESULT WINAPI DSoundRender_PrepareReceive(struct dsound_render *This, IM
     return S_OK;
 }
 
-static HRESULT WINAPI DSoundRender_DoRenderSample(struct dsound_render *This, IMediaSample *pSample)
+static HRESULT DSoundRender_DoRenderSample(struct dsound_render *This, IMediaSample *pSample)
 {
     LPBYTE pbSrcStream = NULL;
     LONG cbSrcStream = 0;
@@ -461,7 +461,8 @@ static HRESULT dsound_render_sink_eos(struct strmbase_sink *iface)
 
     filter->eos = TRUE;
 
-    if (graph && SUCCEEDED(IFilterGraph_QueryInterface(graph,
+    if (filter->filter.state == State_Running && graph
+            && SUCCEEDED(IFilterGraph_QueryInterface(graph,
             &IID_IMediaEventSink, (void **)&event_sink)))
     {
         IMediaEventSink_Notify(event_sink, EC_COMPLETE, S_OK,
@@ -548,8 +549,6 @@ static void dsound_render_destroy(struct strmbase_filter *iface)
     strmbase_passthrough_cleanup(&filter->passthrough);
     strmbase_filter_cleanup(&filter->filter);
     free(filter);
-
-    InterlockedDecrement(&object_locks);
 }
 
 static struct strmbase_pin *dsound_render_get_pin(struct strmbase_filter *iface, unsigned int index)
@@ -599,15 +598,23 @@ static HRESULT dsound_render_init_stream(struct strmbase_filter *iface)
 static HRESULT dsound_render_start_stream(struct strmbase_filter *iface, REFERENCE_TIME start)
 {
     struct dsound_render *filter = impl_from_strmbase_filter(iface);
+    IFilterGraph *graph = filter->filter.graph;
+    IMediaEventSink *event_sink;
 
     filter->stream_start = start;
 
     SetEvent(filter->state_event);
 
     if (filter->sink.pin.peer)
-    {
-        filter->eos = FALSE;
         IDirectSoundBuffer_Play(filter->dsbuffer, 0, 0, DSBPLAY_LOOPING);
+
+    if ((filter->eos || !filter->sink.pin.peer) && graph
+            && SUCCEEDED(IFilterGraph_QueryInterface(graph,
+            &IID_IMediaEventSink, (void **)&event_sink)))
+    {
+        IMediaEventSink_Notify(event_sink, EC_COMPLETE, S_OK,
+                (LONG_PTR)&filter->filter.IBaseFilter_iface);
+        IMediaEventSink_Release(event_sink);
     }
 
     return S_OK;
@@ -948,7 +955,7 @@ static ULONG WINAPI dsound_render_qc_AddRef(IQualityControl *iface)
 static ULONG WINAPI dsound_render_qc_Release(IQualityControl *iface)
 {
     struct dsound_render *filter = impl_from_IQualityControl(iface);
-    return IUnknown_AddRef(filter->filter.outer_unk);
+    return IUnknown_Release(filter->filter.outer_unk);
 }
 
 static HRESULT WINAPI dsound_render_qc_Notify(IQualityControl *iface,

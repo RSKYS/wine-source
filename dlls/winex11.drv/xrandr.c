@@ -68,6 +68,7 @@ MAKE_FUNCPTR(XRRFreeOutputInfo)
 MAKE_FUNCPTR(XRRFreeScreenResources)
 MAKE_FUNCPTR(XRRGetCrtcInfo)
 MAKE_FUNCPTR(XRRGetOutputInfo)
+MAKE_FUNCPTR(XRRGetOutputProperty)
 MAKE_FUNCPTR(XRRGetScreenResources)
 MAKE_FUNCPTR(XRRGetScreenResourcesCurrent)
 MAKE_FUNCPTR(XRRGetScreenSizeRange)
@@ -112,6 +113,7 @@ static int load_xrandr(void)
         LOAD_FUNCPTR(XRRFreeScreenResources);
         LOAD_FUNCPTR(XRRGetCrtcInfo);
         LOAD_FUNCPTR(XRRGetOutputInfo);
+        LOAD_FUNCPTR(XRRGetOutputProperty);
         LOAD_FUNCPTR(XRRGetScreenResources);
         LOAD_FUNCPTR(XRRGetScreenResourcesCurrent);
         LOAD_FUNCPTR(XRRGetScreenSizeRange);
@@ -324,6 +326,32 @@ static LONG xrandr10_set_current_mode( ULONG_PTR id, DEVMODEW *mode )
 
 #ifdef HAVE_XRRGETPROVIDERRESOURCES
 
+static struct current_mode
+{
+    ULONG_PTR id;
+    BOOL loaded;
+    DEVMODEW mode;
+} *current_modes;
+static int current_mode_count;
+
+static CRITICAL_SECTION current_modes_section;
+static CRITICAL_SECTION_DEBUG current_modes_critsect_debug =
+{
+    0, 0, &current_modes_section,
+    {&current_modes_critsect_debug.ProcessLocksList, &current_modes_critsect_debug.ProcessLocksList},
+     0, 0, {(DWORD_PTR)(__FILE__ ": current_modes_section")}
+};
+static CRITICAL_SECTION current_modes_section = {&current_modes_critsect_debug, -1, 0, 0, 0, 0};
+
+static void xrandr14_invalidate_current_mode_cache(void)
+{
+    EnterCriticalSection( &current_modes_section );
+    heap_free( current_modes);
+    current_modes = NULL;
+    current_mode_count = 0;
+    LeaveCriticalSection( &current_modes_section );
+}
+
 static XRRScreenResources *xrandr_get_screen_resources(void)
 {
     XRRScreenResources *resources = pXRRGetScreenResourcesCurrent( gdi_display, root_window );
@@ -437,6 +465,24 @@ static void get_screen_size( XRRScreenResources *resources, unsigned int *width,
         }
 
         pXRRFreeCrtcInfo( crtc_info );
+    }
+}
+
+static void get_edid( RROutput output, unsigned char **prop, unsigned long *len )
+{
+    int result, actual_format;
+    unsigned long bytes_after;
+    Atom actual_type;
+
+    result = pXRRGetOutputProperty( gdi_display, output, x11drv_atom(EDID), 0, 128, FALSE, FALSE,
+                                    AnyPropertyType, &actual_type, &actual_format, len,
+                                    &bytes_after, prop );
+
+    if (result != Success)
+    {
+        WARN("Could not retrieve EDID property for output %#lx.\n", output);
+        *prop = NULL;
+        *len = 0;
     }
 }
 
@@ -596,8 +642,11 @@ static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRPro
     static const char *extensions[] =
     {
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
         "VK_EXT_acquire_xlib_display",
         "VK_EXT_direct_mode_display",
+        "VK_KHR_display",
+        VK_KHR_SURFACE_EXTENSION_NAME,
     };
     const struct vulkan_funcs *vulkan_funcs = get_vulkan_driver( WINE_VULKAN_DRIVER_VERSION );
     VkResult (*pvkGetRandROutputDisplayEXT)( VkPhysicalDevice, Display *, RROutput, VkDisplayKHR * );
@@ -1007,6 +1056,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct x11drv_monitor *
     {
         lstrcpyW( monitors[monitor_count].name, generic_nonpnp_monitorW );
         monitors[monitor_count].state_flags = DISPLAY_DEVICE_ATTACHED;
+        get_edid( adapter_id, &monitors[monitor_count].edid, &monitors[monitor_count].edid_len );
         monitor_count = 1;
     }
     /* Active monitors, need to find other monitors with the same coordinates as mirrored */
@@ -1062,6 +1112,9 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct x11drv_monitor *
 
                     if (is_crtc_primary( primary_rect, crtc_info ))
                         primary_index = monitor_count;
+
+                    get_edid( screen_resources->outputs[i], &monitors[monitor_count].edid,
+                              &monitors[monitor_count].edid_len );
                     monitor_count++;
                 }
 
@@ -1102,19 +1155,32 @@ done:
         pXRRFreeOutputInfo( enum_output_info );
     if (!ret)
     {
+        for (i = 0; i < monitor_count; i++)
+        {
+            if (monitors[i].edid)
+                XFree( monitors[i].edid );
+        }
         heap_free( monitors );
         ERR("Failed to get monitors\n");
     }
     return ret;
 }
 
-static void xrandr14_free_monitors( struct x11drv_monitor *monitors )
+static void xrandr14_free_monitors( struct x11drv_monitor *monitors, int count )
 {
+    int i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (monitors[i].edid)
+            XFree( monitors[i].edid );
+    }
     heap_free( monitors );
 }
 
 static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
 {
+    xrandr14_invalidate_current_mode_cache();
     if (hwnd == GetDesktopWindow() && GetWindowThreadProcessId( hwnd, NULL ) == GetCurrentThreadId())
     {
         /* Don't send a WM_DISPLAYCHANGE message here because this event may be a result from
@@ -1148,7 +1214,8 @@ static void xrandr14_register_event_handlers(void)
 /* XRandR 1.4 display settings handler */
 static BOOL xrandr14_get_id( const WCHAR *device_name, ULONG_PTR *id )
 {
-    INT gpu_count, adapter_count, display_count = 0;
+    struct current_mode *tmp_modes, *new_current_modes = NULL;
+    INT gpu_count, adapter_count, new_current_mode_count = 0;
     INT gpu_idx, adapter_idx, display_idx;
     struct x11drv_adapter *adapters;
     struct x11drv_gpu *gpus;
@@ -1159,31 +1226,60 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, ULONG_PTR *id )
     if (*end)
         return FALSE;
 
-    if (!xrandr14_get_gpus2( &gpus, &gpu_count, FALSE ))
-        return FALSE;
-
-    for (gpu_idx = 0; gpu_idx < gpu_count; ++gpu_idx)
+    /* Update cache */
+    EnterCriticalSection( &current_modes_section );
+    if (!current_modes)
     {
-        if (!xrandr14_get_adapters( gpus[gpu_idx].id, &adapters, &adapter_count ))
+        if (!xrandr14_get_gpus2( &gpus, &gpu_count, FALSE ))
         {
-            xrandr14_free_gpus( gpus );
+            LeaveCriticalSection( &current_modes_section );
             return FALSE;
         }
 
-        adapter_idx = display_idx - display_count;
-        if (adapter_idx < adapter_count)
+        for (gpu_idx = 0; gpu_idx < gpu_count; ++gpu_idx)
         {
-            *id = adapters[adapter_idx].id;
-            xrandr14_free_adapters( adapters );
-            xrandr14_free_gpus( gpus );
-            return TRUE;
-        }
+            if (!xrandr14_get_adapters( gpus[gpu_idx].id, &adapters, &adapter_count ))
+                break;
 
-        display_count += adapter_count;
-        xrandr14_free_adapters( adapters );
+            if (!new_current_modes)
+                tmp_modes = heap_alloc( adapter_count * sizeof(*tmp_modes) );
+            else
+                tmp_modes = heap_realloc( new_current_modes, (new_current_mode_count + adapter_count) * sizeof(*tmp_modes) );
+
+            if (!tmp_modes)
+            {
+                xrandr14_free_adapters( adapters );
+                break;
+            }
+            new_current_modes = tmp_modes;
+
+            for (adapter_idx = 0; adapter_idx < adapter_count; ++adapter_idx)
+            {
+                new_current_modes[new_current_mode_count + adapter_idx].id = adapters[adapter_idx].id;
+                new_current_modes[new_current_mode_count + adapter_idx].loaded = FALSE;
+            }
+            new_current_mode_count += adapter_count;
+            xrandr14_free_adapters( adapters );
+        }
+        xrandr14_free_gpus( gpus );
+
+        if (new_current_modes)
+        {
+            heap_free( current_modes );
+            current_modes = new_current_modes;
+            current_mode_count = new_current_mode_count;
+        }
     }
-    xrandr14_free_gpus( gpus );
-    return FALSE;
+
+    if (display_idx >= current_mode_count)
+    {
+        LeaveCriticalSection( &current_modes_section );
+        return FALSE;
+    }
+
+    *id = current_modes[display_idx].id;
+    LeaveCriticalSection( &current_modes_section );
+    return TRUE;
 }
 
 static void add_xrandr14_mode( DEVMODEW *mode, XRRModeInfo *info, DWORD depth, DWORD frequency,
@@ -1333,6 +1429,7 @@ static void xrandr14_free_modes( DEVMODEW *modes )
 
 static BOOL xrandr14_get_current_mode( ULONG_PTR id, DEVMODEW *mode )
 {
+    struct current_mode *mode_ptr = NULL;
     XRRScreenResources *screen_resources;
     XRROutputInfo *output_info = NULL;
     RROutput output = (RROutput)id;
@@ -1341,6 +1438,23 @@ static BOOL xrandr14_get_current_mode( ULONG_PTR id, DEVMODEW *mode )
     BOOL ret = FALSE;
     RECT primary;
     INT mode_idx;
+
+    EnterCriticalSection( &current_modes_section );
+    for (mode_idx = 0; mode_idx < current_mode_count; ++mode_idx)
+    {
+        if (current_modes[mode_idx].id != id)
+            continue;
+
+        if (!current_modes[mode_idx].loaded)
+        {
+            mode_ptr = &current_modes[mode_idx];
+            break;
+        }
+
+        memcpy( mode, &current_modes[mode_idx].mode, sizeof(*mode) );
+        LeaveCriticalSection( &current_modes_section );
+        return TRUE;
+    }
 
     screen_resources = xrandr_get_screen_resources();
     if (!screen_resources)
@@ -1400,7 +1514,16 @@ static BOOL xrandr14_get_current_mode( ULONG_PTR id, DEVMODEW *mode )
     mode->u1.s2.dmPosition.x = crtc_info->x - primary.left;
     mode->u1.s2.dmPosition.y = crtc_info->y - primary.top;
     ret = TRUE;
+
 done:
+    if (ret && mode_ptr)
+    {
+        memcpy( &mode_ptr->mode, mode, sizeof(*mode) );
+        mode_ptr->mode.dmSize = sizeof(*mode);
+        mode_ptr->mode.dmDriverExtra = 0;
+        mode_ptr->loaded = TRUE;
+    }
+    LeaveCriticalSection( &current_modes_section );
     if (crtc_info)
         pXRRFreeCrtcInfo( crtc_info );
     if (output_info)
@@ -1517,6 +1640,7 @@ done:
     if (output_info)
         pXRRFreeOutputInfo( output_info );
     pXRRFreeScreenResources( screen_resources );
+    xrandr14_invalidate_current_mode_cache();
     return ret;
 }
 

@@ -20,7 +20,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <assert.h>
 #include <stdarg.h>
@@ -462,7 +461,7 @@ void init_directories( struct fd *intl_fd )
 
     /* sessions */
     create_session( 0 );
-    create_session( 1 );
+    create_session( default_session_id );
 
     /* object types */
 

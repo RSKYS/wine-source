@@ -251,6 +251,7 @@ static const struct column col_operatingsystem[] =
     { L"SerialNumber",            CIM_STRING|COL_FLAG_DYNAMIC },
     { L"ServicePackMajorVersion", CIM_UINT16 },
     { L"ServicePackMinorVersion", CIM_UINT16 },
+    { L"Status",                  CIM_STRING },
     { L"SuiteMask",               CIM_UINT32 },
     { L"SystemDirectory",         CIM_STRING|COL_FLAG_DYNAMIC },
     { L"SystemDrive",             CIM_STRING|COL_FLAG_DYNAMIC },
@@ -286,7 +287,9 @@ static const struct column col_physicalmemory[] =
 };
 static const struct column col_pnpentity[] =
 {
-    { L"DeviceId", CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"DeviceId",             CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"Manufacturer",         CIM_STRING },
+    { L"Name",                 CIM_STRING },
 };
 static const struct column col_printer[] =
 {
@@ -312,6 +315,7 @@ static const struct column col_process[] =
     { L"ThreadCount",     CIM_UINT32 },
     { L"WorkingSetSize",  CIM_UINT64 },
     /* methods */
+    { L"Create",          CIM_FLAG_ARRAY|COL_FLAG_METHOD },
     { L"GetOwner",        CIM_FLAG_ARRAY|COL_FLAG_METHOD },
 };
 static const struct column col_processor[] =
@@ -664,6 +668,7 @@ struct record_operatingsystem
     const WCHAR *serialnumber;
     UINT16       servicepackmajor;
     UINT16       servicepackminor;
+    const WCHAR *status;
     UINT32       suitemask;
     const WCHAR *systemdirectory;
     const WCHAR *systemdrive;
@@ -700,6 +705,8 @@ struct record_physicalmemory
 struct record_pnpentity
 {
     const WCHAR *device_id;
+    const WCHAR *manufacturer;
+    const WCHAR *name;
 };
 struct record_printer
 {
@@ -725,6 +732,7 @@ struct record_process
     UINT32       thread_count;
     UINT64       workingsetsize;
     /* methods */
+    class_method *create;
     class_method *get_owner;
 };
 struct record_processor
@@ -892,6 +900,9 @@ static const struct record_param data_param[] =
     { L"StdRegProv", L"CreateKey", 1, L"hDefKey", CIM_SINT32, 0x80000002 },
     { L"StdRegProv", L"CreateKey", 1, L"sSubKeyName", CIM_STRING },
     { L"StdRegProv", L"CreateKey", -1, L"ReturnValue", CIM_UINT32 },
+    { L"StdRegProv", L"DeleteKey", 1, L"hDefKey", CIM_SINT32, 0x80000002 },
+    { L"StdRegProv", L"DeleteKey", 1, L"sSubKeyName", CIM_STRING },
+    { L"StdRegProv", L"DeleteKey", -1, L"ReturnValue", CIM_UINT32 },
     { L"StdRegProv", L"EnumKey", 1, L"hDefKey", CIM_SINT32, 0x80000002 },
     { L"StdRegProv", L"EnumKey", 1, L"sSubKeyName", CIM_STRING },
     { L"StdRegProv", L"EnumKey", -1, L"ReturnValue", CIM_UINT32 },
@@ -916,13 +927,14 @@ static const struct record_param data_param[] =
     { L"StdRegProv", L"SetDWORDValue", 1, L"sValueName", CIM_STRING },
     { L"StdRegProv", L"SetDWORDValue", 1, L"uValue", CIM_UINT32 },
     { L"StdRegProv", L"SetDWORDValue", -1, L"ReturnValue", CIM_UINT32 },
-    { L"StdRegProv", L"DeleteKey", 1, L"hDefKey", CIM_SINT32, 0x80000002 },
-    { L"StdRegProv", L"DeleteKey", 1, L"sSubKeyName", CIM_STRING },
-    { L"StdRegProv", L"DeleteKey", -1, L"ReturnValue", CIM_UINT32 },
     { L"SystemRestore", L"Disable", 1, L"Drive", CIM_STRING },
     { L"SystemRestore", L"Disable", -1, L"ReturnValue", CIM_UINT32 },
     { L"SystemRestore", L"Enable", 1, L"Drive", CIM_STRING },
     { L"SystemRestore", L"Enable", -1, L"ReturnValue", CIM_UINT32 },
+    { L"Win32_Process", L"Create", 1, L"CommandLine", CIM_STRING },
+    { L"Win32_Process", L"Create", 1, L"CurrentDirectory", CIM_STRING },
+    { L"Win32_Process", L"Create", -1, L"ProcessId", CIM_UINT32 },
+    { L"Win32_Process", L"Create", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Process", L"GetOwner", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Process", L"GetOwner", -1, L"User", CIM_STRING },
     { L"Win32_Process", L"GetOwner", -1, L"Domain", CIM_STRING },
@@ -2278,12 +2290,14 @@ static struct association *get_diskdrivetodiskpartition_pairs( UINT *count )
     HRESULT hr;
     UINT i;
 
-    if (!(query = create_query())) return NULL;
-    if ((hr = parse_query( L"SELECT * FROM Win32_DiskDrive", &query->view, &query->mem )) != S_OK) goto done;
+    if (!(query = create_query( WBEMPROX_NAMESPACE_CIMV2 ))) return NULL;
+    if ((hr = parse_query( WBEMPROX_NAMESPACE_CIMV2, L"SELECT * FROM Win32_DiskDrive",
+                           &query->view, &query->mem )) != S_OK) goto done;
     if ((hr = execute_view( query->view )) != S_OK) goto done;
 
-    if (!(query2 = create_query())) return FALSE;
-    if ((hr = parse_query( L"SELECT * FROM Win32_DiskPartition", &query2->view, &query2->mem )) != S_OK) goto done;
+    if (!(query2 = create_query( WBEMPROX_NAMESPACE_CIMV2 ))) return FALSE;
+    if ((hr = parse_query( WBEMPROX_NAMESPACE_CIMV2, L"SELECT * FROM Win32_DiskPartition",
+                           &query2->view, &query2->mem )) != S_OK) goto done;
     if ((hr = execute_view( query2->view )) != S_OK) goto done;
 
     if (!(ret = heap_alloc_zero( query->view->result_count * sizeof(*ret) ))) goto done;
@@ -2564,12 +2578,14 @@ static struct association *get_logicaldisktopartition_pairs( UINT *count )
     HRESULT hr;
     UINT i;
 
-    if (!(query = create_query())) return NULL;
-    if ((hr = parse_query( L"SELECT * FROM Win32_DiskPartition", &query->view, &query->mem )) != S_OK) goto done;
+    if (!(query = create_query( WBEMPROX_NAMESPACE_CIMV2 ))) return NULL;
+    if ((hr = parse_query( WBEMPROX_NAMESPACE_CIMV2, L"SELECT * FROM Win32_DiskPartition",
+                           &query->view, &query->mem )) != S_OK) goto done;
     if ((hr = execute_view( query->view )) != S_OK) goto done;
 
-    if (!(query2 = create_query())) return FALSE;
-    if ((hr = parse_query( L"SELECT * FROM Win32_LogicalDisk WHERE DriveType=2 OR DriveType=3", &query2->view,
+    if (!(query2 = create_query( WBEMPROX_NAMESPACE_CIMV2 ))) return FALSE;
+    if ((hr = parse_query( WBEMPROX_NAMESPACE_CIMV2,
+                           L"SELECT * FROM Win32_LogicalDisk WHERE DriveType=2 OR DriveType=3", &query2->view,
                            &query2->mem )) != S_OK) goto done;
     if ((hr = execute_view( query2->view )) != S_OK) goto done;
 
@@ -3053,6 +3069,8 @@ static enum fill_status fill_pnpentity( struct table *table, const struct expr *
                     ARRAY_SIZE(device_id), NULL ))
         {
             rec->device_id = heap_strdupW( device_id );
+            rec->manufacturer = L"The Wine Project";
+            rec->name = L"Wine PnP Device";
 
             table->num_rows++;
             if (!match_row( table, table->num_rows - 1, cond, &status ))
@@ -3162,6 +3180,8 @@ static enum fill_status fill_process( struct table *table, const struct expr *co
         rec->pprocess_id    = entry.th32ParentProcessID;
         rec->thread_count   = entry.cntThreads;
         rec->workingsetsize = 0;
+        /* methods */
+        rec->create         = process_create;
         rec->get_owner      = process_get_owner;
         if (!match_row( table, row, cond, &status ))
         {
@@ -3580,6 +3600,7 @@ static enum fill_status fill_operatingsystem( struct table *table, const struct 
     rec->serialnumber           = get_osserialnumber();
     rec->servicepackmajor       = ver.wServicePackMajor;
     rec->servicepackminor       = ver.wServicePackMinor;
+    rec->status                 = L"OK";
     rec->suitemask              = 272;     /* Single User + Terminal */
     rec->systemdirectory        = get_systemdirectory();
     rec->systemdrive            = get_systemdrive();
@@ -4062,7 +4083,7 @@ static enum fill_status fill_sounddevice( struct table *table, const struct expr
 
 #define C(c) sizeof(c)/sizeof(c[0]), c
 #define D(d) sizeof(d)/sizeof(d[0]), 0, (BYTE *)d
-static struct table builtin_classes[] =
+static struct table cimv2_builtin_classes[] =
 {
     { L"__ASSOCIATORS", C(col_associator), D(data_associator) },
     { L"__PARAMETERS", C(col_param), D(data_param) },
@@ -4107,11 +4128,41 @@ static struct table builtin_classes[] =
 #undef C
 #undef D
 
+static const struct
+{
+    const WCHAR *name;
+    struct table *classes;
+    unsigned int table_count;
+}
+builtin_namespaces[WBEMPROX_NAMESPACE_LAST] =
+{
+    {L"cimv2", cimv2_builtin_classes, ARRAY_SIZE(cimv2_builtin_classes)},
+    {L"Microsoft\\Windows\\Storage", NULL, 0},
+    {L"wmi", NULL, 0},
+};
+
 void init_table_list( void )
 {
-    static struct list tables = LIST_INIT( tables );
-    UINT i;
+    static struct list tables[WBEMPROX_NAMESPACE_LAST];
+    UINT ns, i;
 
-    for (i = 0; i < ARRAY_SIZE(builtin_classes); i++) list_add_tail( &tables, &builtin_classes[i].entry );
-    table_list = &tables;
+    for (ns = 0; ns < ARRAY_SIZE(builtin_namespaces); ns++)
+    {
+        list_init( &tables[ns] );
+        for (i = 0; i < builtin_namespaces[ns].table_count; i++)
+            list_add_tail( &tables[ns], &builtin_namespaces[ns].classes[i].entry );
+        table_list[ns] = &tables[ns];
+    }
+}
+
+enum wbm_namespace get_namespace_from_string( const WCHAR *namespace )
+{
+    unsigned int i;
+
+    if (!wcsicmp( namespace, L"default" )) return WBEMPROX_NAMESPACE_CIMV2;
+
+    for (i = 0; i < WBEMPROX_NAMESPACE_LAST; ++i)
+        if (!wcsicmp( namespace, builtin_namespaces[i].name )) return i;
+
+    return WBEMPROX_NAMESPACE_LAST;
 }

@@ -17,7 +17,6 @@
  */
 
 #include <stdarg.h>
-#include <assert.h>
 
 #define COBJMACROS
 
@@ -751,6 +750,7 @@ static const tid_t HTMLEventObj_iface_tids[] = {
 };
 
 static dispex_static_data_t HTMLEventObj_dispex = {
+    L"MSEventObj",
     NULL,
     DispCEventObj_tid,
     HTMLEventObj_iface_tids
@@ -2136,6 +2136,7 @@ static const tid_t DOMEvent_iface_tids[] = {
 };
 
 static dispex_static_data_t DOMEvent_dispex = {
+    L"Event",
     NULL,
     DispDOMEvent_tid,
     DOMEvent_iface_tids
@@ -2148,6 +2149,7 @@ static const tid_t DOMUIEvent_iface_tids[] = {
 };
 
 static dispex_static_data_t DOMUIEvent_dispex = {
+    L"UIEvent",
     NULL,
     DispDOMUIEvent_tid,
     DOMUIEvent_iface_tids
@@ -2161,6 +2163,7 @@ static const tid_t DOMMouseEvent_iface_tids[] = {
 };
 
 static dispex_static_data_t DOMMouseEvent_dispex = {
+    L"MouseEvent",
     NULL,
     DispDOMMouseEvent_tid,
     DOMMouseEvent_iface_tids
@@ -2174,6 +2177,7 @@ static const tid_t DOMKeyboardEvent_iface_tids[] = {
 };
 
 static dispex_static_data_t DOMKeyboardEvent_dispex = {
+    L"KeyboardEvent",
     NULL,
     DispDOMKeyboardEvent_tid,
     DOMKeyboardEvent_iface_tids
@@ -2186,6 +2190,7 @@ static const tid_t DOMCustomEvent_iface_tids[] = {
 };
 
 static dispex_static_data_t DOMCustomEvent_dispex = {
+    L"CustomEvent",
     NULL,
     DispDOMCustomEvent_tid,
     DOMCustomEvent_iface_tids
@@ -2335,7 +2340,7 @@ HRESULT create_document_event(HTMLDocumentNode *doc, eventid_t event_id, DOMEven
         return E_FAIL;
     }
 
-    event = alloc_event(nsevent, dispex_compat_mode(&doc->node.event_target.dispex), event_id);
+    event = alloc_event(nsevent, doc->document_mode, event_id);
     if(!event)
         return E_OUTOFMEMORY;
 

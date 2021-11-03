@@ -377,7 +377,7 @@
 @ stdcall DeleteVolumeMountPointA(str)
 @ stdcall -import DeleteVolumeMountPointW(wstr)
 @ stdcall -arch=x86_64 DequeueUmsCompletionListItems(ptr long ptr)
-@ stdcall DeviceIoControl(long long ptr long ptr long ptr ptr)
+@ stdcall DeviceIoControl(long long ptr long ptr long ptr ptr) KERNEL32_DeviceIoControl
 @ stdcall -import DisableThreadLibraryCalls(long)
 @ stdcall -import DisconnectNamedPipe(long)
 @ stdcall DnsHostnameToComputerNameA (str ptr ptr)
@@ -630,6 +630,7 @@
 @ stdcall GetCurrentPackageFamilyName(ptr ptr) kernelbase.GetCurrentPackageFamilyName
 @ stdcall GetCurrentPackageFullName(ptr ptr) kernelbase.GetCurrentPackageFullName
 @ stdcall GetCurrentPackageId(ptr ptr) kernelbase.GetCurrentPackageId
+@ stdcall GetCurrentPackagePath(ptr ptr) kernelbase.GetCurrentPackagePath
 @ stdcall -norelay GetCurrentProcess() KERNEL32_GetCurrentProcess
 @ stdcall -norelay GetCurrentProcessId() KERNEL32_GetCurrentProcessId
 @ stdcall GetCurrentProcessorNumber() ntdll.NtGetCurrentProcessorNumber
@@ -782,7 +783,7 @@
 @ stdcall GetProcessAffinityMask(long ptr ptr)
 @ stdcall GetProcessDEPPolicy(long ptr ptr)
 @ stdcall GetProcessFlags(long)
-# @ stub GetProcessGroupAffinity
+@ stdcall -import GetProcessGroupAffinity(long ptr ptr)
 @ stdcall -import GetProcessHandleCount(long ptr)
 @ stdcall -import GetProcessHeap()
 @ stdcall -import GetProcessHeaps(long ptr) RtlGetProcessHeaps
@@ -1651,7 +1652,7 @@
 @ stdcall WriteTapemark(ptr long long long)
 @ stdcall -import ZombifyActCtx(ptr)
 @ stdcall -arch=x86_64 -private __C_specific_handler(ptr long ptr ptr) ntdll.__C_specific_handler
-@ cdecl -arch=arm,arm64,x86_64 -norelay __chkstk() ntdll.__chkstk
+@ cdecl -arch=arm,x86_64 -norelay __chkstk() ntdll.__chkstk
 @ stub _DebugOut
 @ stub _DebugPrintf
 @ stdcall _hread(long ptr long)

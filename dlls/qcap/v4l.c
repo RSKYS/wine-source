@@ -59,7 +59,7 @@
 
 #ifdef HAVE_LINUX_VIDEODEV2_H
 
-WINE_DEFAULT_DEBUG_CHANNEL(qcap);
+WINE_DEFAULT_DEBUG_CHANNEL(quartz);
 WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 static typeof(open) *video_open = open;
@@ -401,7 +401,7 @@ static LONG CDECL v4l_device_get_caps_count(struct video_capture_device *device)
     return device->caps_count;
 }
 
-struct video_capture_device * CDECL v4l_device_create(USHORT index)
+static struct video_capture_device * CDECL v4l_device_create(USHORT index)
 {
     struct v4l2_frmsizeenum frmsize = {0};
     struct video_capture_device *device;

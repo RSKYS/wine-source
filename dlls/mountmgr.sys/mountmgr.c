@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "config.h"
+#include "wine/port.h"
+
 #ifdef __APPLE__
 #include <CoreFoundation/CFString.h>
 #define LoadResource mac_LoadResource
@@ -29,6 +32,9 @@
 
 #include <stdarg.h>
 #include <unistd.h>
+#ifdef HAVE_SYS_STAT_H
+#include <sys/stat.h>
+#endif
 
 #define NONAMELESSUNION
 
@@ -168,8 +174,9 @@ static NTSTATUS query_mount_points( void *buff, SIZE_T insize,
     MOUNTMGR_MOUNT_POINTS *info;
     struct mount_point *mount;
 
-    /* sanity checks */
-    if (input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength > insize ||
+    if (insize < sizeof(*input) ||
+        outsize < sizeof(*info) ||
+        input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength > insize ||
         input->UniqueIdOffset + input->UniqueIdLength > insize ||
         input->DeviceNameOffset + input->DeviceNameLength > insize ||
         input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength < input->SymbolicLinkNameOffset ||
@@ -193,9 +200,9 @@ static NTSTATUS query_mount_points( void *buff, SIZE_T insize,
     if (size > outsize)
     {
         info = buff;
-        if (size >= sizeof(info->Size)) info->Size = size;
+        info->Size = size;
         iosb->Information = sizeof(info->Size);
-        return STATUS_MORE_ENTRIES;
+        return STATUS_BUFFER_OVERFLOW;
     }
 
     input = HeapAlloc( GetProcessHeap(), 0, insize );
@@ -285,33 +292,190 @@ static NTSTATUS define_unix_drive( const void *in_buff, SIZE_T insize )
     }
 }
 
-/* implementation of IOCTL_MOUNTMGR_QUERY_DHCP_REQUEST_PARAMS */
-static NTSTATUS query_dhcp_request_params( void *buff, SIZE_T insize,
-                                           SIZE_T outsize, IO_STATUS_BLOCK *iosb )
+/* implementation of IOCTL_MOUNTMGR_DEFINE_SHELL_FOLDER */
+static NTSTATUS define_shell_folder( const void *in_buff, SIZE_T insize )
 {
-    struct mountmgr_dhcp_request_params *query = buff;
-    ULONG i, offset;
+    const struct mountmgr_shell_folder *input = in_buff;
+    const char *link = NULL;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING name;
+    NTSTATUS status;
+    ULONG size = 256;
+    const char *home;
+    char *buffer = NULL, *backup = NULL, *homelink = NULL;
+    struct stat st;
+    unsigned int i;
+
+    if (input->folder_offset >= insize || input->folder_size > insize - input->folder_offset ||
+        input->symlink_offset >= insize)
+        return STATUS_INVALID_PARAMETER;
+
+    /* make sure string is null-terminated */
+    if (input->symlink_offset)
+    {
+        link = (const char *)in_buff + input->symlink_offset;
+        for (i = input->symlink_offset; i < insize; i++)
+            if (!*((const char *)in_buff + i)) break;
+        if (i >= insize) return STATUS_INVALID_PARAMETER;
+        if (!link[0]) link = NULL;
+    }
+
+    if (link && (!strcmp( link, "$HOME" ) || !strncmp( link, "$HOME/", 6 )) && (home = getenv( "HOME" )))
+    {
+        link += 5;
+        homelink = HeapAlloc( GetProcessHeap(), 0, strlen(home) + strlen(link) + 1 );
+        strcpy( homelink, home );
+        strcat( homelink, link );
+        link = homelink;
+    }
+
+    /* ignore nonexistent link targets */
+    if (link && (stat( link, &st ) || !S_ISDIR( st.st_mode )))
+    {
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto done;
+    }
+
+    name.Buffer = (WCHAR *)((char *)in_buff + input->folder_offset);
+    name.Length = input->folder_size;
+    InitializeObjectAttributes( &attr, &name, 0, 0, NULL );
+
+    for (;;)
+    {
+        if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size )))
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        status = wine_nt_to_unix_file_name( &attr, buffer, &size, FILE_OPEN_IF );
+        if (status == STATUS_NO_SUCH_FILE) status = STATUS_SUCCESS;
+        if (status == STATUS_SUCCESS) break;
+        if (status != STATUS_BUFFER_TOO_SMALL) goto done;
+        HeapFree( GetProcessHeap(), 0, buffer );
+    }
+
+    if (input->create_backup)
+    {
+        if (!(backup = HeapAlloc( GetProcessHeap(), 0, strlen(buffer) + sizeof(".backup" ) )))
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        strcpy( backup, buffer );
+        strcat( backup, ".backup" );
+    }
+
+    if (!lstat( buffer, &st )) /* move old folder/link out of the way */
+    {
+        if (S_ISLNK( st.st_mode ))
+        {
+            unlink( buffer );
+        }
+        else if (link && S_ISDIR( st.st_mode ))
+        {
+            if (rmdir( buffer ))  /* non-empty dir, try to make a backup */
+            {
+                if (!backup || rename( buffer, backup ))
+                {
+                    status = STATUS_OBJECT_NAME_COLLISION;
+                    goto done;
+                }
+            }
+        }
+        else goto done; /* nothing to do, folder already exists */
+    }
+
+    if (link) symlink( link, buffer );
+    else
+    {
+        if (backup && !lstat( backup, &st ) && S_ISDIR( st.st_mode )) rename( backup, buffer );
+        else mkdir( buffer, 0777 );
+    }
+
+done:
+    HeapFree( GetProcessHeap(), 0, buffer );
+    HeapFree( GetProcessHeap(), 0, backup );
+    HeapFree( GetProcessHeap(), 0, homelink );
+    return status;
+}
+
+/* implementation of IOCTL_MOUNTMGR_QUERY_SHELL_FOLDER */
+static NTSTATUS query_shell_folder( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb )
+{
+    char *output = buff;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING name;
+    NTSTATUS status;
+    ULONG size = 256;
+    char *buffer;
+    int ret;
+
+    name.Buffer = buff;
+    name.Length = insize;
+    InitializeObjectAttributes( &attr, &name, 0, 0, NULL );
+
+    for (;;)
+    {
+        if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size ))) return STATUS_NO_MEMORY;
+        status = wine_nt_to_unix_file_name( &attr, buffer, &size, FILE_OPEN );
+        if (!status) break;
+        HeapFree( GetProcessHeap(), 0, buffer );
+        if (status != STATUS_BUFFER_TOO_SMALL) return status;
+    }
+    ret = readlink( buffer, output, outsize - 1 );
+    if (ret >= 0)
+    {
+        output[ret] = 0;
+        iosb->Information = ret + 1;
+    }
+    else status = STATUS_OBJECT_NAME_NOT_FOUND;
+
+    HeapFree( GetProcessHeap(), 0, buffer );
+    return status;
+}
+
+/* implementation of IOCTL_MOUNTMGR_QUERY_DHCP_REQUEST_PARAMS */
+static void WINAPI query_dhcp_request_params( TP_CALLBACK_INSTANCE *instance, void *context )
+{
+    IRP *irp = context;
+    struct mountmgr_dhcp_request_params *query = irp->AssociatedIrp.SystemBuffer;
+    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+    SIZE_T insize = irpsp->Parameters.DeviceIoControl.InputBufferLength;
+    SIZE_T outsize = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
+    ULONG i, offset = 0;
 
     /* sanity checks */
-    if (FIELD_OFFSET(struct mountmgr_dhcp_request_params, params[query->count]) > insize ||
-        !memchrW( query->adapter, 0, ARRAY_SIZE(query->adapter) )) return STATUS_INVALID_PARAMETER;
+    if (FIELD_OFFSET(struct mountmgr_dhcp_request_params, params[query->count]) > insize)
+    {
+        irp->IoStatus.u.Status = STATUS_INVALID_PARAMETER;
+        goto err;
+    }
+
     for (i = 0; i < query->count; i++)
-        if (query->params[i].offset + query->params[i].size > insize) return STATUS_INVALID_PARAMETER;
+        if (query->params[i].offset + query->params[i].size > insize)
+        {
+            irp->IoStatus.u.Status = STATUS_INVALID_PARAMETER;
+            goto err;
+        }
+
 
     offset = FIELD_OFFSET(struct mountmgr_dhcp_request_params, params[query->count]);
     for (i = 0; i < query->count; i++)
     {
-        offset += get_dhcp_request_param( query->adapter, &query->params[i], buff, offset, outsize - offset );
+        offset += get_dhcp_request_param( &query->adapter, &query->params[i], (char *)query, offset, outsize - offset );
         if (offset > outsize)
         {
             if (offset >= sizeof(query->size)) query->size = offset;
-            iosb->Information = sizeof(query->size);
-            return STATUS_MORE_ENTRIES;
+            offset = sizeof(query->size);
+            irp->IoStatus.u.Status = STATUS_BUFFER_OVERFLOW;
+            goto err;
         }
     }
+    irp->IoStatus.u.Status = STATUS_SUCCESS;
 
-    iosb->Information = offset;
-    return STATUS_SUCCESS;
+err:
+    irp->IoStatus.Information = offset;
+    IoCompleteRequest( irp, IO_NO_INCREMENT );
 }
 
 /* implementation of Wine extension to use host APIs to find symbol file by GUID */
@@ -861,7 +1025,7 @@ static NTSTATUS enumerate_credentials( void *buff, SIZE_T insize, SIZE_T outsize
         {
             if (size >= sizeof(list->size)) list->size = size;
             iosb->Information = sizeof(list->size);
-            status = STATUS_MORE_ENTRIES;
+            status = STATUS_BUFFER_OVERFLOW;
         }
         else
         {
@@ -892,11 +1056,6 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
     switch(irpsp->Parameters.DeviceIoControl.IoControlCode)
     {
     case IOCTL_MOUNTMGR_QUERY_POINTS:
-        if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(MOUNTMGR_MOUNT_POINT))
-        {
-            status = STATUS_INVALID_PARAMETER;
-            break;
-        }
         status = query_mount_points( irp->AssociatedIrp.SystemBuffer,
                                      irpsp->Parameters.DeviceIoControl.InputBufferLength,
                                      irpsp->Parameters.DeviceIoControl.OutputBufferLength,
@@ -923,16 +1082,37 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
                                    irpsp->Parameters.DeviceIoControl.OutputBufferLength,
                                    &irp->IoStatus );
         break;
+    case IOCTL_MOUNTMGR_DEFINE_SHELL_FOLDER:
+        if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_shell_folder))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        irp->IoStatus.Information = 0;
+        status = define_shell_folder( irp->AssociatedIrp.SystemBuffer,
+                                      irpsp->Parameters.DeviceIoControl.InputBufferLength );
+        break;
+    case IOCTL_MOUNTMGR_QUERY_SHELL_FOLDER:
+        if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_shell_folder))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        status = query_shell_folder( irp->AssociatedIrp.SystemBuffer,
+                                     irpsp->Parameters.DeviceIoControl.InputBufferLength,
+                                     irpsp->Parameters.DeviceIoControl.OutputBufferLength,
+                                     &irp->IoStatus );
+        break;
     case IOCTL_MOUNTMGR_QUERY_DHCP_REQUEST_PARAMS:
         if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_dhcp_request_params))
         {
             status = STATUS_INVALID_PARAMETER;
             break;
         }
-        status = query_dhcp_request_params( irp->AssociatedIrp.SystemBuffer,
-                                            irpsp->Parameters.DeviceIoControl.InputBufferLength,
-                                            irpsp->Parameters.DeviceIoControl.OutputBufferLength,
-                                            &irp->IoStatus );
+
+        if (TrySubmitThreadpoolCallback( query_dhcp_request_params, irp, NULL ))
+            return (irp->IoStatus.u.Status = STATUS_PENDING);
+        status = STATUS_NO_MEMORY;
         break;
 #ifdef __APPLE__
     case IOCTL_MOUNTMGR_QUERY_SYMBOL_FILE:

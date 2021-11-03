@@ -2292,6 +2292,7 @@ static BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardwar
 
     if (msg->message == WM_INPUT)
     {
+        thread_data->buffer->header.dwSize = RAWINPUT_BUFFER_SIZE;
         if (!rawinput_from_hardware_message( thread_data->buffer, msg_data )) return FALSE;
         thread_data->hw_id = hw_id;
         msg->lParam = (LPARAM)hw_id;
@@ -3254,6 +3255,14 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
             hid_usage_page = ((USAGE *)rawinput->data.hid.bRawData)[0];
             hid_usage = ((USAGE *)rawinput->data.hid.bRawData)[1];
         }
+        if (input->u.hi.uMsg == WM_INPUT)
+        {
+            if (!rawinput_device_get_usages( rawinput->header.hDevice, &hid_usage_page, &hid_usage ))
+            {
+                WARN( "unable to get HID usages for device %p\n", rawinput->header.hDevice );
+                return STATUS_INVALID_HANDLE;
+            }
+        }
     }
 
     SERVER_START_REQ( send_hardware_message )
@@ -3283,16 +3292,20 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
             req->input.hw.lparam = MAKELONG( input->u.hi.wParamL, input->u.hi.wParamH );
             switch (input->u.hi.uMsg)
             {
+            case WM_INPUT:
             case WM_INPUT_DEVICE_CHANGE:
                 req->input.hw.rawinput.type = rawinput->header.dwType;
                 switch (rawinput->header.dwType)
                 {
                 case RIM_TYPEHID:
-                    assert( rawinput->data.hid.dwCount <= 1 );
                     req->input.hw.rawinput.hid.device = HandleToUlong( rawinput->header.hDevice );
                     req->input.hw.rawinput.hid.param = rawinput->header.wParam;
                     req->input.hw.rawinput.hid.usage_page = hid_usage_page;
                     req->input.hw.rawinput.hid.usage = hid_usage;
+                    req->input.hw.rawinput.hid.count = rawinput->data.hid.dwCount;
+                    req->input.hw.rawinput.hid.length = rawinput->data.hid.dwSizeHid;
+                    wine_server_add_data( req, rawinput->data.hid.bRawData,
+                                          rawinput->data.hid.dwCount * rawinput->data.hid.dwSizeHid );
                     break;
                 default:
                     assert( 0 );
@@ -4308,7 +4321,7 @@ static BOOL CALLBACK bcast_desktop( LPWSTR desktop, LPARAM lp )
     }
 
     ret = EnumDesktopWindows( hdesktop, bcast_childwindow, lp );
-    CloseDesktop(hdesktop);
+    NtUserCloseDesktop( hdesktop );
     TRACE("-->%d\n", ret);
     return parm->success;
 }
@@ -4322,7 +4335,7 @@ static BOOL CALLBACK bcast_winsta( LPWSTR winsta, LPARAM lp )
         return TRUE;
     ((BroadcastParm *)lp)->winsta = hwinsta;
     ret = EnumDesktopsW( hwinsta, bcast_desktop, lp );
-    CloseWindowStation( hwinsta );
+    NtUserCloseWindowStation( hwinsta );
     TRACE("-->%d\n", ret);
     return ret;
 }

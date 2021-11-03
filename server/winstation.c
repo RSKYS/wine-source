@@ -19,10 +19,10 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <sys/types.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS

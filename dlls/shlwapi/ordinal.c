@@ -1253,7 +1253,7 @@ static BOOL CALLBACK SHLWAPI_EnumChildProc(HWND hWnd, LPARAM lParam)
  *  Nothing.
  *
  * NOTES
- *  The appropriate ASCII or Unicode function is called for the window.
+ *  The appropriate ANSI or Unicode function is called for the window.
  */
 void WINAPI SHPropagateMessage(HWND hWnd, UINT uiMsgId, WPARAM wParam, LPARAM lParam, BOOL bSend)
 {
@@ -2038,7 +2038,7 @@ void WINAPI SHUnregisterClassesW(HINSTANCE hInst, LPCWSTR *lppClasses, INT iCoun
 /*************************************************************************
  *      @	[SHLWAPI.240]
  *
- * Call The correct (Ascii/Unicode) default window procedure for a window.
+ * Call The correct (ANSI/Unicode) default window procedure for a window.
  *
  * PARAMS
  *  hWnd     [I] Window to call the default procedure for
@@ -2264,7 +2264,7 @@ VOID WINAPI SHWeakReleaseInterface(IUnknown *lpDest, IUnknown **lppUnknown)
 /*************************************************************************
  *      @	[SHLWAPI.269]
  *
- * Convert an ASCII string of a CLSID into a CLSID.
+ * Convert an ANSI string of a CLSID into a CLSID.
  *
  * PARAMS
  *  idstr [I] String representing a CLSID in registry format
@@ -2363,7 +2363,7 @@ HRESULT WINAPI SHInvokeDefaultCommand(HWND hWnd, IShellFolder* lpFolder, LPCITEM
  *
  * _SHPackDispParamsV
  */
-HRESULT WINAPI SHPackDispParamsV(DISPPARAMS *params, VARIANTARG *args, UINT cnt, __ms_va_list valist)
+HRESULT WINAPI SHPackDispParamsV(DISPPARAMS *params, VARIANTARG *args, UINT cnt, va_list valist)
 {
   VARIANTARG *iter;
 
@@ -2417,12 +2417,12 @@ HRESULT WINAPI SHPackDispParamsV(DISPPARAMS *params, VARIANTARG *args, UINT cnt,
  */
 HRESULT WINAPIV SHPackDispParams(DISPPARAMS *params, VARIANTARG *args, UINT cnt, ...)
 {
-  __ms_va_list valist;
+  va_list valist;
   HRESULT hres;
 
-  __ms_va_start(valist, cnt);
+  va_start(valist, cnt);
   hres = SHPackDispParamsV(params, args, cnt, valist);
-  __ms_va_end(valist);
+  va_end(valist);
   return hres;
 }
 
@@ -2579,7 +2579,7 @@ HRESULT WINAPIV IUnknown_CPContainerInvokeParam(
   IConnectionPoint *iCP;
   IConnectionPointContainer *iCPC;
   DISPPARAMS dispParams = {buffer, NULL, cParams, 0};
-  __ms_va_list valist;
+  va_list valist;
 
   if (!container)
     return E_NOINTERFACE;
@@ -2593,9 +2593,9 @@ HRESULT WINAPIV IUnknown_CPContainerInvokeParam(
   if(FAILED(result))
       return result;
 
-  __ms_va_start(valist, cParams);
+  va_start(valist, cParams);
   SHPackDispParamsV(&dispParams, buffer, cParams, valist);
-  __ms_va_end(valist);
+  va_end(valist);
 
   result = SHLWAPI_InvokeByIID(iCP, riid, dispId, &dispParams);
   IConnectionPoint_Release(iCP);
@@ -4031,10 +4031,10 @@ INT WINAPIV ShellMessageBoxWrapW(HINSTANCE hInstance, HWND hWnd, LPCWSTR lpText,
     WCHAR *szText = NULL, szTitle[100];
     LPCWSTR pszText, pszTitle = szTitle;
     LPWSTR pszTemp;
-    __ms_va_list args;
+    va_list args;
     int ret;
 
-    __ms_va_start(args, uType);
+    va_start(args, uType);
 
     TRACE("(%p,%p,%p,%p,%08x)\n", hInstance, hWnd, lpText, lpCaption, uType);
 
@@ -4056,7 +4056,7 @@ INT WINAPIV ShellMessageBoxWrapW(HINSTANCE hInstance, HWND hWnd, LPCWSTR lpText,
         pszText = szText;
         if (!pszText) {
             WARN("Failed to load id %d\n", LOWORD(lpText));
-            __ms_va_end(args);
+            va_end(args);
             return 0;
         }
     }
@@ -4066,7 +4066,7 @@ INT WINAPIV ShellMessageBoxWrapW(HINSTANCE hInstance, HWND hWnd, LPCWSTR lpText,
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_STRING,
                    pszText, 0, 0, (LPWSTR)&pszTemp, 0, &args);
 
-    __ms_va_end(args);
+    va_end(args);
 
     ret = MessageBoxW(hWnd, pszTemp, pszTitle, uType);
 
@@ -4360,7 +4360,7 @@ INT WINAPI SHFormatDateTimeA(const FILETIME UNALIGNED *fileTime, DWORD *flags,
     retval = SHFormatDateTimeW(fileTime, flags, bufW, size);
 
     if (retval != 0)
-        WideCharToMultiByte(CP_ACP, 0, bufW, -1, buf, size, NULL, NULL);
+        retval = WideCharToMultiByte(CP_ACP, 0, bufW, -1, buf, size, NULL, NULL);
 
     HeapFree(GetProcessHeap(), 0, bufW);
     return retval;

@@ -198,7 +198,7 @@ static RTL_USER_PROCESS_PARAMETERS *create_process_params( const WCHAR *filename
         params->hStdOutput = startup->hStdOutput;
         params->hStdError  = startup->hStdError;
     }
-    else if (flags & DETACHED_PROCESS)
+    else if (flags & (DETACHED_PROCESS | CREATE_NEW_CONSOLE))
     {
         params->hStdInput  = INVALID_HANDLE_VALUE;
         params->hStdOutput = INVALID_HANDLE_VALUE;
@@ -249,11 +249,12 @@ static NTSTATUS create_nt_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUT
                                    SECURITY_ATTRIBUTES *tsa, DWORD process_flags,
                                    RTL_USER_PROCESS_PARAMETERS *params,
                                    RTL_USER_PROCESS_INFORMATION *info, HANDLE parent,
-                                   const struct proc_thread_attr *handle_list )
+                                   const struct proc_thread_attr *handle_list,
+                                   const struct proc_thread_attr *job_list)
 {
     OBJECT_ATTRIBUTES process_attr, thread_attr;
     PS_CREATE_INFO create_info;
-    ULONG_PTR buffer[offsetof( PS_ATTRIBUTE_LIST, Attributes[7] ) / sizeof(ULONG_PTR)];
+    ULONG_PTR buffer[offsetof( PS_ATTRIBUTE_LIST, Attributes[8] ) / sizeof(ULONG_PTR)];
     PS_ATTRIBUTE_LIST *attr = (PS_ATTRIBUTE_LIST *)buffer;
     UNICODE_STRING nameW;
     NTSTATUS status;
@@ -312,6 +313,14 @@ static NTSTATUS create_nt_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUT
             attr->Attributes[pos].ReturnLength = NULL;
             pos++;
         }
+        if (job_list)
+        {
+            attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_JOB_LIST;
+            attr->Attributes[pos].Size         = job_list->size;
+            attr->Attributes[pos].ValuePtr     = job_list->value;
+            attr->Attributes[pos].ReturnLength = NULL;
+            pos++;
+        }
         attr->TotalLength = offsetof( PS_ATTRIBUTE_LIST, Attributes[pos] );
 
         InitializeObjectAttributes( &process_attr, NULL, 0, NULL, psa ? psa->lpSecurityDescriptor : NULL );
@@ -353,7 +362,7 @@ static NTSTATUS create_vdm_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBU
               winevdm, params->ImagePathName.Buffer, params->CommandLine.Buffer );
     RtlInitUnicodeString( &params->ImagePathName, winevdm );
     RtlInitUnicodeString( &params->CommandLine, newcmdline );
-    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL, NULL );
+    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL, NULL, NULL );
     HeapFree( GetProcessHeap(), 0, newcmdline );
     return status;
 }
@@ -382,7 +391,7 @@ static NTSTATUS create_cmd_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBU
     swprintf( newcmdline, len, L"%s /s/c \"%s\"", comspec, params->CommandLine.Buffer );
     RtlInitUnicodeString( &params->ImagePathName, comspec );
     RtlInitUnicodeString( &params->CommandLine, newcmdline );
-    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL, NULL );
+    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL, NULL, NULL );
     RtlFreeHeap( GetProcessHeap(), 0, newcmdline );
     return status;
 }
@@ -485,7 +494,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                                                       const WCHAR *cur_dir, STARTUPINFOW *startup_info,
                                                       PROCESS_INFORMATION *info, HANDLE *new_token )
 {
-    const struct proc_thread_attr *handle_list = NULL;
+    const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
     WCHAR name[MAX_PATH];
     WCHAR *p, *tidy_cmdline = cmd_line;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
@@ -580,6 +589,11 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                             params->ConsoleHandle = console->reference;
                             break;
                         }
+                    case PROC_THREAD_ATTRIBUTE_JOB_LIST:
+                        job_list = &attrs->attrs[i];
+                        TRACE( "PROC_THREAD_ATTRIBUTE_JOB_LIST handle count %Iu.\n",
+                               attrs->attrs[i].size / sizeof(HANDLE) );
+                        break;
                     default:
                         FIXME("Unsupported attribute %#Ix.\n", attrs->attrs[i].attr);
                         break;
@@ -594,7 +608,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     if (flags & CREATE_SUSPENDED) nt_flags |= PROCESS_CREATE_FLAGS_SUSPENDED;
 
     status = create_nt_process( token, debug, process_attr, thread_attr,
-                                nt_flags, params, &rtl_info, parent, handle_list );
+                                nt_flags, params, &rtl_info, parent, handle_list, job_list );
     switch (status)
     {
     case STATUS_SUCCESS:
@@ -787,6 +801,17 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetPriorityClass( HANDLE process )
     case PROCESS_PRIOCLASS_REALTIME: return REALTIME_PRIORITY_CLASS;
     default: return 0;
     }
+}
+
+
+/***********************************************************************
+ *           GetProcessGroupAffinity   (kernelbase.@)
+ */
+BOOL WINAPI DECLSPEC_HOTPATCH GetProcessGroupAffinity( HANDLE process, USHORT *count, USHORT *array )
+{
+    FIXME( "(%p,%p,%p): stub\n", process, count, array );
+    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+    return FALSE;
 }
 
 
@@ -999,11 +1024,20 @@ HANDLE WINAPI DECLSPEC_HOTPATCH OpenProcess( DWORD access, BOOL inherit, DWORD i
 /***********************************************************************
  *           ProcessIdToSessionId   (kernelbase.@)
  */
-BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD procid, DWORD *sessionid )
+BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD pid, DWORD *id )
 {
-    if (procid != GetCurrentProcessId()) FIXME( "Unsupported for other process %x\n", procid );
-    *sessionid = NtCurrentTeb()->Peb->SessionId;
-    return TRUE;
+    HANDLE process;
+    NTSTATUS status;
+
+    if (pid == GetCurrentProcessId())
+    {
+        *id = NtCurrentTeb()->Peb->SessionId;
+        return TRUE;
+    }
+    if (!(process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid ))) return FALSE;
+    status = NtQueryInformationProcess( process, ProcessSessionInformation, id, sizeof(*id), NULL );
+    CloseHandle( process );
+    return set_ntstatus( status );
 }
 
 
@@ -1094,6 +1128,18 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetPriorityClass( HANDLE process, DWORD class )
 BOOL WINAPI DECLSPEC_HOTPATCH SetProcessAffinityUpdateMode( HANDLE process, DWORD flags )
 {
     FIXME( "(%p,0x%08x): stub\n", process, flags );
+    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+    return FALSE;
+}
+
+
+/***********************************************************************
+ *           SetProcessGroupAffinity   (kernelbase.@)
+ */
+BOOL WINAPI DECLSPEC_HOTPATCH SetProcessGroupAffinity( HANDLE process, const GROUP_AFFINITY *new,
+                                                       GROUP_AFFINITY *old )
+{
+    FIXME( "(%p,%p,%p): stub\n", process, new, old );
     SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
     return FALSE;
 }
@@ -1686,6 +1732,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH UpdateProcThreadAttribute( struct _PROC_THREAD_ATT
            return FALSE;
        }
        break;
+
+    case PROC_THREAD_ATTRIBUTE_JOB_LIST:
+        if ((size / sizeof(HANDLE)) * sizeof(HANDLE) != size)
+        {
+            SetLastError( ERROR_BAD_LENGTH );
+            return FALSE;
+        }
+        break;
 
     default:
         SetLastError( ERROR_NOT_SUPPORTED );

@@ -659,7 +659,8 @@ static int schan_find_sec_buffer_idx(const SecBufferDesc *desc, unsigned int sta
     for (i = start_idx; i < desc->cBuffers; ++i)
     {
         buffer = &desc->pBuffers[i];
-        if (buffer->BufferType == buffer_type) return i;
+        if ((buffer->BufferType | SECBUFFER_ATTRMASK) == (buffer_type | SECBUFFER_ATTRMASK))
+            return i;
     }
 
     return -1;
@@ -759,9 +760,8 @@ static char * CDECL schan_get_buffer(const struct schan_transport *t, struct sch
  *      *buff_len > 0 indicates that some data was read.  May be less than
  *          what was requested, in which case the caller should call again if/
  *          when they want more.
- *  EAGAIN when no data could be read without blocking
+ *  -1 when no data could be read without blocking
  *  another errno-style error value on failure
- *
  */
 static int CDECL schan_pull(struct schan_transport *t, void *buff, size_t *buff_len)
 {
@@ -774,7 +774,7 @@ static int CDECL schan_pull(struct schan_transport *t, void *buff, size_t *buff_
 
     b = schan_get_buffer(t, &t->in, &local_len);
     if (!b)
-        return EAGAIN;
+        return -1;
 
     memcpy(buff, b, local_len);
     t->in.offset += local_len;
@@ -797,10 +797,9 @@ static int CDECL schan_pull(struct schan_transport *t, void *buff, size_t *buff_
  *  0 on success
  *      *buff_len will be > 0 indicating how much data was written.  May be less
  *          than what was requested, in which case the caller should call again
-            if/when they want to write more.
- *  EAGAIN when no data could be written without blocking
+ *          if/when they want to write more.
+ * -1 when no data could be written without blocking
  *  another errno-style error value on failure
- *
  */
 static int CDECL schan_push(struct schan_transport *t, const void *buff, size_t *buff_len)
 {
@@ -813,7 +812,7 @@ static int CDECL schan_push(struct schan_transport *t, const void *buff, size_t 
 
     b = schan_get_buffer(t, &t->out, &local_len);
     if (!b)
-        return EAGAIN;
+        return -1;
 
     memcpy(b, buff, local_len);
     t->out.offset += local_len;
@@ -883,7 +882,7 @@ static inline SIZE_T read_record_size(const BYTE *buf, SIZE_T header_size)
 
 static inline BOOL is_dtls_context(const struct schan_context *ctx)
 {
-    return (ctx->header_size == HEADER_SIZE_DTLS);
+    return ctx->header_size == HEADER_SIZE_DTLS;
 }
 
 /***********************************************************************
@@ -909,6 +908,12 @@ static SECURITY_STATUS SEC_ENTRY schan_InitializeSecurityContextW(
 
     dump_buffer_desc(pInput);
     dump_buffer_desc(pOutput);
+
+    if (ptsExpiry)
+    {
+        ptsExpiry->LowPart = 0;
+        ptsExpiry->HighPart = 0;
+    }
 
     if (!phContext)
     {
@@ -984,36 +989,29 @@ static SECURITY_STATUS SEC_ENTRY schan_InitializeSecurityContextW(
         SIZE_T record_size = 0;
         unsigned char *ptr;
 
-        ctx = schan_get_object(phContext->dwLower, SCHAN_HANDLE_CTX);
-        if (pInput)
+        if (!(ctx = schan_get_object(phContext->dwLower, SCHAN_HANDLE_CTX))) return SEC_E_INVALID_HANDLE;
+        if (!pInput) return is_dtls_context(ctx) ? SEC_E_INSUFFICIENT_MEMORY : SEC_E_INCOMPLETE_MESSAGE;
+        if ((idx = schan_find_sec_buffer_idx(pInput, 0, SECBUFFER_TOKEN)) == -1) return SEC_E_INCOMPLETE_MESSAGE;
+
+        buffer = &pInput->pBuffers[idx];
+        ptr = buffer->pvBuffer;
+        expected_size = 0;
+
+        while (buffer->cbBuffer > expected_size + ctx->header_size)
         {
-            idx = schan_find_sec_buffer_idx(pInput, 0, SECBUFFER_TOKEN);
-            if (idx == -1)
-                return SEC_E_INCOMPLETE_MESSAGE;
+            record_size = ctx->header_size + read_record_size(ptr, ctx->header_size);
 
-            buffer = &pInput->pBuffers[idx];
-            ptr = buffer->pvBuffer;
-            expected_size = 0;
-
-            while (buffer->cbBuffer > expected_size + ctx->header_size)
-            {
-                record_size = ctx->header_size + read_record_size(ptr, ctx->header_size);
-
-                if (buffer->cbBuffer < expected_size + record_size)
-                    break;
-
-                expected_size += record_size;
-                ptr += record_size;
-            }
-
-            if (!expected_size)
-            {
-                TRACE("Expected at least %lu bytes, but buffer only contains %u bytes.\n",
-                      max(6, record_size), buffer->cbBuffer);
-                return SEC_E_INCOMPLETE_MESSAGE;
-            }
+            if (buffer->cbBuffer < expected_size + record_size) break;
+            expected_size += record_size;
+            ptr += record_size;
         }
-        else if (!is_dtls_context(ctx)) return SEC_E_INCOMPLETE_MESSAGE;
+
+        if (!expected_size)
+        {
+            TRACE("Expected at least %lu bytes, but buffer only contains %u bytes.\n",
+                  max(ctx->header_size + 1, record_size), buffer->cbBuffer);
+            return SEC_E_INCOMPLETE_MESSAGE;
+        }
 
         TRACE("Using expected_size %lu.\n", expected_size);
     }

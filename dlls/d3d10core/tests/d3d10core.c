@@ -1976,6 +1976,8 @@ static void test_create_texture2d(void)
         {DXGI_FORMAT_R8G8B8A8_UINT,          1, D3D10_BIND_RENDER_TARGET,   0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_SNORM,         1, D3D10_BIND_RENDER_TARGET,   0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_SINT,          1, D3D10_BIND_RENDER_TARGET,   0, TRUE,  FALSE},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,         1, D3D10_BIND_RENDER_TARGET,   D3D10_RESOURCE_MISC_SHARED | D3D10_RESOURCE_MISC_SHARED_KEYEDMUTEX,
+                FALSE, TRUE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,      1, D3D10_BIND_SHADER_RESOURCE, 0, FALSE, TRUE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,      1, D3D10_BIND_RENDER_TARGET,   0, FALSE, FALSE},
         {DXGI_FORMAT_D32_FLOAT,              1, D3D10_BIND_SHADER_RESOURCE, 0, FALSE, TRUE},
@@ -5531,6 +5533,20 @@ float4 main(float4 color : COLOR) : SV_TARGET
     blend_factor[2] = 0.3f;
     blend_factor[3] = 0.4f;
     ID3D10Device_OMSetBlendState(device, blend_state, blend_factor, D3D10_DEFAULT_SAMPLE_MASK);
+    /* OMGetBlendState() arguments are optional */
+    ID3D10Device_OMGetBlendState(device, NULL, NULL, NULL);
+    ID3D10Device_OMGetBlendState(device, &tmp_blend_state, NULL, NULL);
+    ID3D10BlendState_Release(tmp_blend_state);
+    sample_mask = 0;
+    ID3D10Device_OMGetBlendState(device, NULL, NULL, &sample_mask);
+    ok(sample_mask == D3D10_DEFAULT_SAMPLE_MASK, "Unexpected sample mask %#x.\n", sample_mask);
+    memset(tmp_blend_factor, 0, sizeof(tmp_blend_factor));
+    ID3D10Device_OMGetBlendState(device, NULL, tmp_blend_factor, NULL);
+    ok(tmp_blend_factor[0] == 0.1f && tmp_blend_factor[1] == 0.2f
+            && tmp_blend_factor[2] == 0.3f && tmp_blend_factor[3] == 0.4f,
+            "Got unexpected blend factor {%.8e, %.8e, %.8e, %.8e}.\n",
+            tmp_blend_factor[0], tmp_blend_factor[1], tmp_blend_factor[2], tmp_blend_factor[3]);
+
     ID3D10Device_OMGetBlendState(device, &tmp_blend_state, tmp_blend_factor, &sample_mask);
     ok(tmp_blend_factor[0] == 0.1f && tmp_blend_factor[1] == 0.2f
             && tmp_blend_factor[2] == 0.3f && tmp_blend_factor[3] == 0.4f,
@@ -5694,6 +5710,17 @@ float4 main(float4 color : COLOR) : SV_TARGET
     ok(tmp_ds_state == ds_state, "Got unexpected depth stencil state %p, expected %p.\n", tmp_ds_state, ds_state);
     ID3D10DepthStencilState_Release(tmp_ds_state);
     ok(stencil_ref == 3, "Got unexpected stencil ref %u.\n", stencil_ref);
+    /* For OMGetDepthStencilState() both arguments are optional. */
+    ID3D10Device_OMGetDepthStencilState(device, NULL, NULL);
+    stencil_ref = 0;
+    ID3D10Device_OMGetDepthStencilState(device, NULL, &stencil_ref);
+    ok(stencil_ref == 3, "Got unexpected stencil ref %u.\n", stencil_ref);
+    tmp_ds_state = NULL;
+    ID3D10Device_OMGetDepthStencilState(device, &tmp_ds_state, NULL);
+    ok(stencil_ref == 3, "Got unexpected stencil ref %u.\n", stencil_ref);
+    ok(tmp_ds_state == ds_state, "Got unexpected depth stencil state %p, expected %p.\n", tmp_ds_state, ds_state);
+    ID3D10DepthStencilState_Release(tmp_ds_state);
+
     ID3D10Device_OMGetRenderTargets(device, D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, tmp_rtv, &tmp_dsv);
     for (i = 0; i < D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
     {
@@ -15251,6 +15278,10 @@ static void test_stream_output(void)
         {
             {"SV_POSITION", 0, 0, 4, 0},
             {NULL,          0, 0, 8, 0},
+        },
+        {
+            {"SV_POSITION", 0, 0, 4, 0},
+            {NULL,          0, 0, 8, 0},
             {"ATTRIB",      1, 0, 4, 0},
         },
         {
@@ -15258,6 +15289,13 @@ static void test_stream_output(void)
             {NULL,          0, 0, 4, 0},
             {NULL,          0, 0, 4, 0},
             {"ATTRIB",      1, 0, 4, 0},
+        },
+        {
+            {"attrib",      1, 0, 4, 0},
+            {"attrib",      2, 0, 3, 0},
+            {"attrib",      3, 0, 2, 0},
+            {NULL,          0, 0, 1, 0},
+            {"attrib",      4, 0, 1, 0},
         },
         /* ComponentCount */
         {
@@ -15313,13 +15351,6 @@ static void test_stream_output(void)
         {
             {"attrib",      1, 0, 4, 0},
             {"attrib",      2, 0, 3, 3},
-        },
-        {
-            {"attrib",      1, 0, 4, 0},
-            {"attrib",      2, 0, 3, 0},
-            {"attrib",      3, 0, 2, 0},
-            {NULL,          0, 0, 1, 0},
-            {"attrib",      4, 0, 1, 0},
         },
         /* Multiple occurrences of the same output */
         {
@@ -15458,6 +15489,8 @@ static void test_stream_output(void)
     for (i = 0; i < ARRAY_SIZE(valid_so_declarations); ++i)
     {
         unsigned int max_output_slot = 0;
+
+        winetest_push_context("Test %u", i);
         for (count = 0; count < ARRAY_SIZE(valid_so_declarations[i]); ++count)
         {
             const D3D10_SO_DECLARATION_ENTRY *e = &valid_so_declarations[i][count];
@@ -15468,10 +15501,12 @@ static void test_stream_output(void)
 
         check_so_desc(device, gs_code, sizeof(gs_code), valid_so_declarations[i], count, 0, !!max_output_slot);
         check_so_desc(device, gs_code, sizeof(gs_code), valid_so_declarations[i], count, 64, !max_output_slot);
+        winetest_pop_context();
     }
 
     for (i = 0; i < ARRAY_SIZE(invalid_so_declarations); ++i)
     {
+        winetest_push_context("Test %u", i);
         for (count = 0; count < ARRAY_SIZE(invalid_so_declarations[i]); ++count)
         {
             const D3D10_SO_DECLARATION_ENTRY *e = &invalid_so_declarations[i][count];
@@ -15481,6 +15516,7 @@ static void test_stream_output(void)
 
         check_so_desc(device, gs_code, sizeof(gs_code), invalid_so_declarations[i], count, 0, FALSE);
         check_so_desc(device, gs_code, sizeof(gs_code), invalid_so_declarations[i], count, 64, FALSE);
+        winetest_pop_context();
     }
 
     /* Buffer stride */
@@ -15493,8 +15529,8 @@ static void test_stream_output(void)
 
 static void test_stream_output_resume(void)
 {
+    ID3D10Buffer *cb, *so_buffer, *so_buffer2, *buffer;
     struct d3d10core_test_context test_context;
-    ID3D10Buffer *cb, *so_buffer, *buffer;
     unsigned int i, j, idx, offset;
     struct resource_readback rb;
     ID3D10GeometryShader *gs;
@@ -15571,16 +15607,22 @@ static void test_stream_output_resume(void)
 
     cb = create_buffer(device, D3D10_BIND_CONSTANT_BUFFER, sizeof(constants[0]), &constants[0]);
     so_buffer = create_buffer(device, D3D10_BIND_STREAM_OUTPUT, 1024, NULL);
+    so_buffer2 = create_buffer(device, D3D10_BIND_STREAM_OUTPUT, 1024, NULL);
 
     ID3D10Device_GSSetShader(device, gs);
     ID3D10Device_GSSetConstantBuffers(device, 0, 1, &cb);
 
-    offset = 0;
-    ID3D10Device_SOSetTargets(device, 1, &so_buffer, &offset);
-
     ID3D10Device_ClearRenderTargetView(device, test_context.backbuffer_rtv, &white.x);
     check_texture_color(test_context.backbuffer, 0xffffffff, 0);
 
+    /* Draw into a SO buffer and then immediately destroy it, to make sure that
+     * wined3d doesn't try to rebind transform feedback buffers while transform
+     * feedback is active. */
+    offset = 0;
+    ID3D10Device_SOSetTargets(device, 1, &so_buffer2, &offset);
+    draw_color_quad(&test_context, &red);
+    ID3D10Device_SOSetTargets(device, 1, &so_buffer, &offset);
+    ID3D10Buffer_Release(so_buffer2);
     draw_color_quad(&test_context, &red);
     check_texture_color(test_context.backbuffer, 0xff0000ff, 0);
 
@@ -18935,6 +18977,224 @@ static void test_unbound_streams(void)
     release_test_context(&test_context);
 }
 
+static void test_texture_compressed_3d(void)
+{
+    struct d3d10core_test_context test_context;
+    D3D10_SUBRESOURCE_DATA resource_data;
+    D3D10_TEXTURE3D_DESC texture_desc;
+    ID3D10SamplerState *sampler_state;
+    unsigned int idx, r0, r1, x, y, z;
+    D3D10_SAMPLER_DESC sampler_desc;
+    ID3D10ShaderResourceView *srv;
+    struct resource_readback rb;
+    ID3D10Texture3D *texture;
+    DWORD colour, expected;
+    ID3D10PixelShader *ps;
+    ID3D10Device *device;
+    DWORD *texture_data;
+    BOOL equal = TRUE;
+    HRESULT hr;
+
+    static const DWORD ps_code[] =
+    {
+#if 0
+        Texture3D t;
+        SamplerState s;
+
+        float4 main(float4 position : SV_POSITION) : SV_Target
+        {
+            return t.Sample(s, position.xyz / float3(640, 480, 1));
+        }
+#endif
+        0x43425844, 0x27b15ae8, 0xbebf46f7, 0x6cd88d8d, 0x5118de51, 0x00000001, 0x00000134, 0x00000003,
+        0x0000002c, 0x00000060, 0x00000094, 0x4e475349, 0x0000002c, 0x00000001, 0x00000008, 0x00000020,
+        0x00000000, 0x00000001, 0x00000003, 0x00000000, 0x0000070f, 0x505f5653, 0x5449534f, 0x004e4f49,
+        0x4e47534f, 0x0000002c, 0x00000001, 0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000003,
+        0x00000000, 0x0000000f, 0x545f5653, 0x65677261, 0xabab0074, 0x52444853, 0x00000098, 0x00000040,
+        0x00000026, 0x0300005a, 0x00106000, 0x00000000, 0x04002858, 0x00107000, 0x00000000, 0x00005555,
+        0x04002064, 0x00101072, 0x00000000, 0x00000001, 0x03000065, 0x001020f2, 0x00000000, 0x02000068,
+        0x00000001, 0x0a000038, 0x00100072, 0x00000000, 0x00101246, 0x00000000, 0x00004002, 0x3acccccd,
+        0x3b088889, 0x3f800000, 0x00000000, 0x09000045, 0x001020f2, 0x00000000, 0x00100246, 0x00000000,
+        0x00107e46, 0x00000000, 0x00106000, 0x00000000, 0x0100003e,
+    };
+
+    static const unsigned int block_indices[] =
+    {
+        0, 1, 3, 2,
+        6, 7, 5, 4,
+        0, 1, 3, 2,
+        6, 7, 5, 4,
+    };
+
+    if (!init_test_context(&test_context))
+        return;
+    device = test_context.device;
+
+    hr = ID3D10Device_CreatePixelShader(device, ps_code, sizeof(ps_code), &ps);
+    ok(hr == S_OK, "Got unexpected hr %#x.\n", hr);
+
+    /* Simply test all combinations of r0 and r1. */
+    texture_data = heap_alloc(256 * 256 * sizeof(UINT64));
+    for (r1 = 0; r1 < 256; ++r1)
+    {
+        for (r0 = 0; r0 < 256; ++r0)
+        {
+            /* bits = block_indices[] */
+            texture_data[(r1 * 256 + r0) * 2 + 0] = 0xe4c80000 | (r1 << 8) | r0;
+            texture_data[(r1 * 256 + r0) * 2 + 1] = 0x97e4c897;
+        }
+    }
+    resource_data.pSysMem = texture_data;
+    resource_data.SysMemPitch = 64 * sizeof(UINT64);
+    resource_data.SysMemSlicePitch = 64 * resource_data.SysMemPitch;
+
+    texture_desc.Width = 256;
+    texture_desc.Height = 256;
+    texture_desc.Depth = 16;
+    texture_desc.MipLevels = 1;
+    texture_desc.Format = DXGI_FORMAT_BC4_UNORM;
+    texture_desc.Usage = D3D10_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    texture_desc.CPUAccessFlags = 0;
+    texture_desc.MiscFlags = 0;
+    hr = ID3D10Device_CreateTexture3D(device, &texture_desc, &resource_data, &texture);
+    ok(hr == S_OK, "Got unexpected hr %#x.\n", hr);
+    heap_free(texture_data);
+
+    hr = ID3D10Device_CreateShaderResourceView(device, (ID3D10Resource *)texture, NULL, &srv);
+    ok(hr == S_OK, "Got unexpected hr %#x.\n", hr);
+
+    sampler_desc.Filter = D3D10_FILTER_MIN_MAG_MIP_POINT;
+    sampler_desc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.AddressV = D3D10_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.AddressW = D3D10_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.MipLODBias = 0.0f;
+    sampler_desc.MaxAnisotropy = 0;
+    sampler_desc.ComparisonFunc = D3D10_COMPARISON_NEVER;
+    sampler_desc.BorderColor[0] = 0.0f;
+    sampler_desc.BorderColor[1] = 0.0f;
+    sampler_desc.BorderColor[2] = 0.0f;
+    sampler_desc.BorderColor[3] = 0.0f;
+    sampler_desc.MinLOD = 0.0f;
+    sampler_desc.MaxLOD = 0.0f;
+    hr = ID3D10Device_CreateSamplerState(device, &sampler_desc, &sampler_state);
+    ok(hr == S_OK, "Got unexpected hr %#x.\n", hr);
+
+    ID3D10Device_PSSetShader(device, ps);
+    ID3D10Device_PSSetShaderResources(device, 0, 1, &srv);
+    ID3D10Device_PSSetSamplers(device, 0, 1, &sampler_state);
+
+    for (z = 0; z < 16; ++z)
+    {
+        draw_quad_z(&test_context, (z * 2.0f + 1.0f) / 32.0f);
+        get_texture_readback(test_context.backbuffer, 0, &rb);
+        for (y = 0; y < 256; ++y)
+        {
+            for (x = 0; x < 256; ++x)
+            {
+                idx = z * 64 * 64 + (y / 4) * 64 + (x / 4);
+                r0 = idx % 256;
+                r1 = idx / 256;
+
+                switch (block_indices[(y % 4) * 4 + (x % 4)])
+                {
+                    case 0: expected = r0; break;
+                    case 1: expected = r1; break;
+                    case 2: expected = r0 > r1 ? (12 * r0 +  2 * r1 + 7) / 14 : (8 * r0 + 2 * r1 + 5) / 10; break;
+                    case 3: expected = r0 > r1 ? (10 * r0 +  4 * r1 + 7) / 14 : (6 * r0 + 4 * r1 + 5) / 10; break;
+                    case 4: expected = r0 > r1 ? ( 8 * r0 +  6 * r1 + 7) / 14 : (4 * r0 + 6 * r1 + 5) / 10; break;
+                    case 5: expected = r0 > r1 ? ( 6 * r0 +  8 * r1 + 7) / 14 : (2 * r0 + 8 * r1 + 5) / 10; break;
+                    case 6: expected = r0 > r1 ? ( 4 * r0 + 10 * r1 + 7) / 14 : 0x00; break;
+                    case 7: expected = r0 > r1 ? ( 2 * r0 + 12 * r1 + 7) / 14 : 0xff; break;
+                    default: expected = ~0u; break;
+                }
+                expected |= 0xff000000;
+                colour = get_readback_color(&rb, (x * 640 + 128) / 256, (y * 480 + 128) / 256);
+                if (!(equal = compare_color(colour, expected, 8)))
+                    break;
+            }
+            if (!equal)
+                break;
+        }
+        release_resource_readback(&rb);
+        if (!equal)
+            break;
+    }
+    ok(equal, "Got unexpected colour 0x%08x at (%u, %u, %u), expected 0x%08x.\n", colour, x, y, z, expected);
+
+    ID3D10PixelShader_Release(ps);
+    ID3D10SamplerState_Release(sampler_state);
+    ID3D10ShaderResourceView_Release(srv);
+    ID3D10Texture3D_Release(texture);
+    release_test_context(&test_context);
+}
+
+static void fill_dynamic_vb_quad(void *data, unsigned int x, unsigned int y)
+{
+    struct vec3 *quad = (struct vec3 *)data + 4 * x;
+
+    memset(quad, 0, 4 * sizeof(*quad));
+
+    quad[0].x = quad[1].x = -1.0f + 0.01f * x;
+    quad[2].x = quad[3].x = -1.0f + 0.01f * (x + 1);
+
+    quad[0].y = quad[2].y = -1.0f + 0.01f * y;
+    quad[1].y = quad[3].y = -1.0f + 0.01f * (y + 1);
+}
+
+/* Stress-test dynamic maps, to ensure that we are applying the correct
+ * synchronization guarantees. */
+static void test_dynamic_map_synchronization(void)
+{
+    static const struct vec4 green = {0.0f, 1.0f, 0.0f, 1.0f};
+    static const struct vec4 red = {1.0f, 0.0f, 0.0f, 1.0f};
+    struct d3d10core_test_context test_context;
+    D3D10_BUFFER_DESC buffer_desc = {0};
+    ID3D10Device *device;
+    unsigned int x, y;
+    HRESULT hr;
+    void *data;
+
+    if (!init_test_context(&test_context))
+        return;
+    device = test_context.device;
+
+    buffer_desc.ByteWidth = 200 * 4 * sizeof(struct vec3);
+    buffer_desc.Usage = D3D10_USAGE_DYNAMIC;
+    buffer_desc.BindFlags = D3D10_BIND_VERTEX_BUFFER;
+    buffer_desc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+    hr = ID3D10Device_CreateBuffer(device, &buffer_desc, NULL, &test_context.vb);
+    ok(hr == S_OK, "Failed to create vertex buffer, hr %#x.\n", hr);
+
+    ID3D10Device_ClearRenderTargetView(device, test_context.backbuffer_rtv, &red.x);
+
+    for (y = 0; y < 200; ++y)
+    {
+        hr = ID3D10Buffer_Map(test_context.vb, D3D10_MAP_WRITE_DISCARD, 0, &data);
+        ok(hr == S_OK, "Failed to map buffer, hr %#x.\n", hr);
+
+        fill_dynamic_vb_quad(data, 0, y);
+
+        ID3D10Buffer_Unmap(test_context.vb);
+        draw_color_quad(&test_context, &green);
+
+        for (x = 1; x < 200; ++x)
+        {
+            hr = ID3D10Buffer_Map(test_context.vb, D3D10_MAP_WRITE_NO_OVERWRITE, 0, &data);
+            ok(hr == S_OK, "Failed to map buffer, hr %#x.\n", hr);
+
+            fill_dynamic_vb_quad(data, x, y);
+
+            ID3D10Buffer_Unmap(test_context.vb);
+            ID3D10Device_Draw(device, 4, x * 4);
+        }
+    }
+
+    check_texture_color(test_context.backbuffer, 0xff00ff00, 0);
+
+    release_test_context(&test_context);
+}
+
 START_TEST(d3d10core)
 {
     unsigned int argc, i;
@@ -19060,6 +19320,8 @@ START_TEST(d3d10core)
     queue_test(test_independent_blend);
     queue_test(test_dual_source_blend);
     queue_test(test_unbound_streams);
+    queue_test(test_texture_compressed_3d);
+    queue_test(test_dynamic_map_synchronization);
 
     run_queued_tests();
 

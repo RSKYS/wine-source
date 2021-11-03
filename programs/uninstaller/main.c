@@ -23,6 +23,7 @@
 
 #include <string.h>
 #include <windows.h>
+#include <commctrl.h>
 #include <shlwapi.h>
 #include "resource.h"
 #include "regstr.h"
@@ -69,7 +70,7 @@ static void output_writeconsole(const WCHAR *str, DWORD len)
     }
 }
 
-static void output_formatstring(const WCHAR *fmt, __ms_va_list va_args)
+static void output_formatstring(const WCHAR *fmt, va_list va_args)
 {
     WCHAR *str;
     DWORD len;
@@ -88,25 +89,25 @@ static void output_formatstring(const WCHAR *fmt, __ms_va_list va_args)
 static void WINAPIV output_message(unsigned int id, ...)
 {
     WCHAR fmt[1024];
-    __ms_va_list va_args;
+    va_list va_args;
 
     if (!LoadStringW(GetModuleHandleW(NULL), id, fmt, ARRAY_SIZE(fmt)))
     {
         WINE_FIXME("LoadString failed with %d\n", GetLastError());
         return;
     }
-    __ms_va_start(va_args, id);
+    va_start(va_args, id);
     output_formatstring(fmt, va_args);
-    __ms_va_end(va_args);
+    va_end(va_args);
 }
 
 static void WINAPIV output_array(const WCHAR *fmt, ...)
 {
-    __ms_va_list va_args;
+    va_list va_args;
 
-    __ms_va_start(va_args, fmt);
+    va_start(va_args, fmt);
     output_formatstring(fmt, va_args);
-    __ms_va_end(va_args);
+    va_end(va_args);
 }
 
 /**
@@ -175,6 +176,8 @@ int __cdecl wmain(int argc, WCHAR *argv[])
         else WINE_ERR( "failed to restart 64-bit %s, err %d\n", wine_dbgstr_w(filename), GetLastError() );
         Wow64RevertWow64FsRedirection( redir );
     }
+
+    InitCommonControls();
 
     while( i<argc )
     {

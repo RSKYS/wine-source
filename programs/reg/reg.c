@@ -1,5 +1,6 @@
 /*
  * Copyright 2008 Andrew Riedi
+ * Copyright 2016-2017, 2021 Hugh McMaster
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -71,7 +72,7 @@ void output_writeconsole(const WCHAR *str, DWORD wlen)
     }
 }
 
-static void output_formatstring(const WCHAR *fmt, __ms_va_list va_args)
+static void output_formatstring(const WCHAR *fmt, va_list va_args)
 {
     WCHAR *str;
     DWORD len;
@@ -91,7 +92,7 @@ void WINAPIV output_message(unsigned int id, ...)
 {
     WCHAR *fmt = NULL;
     int len;
-    __ms_va_list va_args;
+    va_list va_args;
 
     if (!(len = LoadStringW(GetModuleHandleW(NULL), id, (WCHAR *)&fmt, 0)))
     {
@@ -105,20 +106,20 @@ void WINAPIV output_message(unsigned int id, ...)
 
     LoadStringW(GetModuleHandleW(NULL), id, fmt, len);
 
-    __ms_va_start(va_args, id);
+    va_start(va_args, id);
     output_formatstring(fmt, va_args);
-    __ms_va_end(va_args);
+    va_end(va_args);
 
     free(fmt);
 }
 
 void WINAPIV output_string(const WCHAR *fmt, ...)
 {
-    __ms_va_list va_args;
+    va_list va_args;
 
-    __ms_va_start(va_args, fmt);
+    va_start(va_args, fmt);
     output_formatstring(fmt, va_args);
-    __ms_va_end(va_args);
+    va_end(va_args);
 }
 
 /* ask_confirm() adapted from programs/cmd/builtins.c */
@@ -205,7 +206,7 @@ WCHAR *build_subkey_path(WCHAR *path, DWORD path_len, WCHAR *subkey_name, DWORD 
 
 WCHAR *get_long_key(HKEY root, WCHAR *path)
 {
-    int i, len, path_len;
+    int i, len;
     WCHAR *long_key;
 
     for (i = 0; i < ARRAY_SIZE(root_rels); i++)
@@ -223,15 +224,7 @@ WCHAR *get_long_key(HKEY root, WCHAR *path)
         return long_key;
     }
 
-    path_len = lstrlenW(path);
-
-    if (path[path_len - 1] == '\\')
-    {
-        path[path_len - 1] = 0;
-        path_len--;
-    }
-
-    len += path_len + 1; /* add one for the concatenating backslash */
+    len += lstrlenW(path) + 1; /* add one for the concatenating backslash */
     long_key = malloc((len + 1) * sizeof(WCHAR));
     swprintf(long_key, len + 1, L"%s\\%s", root_rels[i].long_name, path);
     return long_key;
@@ -239,6 +232,8 @@ WCHAR *get_long_key(HKEY root, WCHAR *path)
 
 BOOL parse_registry_key(const WCHAR *key, HKEY *root, WCHAR **path)
 {
+    WCHAR *p;
+
     if (!sane_path(key))
         return FALSE;
 
@@ -261,6 +256,9 @@ BOOL parse_registry_key(const WCHAR *key, HKEY *root, WCHAR **path)
         output_message(STRING_INVALID_SYSTEM_KEY);
         return FALSE;
     }
+
+    p = *path + lstrlenW(*path) - 1;
+    if (*p == '\\') *p = 0;
 
     return TRUE;
 }
@@ -285,6 +283,7 @@ static BOOL is_help_switch(const WCHAR *s)
 
 enum operations {
     REG_ADD,
+    REG_COPY,
     REG_DELETE,
     REG_EXPORT,
     REG_IMPORT,
@@ -299,6 +298,7 @@ static enum operations get_operation(const WCHAR *str, int *op_help)
     static const struct op_info op_array[] =
     {
         { L"add",     REG_ADD,     STRING_ADD_USAGE },
+        { L"copy",    REG_COPY,    STRING_COPY_USAGE },
         { L"delete",  REG_DELETE,  STRING_DELETE_USAGE },
         { L"export",  REG_EXPORT,  STRING_EXPORT_USAGE },
         { L"import",  REG_IMPORT,  STRING_IMPORT_USAGE },
@@ -346,14 +346,12 @@ int __cdecl wmain(int argc, WCHAR *argvW[])
         return 1;
     }
     else if (argc == 2) /* Valid operation, no arguments supplied */
-    {
-        output_message(STRING_INVALID_SYNTAX);
-        output_message(STRING_FUNC_HELP, wcsupr(argvW[1]));
-        return 1;
-    }
+        goto invalid;
 
     if (is_help_switch(argvW[2]))
     {
+        if (argc > 3) goto invalid;
+
         output_message(op_help);
         output_message(STRING_REG_VIEW_USAGE);
         return 0;
@@ -361,6 +359,9 @@ int __cdecl wmain(int argc, WCHAR *argvW[])
 
     if (op == REG_ADD)
         return reg_add(argc, argvW);
+
+    if (op == REG_COPY)
+        return reg_copy(argc, argvW);
 
     if (op == REG_DELETE)
         return reg_delete(argc, argvW);
@@ -372,4 +373,9 @@ int __cdecl wmain(int argc, WCHAR *argvW[])
         return reg_import(argc, argvW);
 
     return reg_query(argc, argvW);
+
+invalid:
+    output_message(STRING_INVALID_SYNTAX);
+    output_message(STRING_FUNC_HELP, wcsupr(argvW[1]));
+    return 1;
 }

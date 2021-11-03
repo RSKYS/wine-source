@@ -19,7 +19,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -32,9 +31,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <time.h>
-#ifdef HAVE_POLL_H
 #include <poll.h>
-#endif
 #ifdef HAVE_SCHED_H
 #include <sched.h>
 #endif
@@ -67,6 +64,7 @@ struct thread_wait
     client_ptr_t            cookie;     /* magic cookie to return to client */
     abstime_t               when;
     struct timeout_user    *user;
+    int                     status;     /* status to return (unless STATUS_PENDING) */
     struct wait_queue_entry queues[1];
 };
 
@@ -119,8 +117,16 @@ struct context
 {
     struct object   obj;        /* object header */
     unsigned int    status;     /* status of the context */
-    context_t       regs;       /* context data */
+    context_t       regs[3];    /* context data */
 };
+#define CTX_NATIVE  0  /* context for native machine */
+#define CTX_WOW     1  /* context if thread is inside WoW */
+#define CTX_PENDING 2  /* pending native context when we don't know whether thread is inside WoW */
+
+/* flags for registers that always need to be set from the server side */
+static const unsigned int system_flags = SERVER_CTX_DEBUG_REGISTERS;
+/* flags for registers that are set from the native context even in WoW mode */
+static const unsigned int always_native_flags = SERVER_CTX_DEBUG_REGISTERS | SERVER_CTX_FLOATING_POINT | SERVER_CTX_YMM_REGISTERS;
 
 static void dump_context( struct object *obj, int verbose );
 static int context_signaled( struct object *obj, struct wait_queue_entry *entry );
@@ -267,7 +273,8 @@ static void dump_context( struct object *obj, int verbose )
     struct context *context = (struct context *)obj;
     assert( obj->ops == &context_ops );
 
-    fprintf( stderr, "context flags=%x\n", context->regs.flags );
+    fprintf( stderr, "context flags=%x/%x\n",
+             context->regs[CTX_NATIVE].flags, context->regs[CTX_WOW].flags );
 }
 
 
@@ -284,7 +291,8 @@ static struct context *create_thread_context( struct thread *thread )
     if (!(context = alloc_object( &context_ops ))) return NULL;
     context->status = STATUS_PENDING;
     memset( &context->regs, 0, sizeof(context->regs) );
-    context->regs.machine = thread->process->machine;
+    context->regs[CTX_NATIVE].machine = native_machine;
+    context->regs[CTX_PENDING].machine = native_machine;
     return context;
 }
 
@@ -727,6 +735,11 @@ void make_wait_abandoned( struct wait_queue_entry *entry )
     entry->wait->abandoned = 1;
 }
 
+void set_wait_status( struct wait_queue_entry *entry, int status )
+{
+    entry->wait->status = status;
+}
+
 /* finish waiting */
 static unsigned int end_wait( struct thread *thread, unsigned int status )
 {
@@ -739,6 +752,7 @@ static unsigned int end_wait( struct thread *thread, unsigned int status )
 
     if (status < wait->count)  /* wait satisfied, tell it to the objects */
     {
+        wait->status = status;
         if (wait->select == SELECT_WAIT_ALL)
         {
             for (i = 0, entry = wait->queues; i < wait->count; i++, entry++)
@@ -749,6 +763,7 @@ static unsigned int end_wait( struct thread *thread, unsigned int status )
             entry = wait->queues + status;
             entry->obj->ops->satisfied( entry->obj, entry );
         }
+        status = wait->status;
         if (wait->abandoned) status += STATUS_ABANDONED_WAIT_0;
     }
     for (i = 0, entry = wait->queues; i < wait->count; i++, entry++)
@@ -857,7 +872,7 @@ static int send_thread_wakeup( struct thread *thread, client_ptr_t cookie, int s
     if (thread->context && thread->suspend_cookie == cookie
         && signaled != STATUS_KERNEL_APC && signaled != STATUS_USER_APC)
     {
-        if (!thread->context->regs.flags)
+        if (!thread->context->regs[CTX_NATIVE].flags && !thread->context->regs[CTX_WOW].flags)
         {
             release_object( thread->context );
             thread->context = NULL;
@@ -961,8 +976,8 @@ static int signal_object( obj_handle_t handle )
 }
 
 /* select on a list of handles */
-static void select_on( const select_op_t *select_op, data_size_t op_size, client_ptr_t cookie,
-                            int flags, abstime_t when )
+static int select_on( const select_op_t *select_op, data_size_t op_size, client_ptr_t cookie,
+                      int flags, abstime_t when )
 {
     int ret;
     unsigned int count;
@@ -971,7 +986,7 @@ static void select_on( const select_op_t *select_op, data_size_t op_size, client
     switch (select_op->op)
     {
     case SELECT_NONE:
-        if (!wait_on( select_op, 0, NULL, flags, when )) return;
+        if (!wait_on( select_op, 0, NULL, flags, when )) return 1;
         break;
 
     case SELECT_WAIT:
@@ -980,24 +995,24 @@ static void select_on( const select_op_t *select_op, data_size_t op_size, client
         if (op_size < offsetof( select_op_t, wait.handles ) || count > MAXIMUM_WAIT_OBJECTS)
         {
             set_error( STATUS_INVALID_PARAMETER );
-            return;
+            return 1;
         }
         if (!wait_on_handles( select_op, count, select_op->wait.handles, flags, when ))
-            return;
+            return 1;
         break;
 
     case SELECT_SIGNAL_AND_WAIT:
         if (!wait_on_handles( select_op, 1, &select_op->signal_and_wait.wait, flags, when ))
-            return;
+            return 1;
         if (select_op->signal_and_wait.signal)
         {
             if (!signal_object( select_op->signal_and_wait.signal ))
             {
                 end_wait( current, get_error() );
-                return;
+                return 1;
             }
             /* check if we woke ourselves up */
-            if (!current->wait) return;
+            if (!current->wait) return 1;
         }
         break;
 
@@ -1005,23 +1020,23 @@ static void select_on( const select_op_t *select_op, data_size_t op_size, client
     case SELECT_KEYED_EVENT_RELEASE:
         object = (struct object *)get_keyed_event_obj( current->process, select_op->keyed_event.handle,
                          select_op->op == SELECT_KEYED_EVENT_WAIT ? KEYEDEVENT_WAIT : KEYEDEVENT_WAKE );
-        if (!object) return;
+        if (!object) return 1;
         ret = wait_on( select_op, 1, &object, flags, when );
         release_object( object );
-        if (!ret) return;
+        if (!ret) return 1;
         current->wait->key = select_op->keyed_event.key;
         break;
 
     default:
         set_error( STATUS_INVALID_PARAMETER );
-        return;
+        return 1;
     }
 
     if ((ret = check_wait( current )) != -1)
     {
         /* condition is already satisfied */
         set_error( end_wait( current, ret ));
-        return;
+        return 1;
     }
 
     /* now we need to wait */
@@ -1031,12 +1046,12 @@ static void select_on( const select_op_t *select_op, data_size_t op_size, client
                                                       thread_timeout, current->wait )))
         {
             end_wait( current, get_error() );
-            return;
+            return 1;
         }
     }
     current->wait->cookie = cookie;
     set_error( STATUS_PENDING );
-    return;
+    return 0;
 }
 
 /* attempt to wake threads sleeping on the object wait queue */
@@ -1063,7 +1078,6 @@ static inline struct list *get_apc_queue( struct thread *thread, enum apc_type t
     case APC_NONE:
         return NULL;
     case APC_USER:
-    case APC_TIMER:
         return &thread->user_apc;
     default:
         return &thread->system_apc;
@@ -1292,20 +1306,6 @@ static void copy_context( context_t *to, const context_t *from, unsigned int fla
     if (flags & SERVER_CTX_YMM_REGISTERS) to->ymm = from->ymm;
 }
 
-/* return the context flags that correspond to system regs */
-/* (system regs are the ones we can't access on the client side) */
-static unsigned int get_context_system_regs( unsigned short machine )
-{
-    switch (machine)
-    {
-    case IMAGE_FILE_MACHINE_I386:  return SERVER_CTX_DEBUG_REGISTERS;
-    case IMAGE_FILE_MACHINE_AMD64: return SERVER_CTX_DEBUG_REGISTERS;
-    case IMAGE_FILE_MACHINE_ARMNT: return SERVER_CTX_DEBUG_REGISTERS;
-    case IMAGE_FILE_MACHINE_ARM64: return SERVER_CTX_DEBUG_REGISTERS;
-    }
-    return 0;
-}
-
 /* gets the current impersonation token */
 struct token *thread_get_impersonation_token( struct thread *thread )
 {
@@ -1419,6 +1419,7 @@ DECL_HANDLER(init_first_thread)
 
     reply->pid          = get_process_id( process );
     reply->tid          = get_thread_id( current );
+    reply->session_id   = process->session_id;
     reply->info_size    = get_process_startup_info_size( process );
     reply->server_start = server_start_time;
     set_reply_data( supported_machines,
@@ -1445,8 +1446,6 @@ DECL_HANDLER(init_thread)
     generate_debug_event( current, DbgCreateThreadStateChange, &req->entry );
     set_thread_affinity( current, current->affinity );
 
-    reply->pid     = get_process_id( current->process );
-    reply->tid     = get_thread_id( current );
     reply->suspend = (current->suspend || current->process->suspend || current->context != NULL);
 }
 
@@ -1568,41 +1567,65 @@ DECL_HANDLER(resume_thread)
 DECL_HANDLER(select)
 {
     select_op_t select_op;
-    data_size_t op_size;
+    data_size_t op_size, ctx_size;
+    struct context *ctx;
     struct thread_apc *apc;
     const apc_result_t *result = get_req_data();
+    unsigned int ctx_count;
 
-    if (get_req_data_size() < sizeof(*result) ||
-        get_req_data_size() - sizeof(*result) < req->size ||
-        req->size & 3)
-    {
-        set_error( STATUS_INVALID_PARAMETER );
-        return;
-    }
+    if (get_req_data_size() < sizeof(*result)) goto invalid_param;
+    if (get_req_data_size() - sizeof(*result) < req->size) goto invalid_param;
+    if (req->size & 3) goto invalid_param;
+    ctx_size = get_req_data_size() - sizeof(*result) - req->size;
+    ctx_count = ctx_size / sizeof(context_t);
+    if (ctx_count * sizeof(context_t) != ctx_size) goto invalid_param;
+    if (ctx_count > 1 + (current->process->machine != native_machine)) goto invalid_param;
 
-    if (get_req_data_size() - sizeof(*result) - req->size == sizeof(context_t))
+    if (ctx_count)
     {
-        const context_t *context = (const context_t *)((const char *)(result + 1) + req->size);
-        if ((current->context && current->context->status != STATUS_PENDING) ||
-            context->machine != current->process->machine)
+        const context_t *native_context = (const context_t *)((const char *)(result + 1) + req->size);
+        const context_t *wow_context = (ctx_count > 1) ? native_context + 1 : NULL;
+
+        if (current->context && current->context->status != STATUS_PENDING) goto invalid_param;
+
+        if (native_context->machine == native_machine)
         {
-            set_error( STATUS_INVALID_PARAMETER );
-            return;
+            if (wow_context && wow_context->machine != current->process->machine) goto invalid_param;
         }
+        else if (native_context->machine == current->process->machine)
+        {
+            if (wow_context) goto invalid_param;
+            wow_context = native_context;
+            native_context = NULL;
+        }
+        else goto invalid_param;
 
         if (!current->context && !(current->context = create_thread_context( current ))) return;
-        copy_context( &current->context->regs, context,
-                      context->flags & ~(current->context->regs.flags | get_context_system_regs(current->process->machine)) );
-        current->context->status = STATUS_SUCCESS;
+
+        ctx = current->context;
+        if (native_context)
+        {
+            copy_context( &ctx->regs[CTX_NATIVE], native_context,
+                          native_context->flags & ~(ctx->regs[CTX_NATIVE].flags | system_flags) );
+        }
+        if (wow_context)
+        {
+            ctx->regs[CTX_WOW].machine = current->process->machine;
+            copy_context( &ctx->regs[CTX_WOW], wow_context, wow_context->flags & ~ctx->regs[CTX_WOW].flags );
+        }
+        else if (ctx->regs[CTX_PENDING].flags)
+        {
+            unsigned int flags = ctx->regs[CTX_PENDING].flags & ~ctx->regs[CTX_NATIVE].flags;
+            copy_context( &ctx->regs[CTX_NATIVE], &ctx->regs[CTX_PENDING], flags );
+            ctx->regs[CTX_NATIVE].flags |= flags;
+        }
+        ctx->regs[CTX_PENDING].flags = 0;
+        ctx->status = STATUS_SUCCESS;
         current->suspend_cookie = req->cookie;
-        wake_up( &current->context->obj, 0 );
+        wake_up( &ctx->obj, 0 );
     }
 
-    if (!req->cookie)
-    {
-        set_error( STATUS_INVALID_PARAMETER );
-        return;
-    }
+    if (!req->cookie) goto invalid_param;
 
     op_size = min( req->size, sizeof(select_op) );
     memset( &select_op, 0, sizeof(select_op) );
@@ -1628,7 +1651,7 @@ DECL_HANDLER(select)
         release_object( apc );
     }
 
-    select_on( &select_op, op_size, req->cookie, req->flags, req->timeout );
+    reply->signaled = select_on( &select_op, op_size, req->cookie, req->flags, req->timeout );
 
     if (get_error() == STATUS_USER_APC)
     {
@@ -1648,19 +1671,24 @@ DECL_HANDLER(select)
         }
         release_object( apc );
     }
-    else if (get_error() != STATUS_PENDING && get_reply_max_size() == sizeof(context_t) &&
+    else if (reply->signaled && get_reply_max_size() >= sizeof(context_t) &&
              current->context && current->suspend_cookie == req->cookie)
     {
-        if (current->context->regs.flags)
+        ctx = current->context;
+        if (ctx->regs[CTX_NATIVE].flags || ctx->regs[CTX_WOW].flags)
         {
-            unsigned int system_flags = get_context_system_regs(current->process->machine) &
-                                        current->context->regs.flags;
-            if (system_flags) set_thread_context( current, &current->context->regs, system_flags );
-            set_reply_data( &current->context->regs, sizeof(context_t) );
+            data_size_t size = (ctx->regs[CTX_WOW].flags ? 2 : 1) * sizeof(context_t);
+            unsigned int flags = system_flags & ctx->regs[CTX_NATIVE].flags;
+            if (flags) set_thread_context( current, &ctx->regs[CTX_NATIVE], flags );
+            set_reply_data( ctx->regs, min( size, get_reply_max_size() ));
         }
-        release_object( current->context );
+        release_object( ctx );
         current->context = NULL;
     }
+    return;
+
+invalid_param:
+    set_error( STATUS_INVALID_PARAMETER );
 }
 
 /* queue an APC for a thread or process */
@@ -1780,64 +1808,85 @@ DECL_HANDLER(get_apc_result)
 DECL_HANDLER(get_thread_context)
 {
     struct context *thread_context = NULL;
-    unsigned int system_flags;
     struct thread *thread;
     context_t *context;
 
-    if (get_reply_max_size() < sizeof(context_t))
+    if (get_reply_max_size() < 2 * sizeof(context_t))
     {
         set_error( STATUS_INVALID_PARAMETER );
         return;
     }
 
-    if ((thread_context = (struct context *)get_handle_obj( current->process, req->handle, 0, &context_ops )))
+    if (req->context)
     {
-        close_handle( current->process, req->handle ); /* avoid extra server call */
-        system_flags = get_context_system_regs( thread_context->regs.machine );
+        if (!(thread_context = (struct context *)get_handle_obj( current->process, req->context,
+                                                                 0, &context_ops )))
+            return;
+        close_handle( current->process, req->context ); /* avoid extra server call */
     }
-    else if ((thread = get_thread_from_handle( req->handle, THREAD_GET_CONTEXT )))
+    else
     {
-        clear_error();
-        system_flags = get_context_system_regs( thread->process->machine );
-        if (thread->state == RUNNING)
+        if (!(thread = get_thread_from_handle( req->handle, THREAD_GET_CONTEXT ))) return;
+        if (req->machine != native_machine && req->machine != thread->process->machine)
+            set_error( STATUS_INVALID_PARAMETER );
+        else if (thread->state != RUNNING)
+            set_error( STATUS_UNSUCCESSFUL );
+        else
         {
             reply->self = (thread == current);
             if (thread != current) stop_thread( thread );
             if (thread->context)
             {
                 /* make sure that system regs are valid in thread context */
-                if (thread->unix_tid != -1 && (req->flags & system_flags & ~thread->context->regs.flags))
-                    get_thread_context( thread, &thread->context->regs, req->flags & system_flags );
+                if (thread->unix_tid != -1 && (system_flags & ~thread->context->regs[CTX_NATIVE].flags))
+                    get_thread_context( thread, &thread->context->regs[CTX_NATIVE], system_flags );
                 if (!get_error()) thread_context = (struct context *)grab_object( thread->context );
             }
             else if (!get_error() && (context = set_reply_data_size( sizeof(context_t) )))
             {
                 assert( reply->self );
                 memset( context, 0, sizeof(context_t) );
-                context->machine = thread->process->machine;
-                if (req->flags & system_flags)
-                {
-                    get_thread_context( thread, context, req->flags & system_flags );
-                    context->flags |= req->flags & system_flags;
-                }
+                context->machine = native_machine;
+                if (system_flags) get_thread_context( thread, context, system_flags );
             }
         }
-        else set_error( STATUS_UNSUCCESSFUL );
         release_object( thread );
+        if (!thread_context) return;
     }
-    if (get_error() || !thread_context) return;
 
-    set_error( thread_context->status );
-    if (!thread_context->status && (context = set_reply_data_size( sizeof(context_t) )))
+    if (!thread_context->status)
     {
-        memset( context, 0, sizeof(context_t) );
-        context->machine = thread_context->regs.machine;
-        copy_context( context, &thread_context->regs, req->flags );
-        context->flags = req->flags;
+        unsigned int native_flags = req->flags, wow_flags = 0;
+
+        if (req->machine == thread_context->regs[CTX_WOW].machine)
+        {
+            native_flags = req->flags & always_native_flags;
+            wow_flags = req->flags & ~always_native_flags;
+        }
+        if ((context = set_reply_data_size( (!!native_flags + !!wow_flags) * sizeof(context_t) )))
+        {
+            if (native_flags)
+            {
+                memset( context, 0, sizeof(*context) );
+                context->machine = thread_context->regs[CTX_NATIVE].machine;
+                copy_context( context, &thread_context->regs[CTX_NATIVE], native_flags );
+                context->flags = native_flags;
+                context++;
+            }
+            if (wow_flags)
+            {
+                memset( context, 0, sizeof(*context) );
+                context->machine = thread_context->regs[CTX_WOW].machine;
+                copy_context( context, &thread_context->regs[CTX_WOW], wow_flags );
+                context->flags = wow_flags;
+            }
+        }
     }
-    else if (thread_context->status == STATUS_PENDING)
+    else
     {
-        reply->handle = alloc_handle( current->process, thread_context, SYNCHRONIZE, 0 );
+        set_error( thread_context->status );
+        if (thread_context->status == STATUS_PENDING)
+            reply->handle = alloc_handle( current->process, thread_context, SYNCHRONIZE, 0 );
     }
 
     release_object( thread_context );
@@ -1847,49 +1896,56 @@ DECL_HANDLER(get_thread_context)
 DECL_HANDLER(set_thread_context)
 {
     struct thread *thread;
-    const context_t *context = get_req_data();
+    const context_t *contexts = get_req_data();
+    unsigned int ctx_count = get_req_data_size() / sizeof(context_t);
 
-    if (get_req_data_size() < sizeof(context_t))
+    if (!ctx_count || ctx_count > 2 || ctx_count * sizeof(context_t) != get_req_data_size())
     {
         set_error( STATUS_INVALID_PARAMETER );
         return;
     }
+
     if (!(thread = get_thread_from_handle( req->handle, THREAD_SET_CONTEXT ))) return;
     reply->self = (thread == current);
 
-    if (thread->state == TERMINATED) set_error( STATUS_UNSUCCESSFUL );
-    else if (context->machine == thread->process->machine)
+    if (contexts[CTX_NATIVE].machine != native_machine ||
+        (ctx_count == 2 && contexts[CTX_WOW].machine != thread->process->machine))
+        set_error( STATUS_INVALID_PARAMETER );
+    else if (thread->state != TERMINATED)
     {
-        unsigned int system_flags = get_context_system_regs( context->machine ) & context->flags;
+        unsigned int ctx = CTX_NATIVE;
+        const context_t *context = &contexts[CTX_NATIVE];
+        unsigned int flags = system_flags & context->flags;
+        unsigned int native_flags = always_native_flags & context->flags;
 
         if (thread != current) stop_thread( thread );
-        else if (system_flags) set_thread_context( thread, context, system_flags );
+        else if (flags) set_thread_context( thread, context, flags );
         if (thread->context && !get_error())
         {
-            copy_context( &thread->context->regs, context, context->flags );
-            thread->context->regs.flags |= context->flags;
-        }
-    }
-    else if (context->machine == IMAGE_FILE_MACHINE_AMD64 &&
-             thread->process->machine == IMAGE_FILE_MACHINE_I386)
-    {
-        /* convert the WoW64 context */
-        unsigned int system_flags = get_context_system_regs( context->machine ) & context->flags;
-        if (system_flags)
-        {
-            set_thread_context( thread, context, system_flags );
-            if (thread->context && !get_error())
+            if (ctx_count == 2)
             {
-                thread->context->regs.debug.i386_regs.dr0 = context->debug.x86_64_regs.dr0;
-                thread->context->regs.debug.i386_regs.dr1 = context->debug.x86_64_regs.dr1;
-                thread->context->regs.debug.i386_regs.dr2 = context->debug.x86_64_regs.dr2;
-                thread->context->regs.debug.i386_regs.dr3 = context->debug.x86_64_regs.dr3;
-                thread->context->regs.debug.i386_regs.dr6 = context->debug.x86_64_regs.dr6;
-                thread->context->regs.debug.i386_regs.dr7 = context->debug.x86_64_regs.dr7;
+                /* If the target thread doesn't have a WoW context, set native instead.
+                 * If we don't know yet whether we have a WoW context, store native context
+                 * in CTX_PENDING and update when the target thread sends its context(s). */
+                if (thread->context->status != STATUS_PENDING)
+                {
+                    ctx = thread->context->regs[CTX_WOW].machine ? CTX_WOW : CTX_NATIVE;
+                    context = &contexts[ctx];
+                }
+                else ctx = CTX_PENDING;
             }
+            flags = context->flags;
+            if (native_flags && ctx != CTX_NATIVE) /* some regs are always set from the native context */
+            {
+                copy_context( &thread->context->regs[CTX_NATIVE], &contexts[CTX_NATIVE], native_flags );
+                thread->context->regs[CTX_NATIVE].flags |= native_flags;
+                flags &= ~native_flags;
+            }
+            copy_context( &thread->context->regs[ctx], context, flags );
+            thread->context->regs[ctx].flags |= flags;
         }
     }
-    else set_error( STATUS_INVALID_PARAMETER );
+    else set_error( STATUS_UNSUCCESSFUL );
 
     release_object( thread );
 }

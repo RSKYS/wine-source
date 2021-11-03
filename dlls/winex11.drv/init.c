@@ -82,8 +82,8 @@ static X11DRV_PDEVICE *create_x11_physdev( Drawable drawable )
 /**********************************************************************
  *	     X11DRV_CreateDC
  */
-static BOOL CDECL X11DRV_CreateDC( PHYSDEV *pdev, LPCWSTR driver, LPCWSTR device,
-                                   LPCWSTR output, const DEVMODEW* initData )
+static BOOL CDECL X11DRV_CreateDC( PHYSDEV *pdev, LPCWSTR device, LPCWSTR output,
+                                   const DEVMODEW* initData )
 {
     X11DRV_PDEVICE *physDev = create_x11_physdev( root_window );
 
@@ -94,7 +94,7 @@ static BOOL CDECL X11DRV_CreateDC( PHYSDEV *pdev, LPCWSTR driver, LPCWSTR device
     physDev->dc_rect       = get_virtual_screen_rect();
     OffsetRect( &physDev->dc_rect, -physDev->dc_rect.left, -physDev->dc_rect.top );
     push_dc_driver( pdev, &physDev->dev, &x11drv_funcs );
-    if (xrender_funcs && !xrender_funcs->pCreateDC( pdev, driver, device, output, initData )) return FALSE;
+    if (xrender_funcs && !xrender_funcs->pCreateDC( pdev, device, output, initData )) return FALSE;
     return TRUE;
 }
 
@@ -162,8 +162,6 @@ static INT CDECL X11DRV_GetDeviceCaps( PHYSDEV dev, INT cap )
 {
     switch(cap)
     {
-    case BITSPIXEL:
-        return screen_bpp;
     case SIZEPALETTE:
         return palette_size;
     default:
@@ -358,25 +356,18 @@ static const struct gdi_dc_funcs x11drv_funcs =
     X11DRV_CreateDC,                    /* pCreateDC */
     X11DRV_DeleteDC,                    /* pDeleteDC */
     NULL,                               /* pDeleteObject */
-    NULL,                               /* pDeviceCapabilities */
     X11DRV_Ellipse,                     /* pEllipse */
     NULL,                               /* pEndDoc */
     NULL,                               /* pEndPage */
     NULL,                               /* pEndPath */
     NULL,                               /* pEnumFonts */
-    X11DRV_EnumICMProfiles,             /* pEnumICMProfiles */
-    NULL,                               /* pExcludeClipRect */
-    NULL,                               /* pExtDeviceMode */
     X11DRV_ExtEscape,                   /* pExtEscape */
     X11DRV_ExtFloodFill,                /* pExtFloodFill */
-    NULL,                               /* pExtSelectClipRgn */
     NULL,                               /* pExtTextOut */
     X11DRV_FillPath,                    /* pFillPath */
     NULL,                               /* pFillRgn */
-    NULL,                               /* pFlattenPath */
     NULL,                               /* pFontIsLinked */
     NULL,                               /* pFrameRgn */
-    NULL,                               /* pGdiComment */
     NULL,                               /* pGetBoundsRect */
     NULL,                               /* pGetCharABCWidths */
     NULL,                               /* pGetCharABCWidthsI */
@@ -402,14 +393,9 @@ static const struct gdi_dc_funcs x11drv_funcs =
     NULL,                               /* pGetTextFace */
     NULL,                               /* pGetTextMetrics */
     X11DRV_GradientFill,                /* pGradientFill */
-    NULL,                               /* pIntersectClipRect */
     NULL,                               /* pInvertRgn */
     X11DRV_LineTo,                      /* pLineTo */
-    NULL,                               /* pModifyWorldTransform */
     NULL,                               /* pMoveTo */
-    NULL,                               /* pOffsetClipRgn */
-    NULL,                               /* pOffsetViewportOrg */
-    NULL,                               /* pOffsetWindowOrg */
     X11DRV_PaintRgn,                    /* pPaintRgn */
     X11DRV_PatBlt,                      /* pPatBlt */
     X11DRV_Pie,                         /* pPie */
@@ -418,51 +404,26 @@ static const struct gdi_dc_funcs x11drv_funcs =
     NULL,                               /* pPolyDraw */
     X11DRV_PolyPolygon,                 /* pPolyPolygon */
     X11DRV_PolyPolyline,                /* pPolyPolyline */
-    X11DRV_Polygon,                     /* pPolygon */
-    NULL,                               /* pPolyline */
     NULL,                               /* pPolylineTo */
     X11DRV_PutImage,                    /* pPutImage */
     X11DRV_RealizeDefaultPalette,       /* pRealizeDefaultPalette */
     X11DRV_RealizePalette,              /* pRealizePalette */
     X11DRV_Rectangle,                   /* pRectangle */
     NULL,                               /* pResetDC */
-    NULL,                               /* pRestoreDC */
     X11DRV_RoundRect,                   /* pRoundRect */
-    NULL,                               /* pSaveDC */
-    NULL,                               /* pScaleViewportExt */
-    NULL,                               /* pScaleWindowExt */
     NULL,                               /* pSelectBitmap */
     X11DRV_SelectBrush,                 /* pSelectBrush */
-    NULL,                               /* pSelectClipPath */
     X11DRV_SelectFont,                  /* pSelectFont */
-    NULL,                               /* pSelectPalette */
     X11DRV_SelectPen,                   /* pSelectPen */
-    NULL,                               /* pSetArcDirection */
     NULL,                               /* pSetBkColor */
-    NULL,                               /* pSetBkMode */
     X11DRV_SetBoundsRect,               /* pSetBoundsRect */
     X11DRV_SetDCBrushColor,             /* pSetDCBrushColor */
     X11DRV_SetDCPenColor,               /* pSetDCPenColor */
     NULL,                               /* pSetDIBitsToDevice */
     X11DRV_SetDeviceClipping,           /* pSetDeviceClipping */
     X11DRV_SetDeviceGammaRamp,          /* pSetDeviceGammaRamp */
-    NULL,                               /* pSetLayout */
-    NULL,                               /* pSetMapMode */
-    NULL,                               /* pSetMapperFlags */
     X11DRV_SetPixel,                    /* pSetPixel */
-    NULL,                               /* pSetPolyFillMode */
-    NULL,                               /* pSetROP2 */
-    NULL,                               /* pSetRelAbs */
-    NULL,                               /* pSetStretchBltMode */
-    NULL,                               /* pSetTextAlign */
-    NULL,                               /* pSetTextCharacterExtra */
     NULL,                               /* pSetTextColor */
-    NULL,                               /* pSetTextJustification */
-    NULL,                               /* pSetViewportExt */
-    NULL,                               /* pSetViewportOrg */
-    NULL,                               /* pSetWindowExt */
-    NULL,                               /* pSetWindowOrg */
-    NULL,                               /* pSetWorldTransform */
     NULL,                               /* pStartDoc */
     NULL,                               /* pStartPage */
     X11DRV_StretchBlt,                  /* pStretchBlt */
@@ -470,7 +431,6 @@ static const struct gdi_dc_funcs x11drv_funcs =
     X11DRV_StrokeAndFillPath,           /* pStrokeAndFillPath */
     X11DRV_StrokePath,                  /* pStrokePath */
     X11DRV_UnrealizePalette,            /* pUnrealizePalette */
-    NULL,                               /* pWidenPath */
     X11DRV_D3DKMTCheckVidPnExclusiveOwnership, /* pD3DKMTCheckVidPnExclusiveOwnership */
     X11DRV_D3DKMTSetVidPnSourceOwner,   /* pD3DKMTSetVidPnSourceOwner */
     X11DRV_wine_get_wgl_driver,         /* wine_get_wgl_driver */

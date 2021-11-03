@@ -64,6 +64,7 @@ static BOOL (WINAPI *pGetWindowDisplayAffinity)(HWND hwnd, DWORD *affinity);
 static BOOL (WINAPI *pSetWindowDisplayAffinity)(HWND hwnd, DWORD affinity);
 static BOOL (WINAPI *pAdjustWindowRectExForDpi)(LPRECT,DWORD,BOOL,DWORD,UINT);
 static BOOL (WINAPI *pSystemParametersInfoForDpi)(UINT,UINT,void*,UINT,UINT);
+static HICON (WINAPI *pInternalGetWindowIcon)(HWND window, UINT type);
 
 static BOOL test_lbuttondown_flag;
 static DWORD num_gettext_msgs;
@@ -1221,9 +1222,9 @@ static LRESULT CALLBACK cbt_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
 
 	    /* WS_VISIBLE should be turned off yet */
 	    style = createwnd->lpcs->style & ~WS_VISIBLE;
-	    ok(style == GetWindowLongA(hwnd, GWL_STYLE),
-		"style of hwnd and style in the CREATESTRUCT do not match: %08x != %08x\n",
-		GetWindowLongA(hwnd, GWL_STYLE), style);
+            ok(style == GetWindowLongA(hwnd, GWL_STYLE),
+                    "style of hwnd and style in the CREATESTRUCT do not match: %08x != %08x\n",
+                    GetWindowLongA(hwnd, GWL_STYLE), style);
 
             if (0)
             {
@@ -2144,6 +2145,7 @@ static void test_mdi(void)
         SCROLLINFO si;
         BOOL ret, gotit;
 
+        winetest_push_context("style %#x", style[i]);
         mdi_client = CreateWindowExA(0, "mdiclient", NULL,
                                  WS_CHILD | style[i],
                                  0, 0, rc.right, rc.bottom,
@@ -2182,7 +2184,7 @@ static void test_mdi(void)
         ret = GetScrollInfo(mdi_client, SB_HORZ, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_HORZ) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_HORZ) failed\n");
             ok(si.nPage == 0, "expected 0\n");
             ok(si.nPos == 0, "expected 0\n");
             ok(si.nTrackPos == 0, "expected 0\n");
@@ -2190,12 +2192,12 @@ static void test_mdi(void)
             ok(si.nMax == 100, "expected 100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_HORZ) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_HORZ) should fail\n");
 
         ret = GetScrollInfo(mdi_client, SB_VERT, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_VERT) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_VERT) failed\n");
             ok(si.nPage == 0, "expected 0\n");
             ok(si.nPos == 0, "expected 0\n");
             ok(si.nTrackPos == 0, "expected 0\n");
@@ -2203,7 +2205,7 @@ static void test_mdi(void)
             ok(si.nMax == 100, "expected 100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_VERT) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_VERT) should fail\n");
 
         SetWindowPos(mdi_child, 0, -100, -100, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
 
@@ -2212,7 +2214,7 @@ static void test_mdi(void)
         ret = GetScrollInfo(mdi_client, SB_HORZ, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_HORZ) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_HORZ) failed\n");
             ok(si.nPage == 0, "expected 0\n");
             ok(si.nPos == 0, "expected 0\n");
             ok(si.nTrackPos == 0, "expected 0\n");
@@ -2220,12 +2222,12 @@ static void test_mdi(void)
             ok(si.nMax == 100, "expected 100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_HORZ) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_HORZ) should fail\n");
 
         ret = GetScrollInfo(mdi_client, SB_VERT, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_VERT) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_VERT) failed\n");
             ok(si.nPage == 0, "expected 0\n");
             ok(si.nPos == 0, "expected 0\n");
             ok(si.nTrackPos == 0, "expected 0\n");
@@ -2233,7 +2235,7 @@ static void test_mdi(void)
             ok(si.nMax == 100, "expected 100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_VERT) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_VERT) should fail\n");
 
         gotit = FALSE;
         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
@@ -2260,7 +2262,7 @@ static void test_mdi(void)
         ret = GetScrollInfo(mdi_client, SB_HORZ, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_HORZ) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_HORZ) failed\n");
 todo_wine
             ok(si.nPage != 0, "expected !0\n");
             ok(si.nPos == 0, "expected 0\n");
@@ -2269,12 +2271,12 @@ todo_wine
             ok(si.nMax != 100, "expected !100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_HORZ) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_HORZ) should fail\n");
 
         ret = GetScrollInfo(mdi_client, SB_VERT, &si);
         if (style[i] & (WS_HSCROLL | WS_VSCROLL))
         {
-            ok(ret, "style %#x: GetScrollInfo(SB_VERT) failed\n", style[i]);
+            ok(ret, "GetScrollInfo(SB_VERT) failed\n");
 todo_wine
             ok(si.nPage != 0, "expected !0\n");
             ok(si.nPos == 0, "expected 0\n");
@@ -2283,11 +2285,12 @@ todo_wine
             ok(si.nMax != 100, "expected !100\n");
         }
         else
-            ok(!ret, "style %#x: GetScrollInfo(SB_VERT) should fail\n", style[i]);
+            ok(!ret, "GetScrollInfo(SB_VERT) should fail\n");
 
         DestroyMenu(child_menu);
         DestroyWindow(mdi_child);
         DestroyWindow(mdi_client);
+        winetest_pop_context();
     }
 
     SetMenu(mdi_hwndMain, frame_menu);
@@ -2369,68 +2372,270 @@ todo_wine
     DestroyWindow(mdi_hwndMain);
 }
 
+#define check_icon_size(a, b, c) check_icon_size_(__LINE__, a, b, c)
+static void check_icon_size_( int line, HICON icon, LONG width, LONG height )
+{
+    ICONINFO info = {sizeof(info)};
+    BITMAP bitmap;
+    BOOL ret;
+
+    ret = GetIconInfo( icon, &info );
+    ok_(__FILE__, line)(ret, "failed to get icon info, error %u\n", GetLastError());
+    ret = GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap);
+    ok_(__FILE__, line)(ret, "failed to get bitmap, error %u\n", GetLastError());
+    ok_(__FILE__, line)(bitmap.bmWidth == width, "expected width %d, got %d\n", width, bitmap.bmWidth);
+    ok_(__FILE__, line)(bitmap.bmHeight == height, "expected height %d, got %d\n", height, bitmap.bmHeight);
+}
+
+#define check_internal_icon_size(a, b, c, d) check_internal_icon_size_(__LINE__, a, b, c, d)
+static void check_internal_icon_size_( int line, HANDLE window, UINT type, LONG width, LONG height )
+{
+    HICON icon;
+    BOOL ret;
+
+    icon = pInternalGetWindowIcon( window, type );
+    ok_(__FILE__, line)(icon != 0, "expected nonzero icon\n");
+    check_icon_size_( line, icon, width, height );
+    ret = DestroyIcon( icon );
+    ok_(__FILE__, line)(ret, "failed to destroy icon, error %u\n", GetLastError());
+}
+
+static DWORD WINAPI internal_get_icon_thread(void *arg)
+{
+    HICON icon;
+    BOOL ret;
+
+    icon = pInternalGetWindowIcon( arg, ICON_BIG );
+    ok( icon != 0, "expected nonzero icon\n" );
+    ret = DestroyIcon( icon );
+    ok( ret, "got error %u\n", GetLastError() );
+
+    return 0;
+}
+
 static void test_icons(void)
 {
-    WNDCLASSEXA cls;
+    static const BYTE bitmap_bits[50 * 50 * 4];
+    HICON icon = CreateIcon( 0, 10, 10, 1, 32, bitmap_bits, bitmap_bits );
+    HICON icon2 = CreateIcon( 0, 20, 20, 1, 32, bitmap_bits, bitmap_bits );
+    HICON icon3 = CreateIcon( 0, 30, 30, 1, 32, bitmap_bits, bitmap_bits );
+    HICON icon4 = CreateIcon( 0, 40, 40, 1, 32, bitmap_bits, bitmap_bits );
+    HICON icon5 = CreateIcon( 0, 50, 50, 1, 32, bitmap_bits, bitmap_bits );
+    LONG big_width = GetSystemMetrics( SM_CXICON ), big_height = GetSystemMetrics( SM_CYICON );
+    LONG small_width = GetSystemMetrics( SM_CXSMICON ), small_height = GetSystemMetrics( SM_CYSMICON );
+    WNDCLASSEXA cls = {sizeof(cls)};
+    HICON res, res2;
+    HANDLE thread;
     HWND hwnd;
-    HICON icon = LoadIconA(0, (LPCSTR)IDI_APPLICATION);
-    HICON icon2 = LoadIconA(0, (LPCSTR)IDI_QUESTION);
-    HICON small_icon = LoadImageA(0, (LPCSTR)IDI_APPLICATION, IMAGE_ICON,
-                                  GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED );
-    HICON res;
+    BOOL ret;
 
-    cls.cbSize = sizeof(cls);
-    cls.style = 0;
     cls.lpfnWndProc = DefWindowProcA;
-    cls.cbClsExtra = 0;
-    cls.cbWndExtra = 0;
-    cls.hInstance = 0;
-    cls.hIcon = LoadIconA(0, (LPCSTR)IDI_HAND);
-    cls.hIconSm = small_icon;
-    cls.hCursor = LoadCursorA(0, (LPCSTR)IDC_ARROW);
-    cls.hbrBackground = GetStockObject(WHITE_BRUSH);
-    cls.lpszMenuName = NULL;
+    cls.hIcon = icon4;
+    cls.hIconSm = icon5;
     cls.lpszClassName = "IconWindowClass";
-
     RegisterClassExA(&cls);
 
     hwnd = CreateWindowExA(0, "IconWindowClass", "icon test", 0,
                            100, 100, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL);
-    assert( hwnd );
+    ok( hwnd != NULL, "failed to create window\n" );
 
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_BIG, 0 );
     ok( res == 0, "wrong big icon %p/0\n", res );
+    SetLastError( 0xdeadbeef );
+    res = pInternalGetWindowIcon( hwnd, ICON_BIG );
+    ok( res != 0, "expected nonzero icon\n" );
+    ok( GetLastError() == 0xdeadbeef, "got error %u\n", GetLastError() );
+    check_icon_size( res, 40, 40 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_BIG );
+    ok( res2 && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, 40, 40 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+    ret = DestroyIcon( res );
+    ok( ret, "got error %u\n", GetLastError() );
+
+    res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL, 0 );
+    ok( !res, "wrong small icon %p\n", res );
+    res = pInternalGetWindowIcon( hwnd, ICON_SMALL );
+    ok( res != 0, "expected nonzero icon\n" );
+    check_icon_size( res, 50, 50 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL );
+    ok( res2 && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, 50, 50 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+    ret = DestroyIcon( res );
+    ok( ret, "got error %u\n", GetLastError() );
+
+    res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL2, 0 );
+    ok( !res, "wrong small2 icon %p\n", res );
+    res = pInternalGetWindowIcon( hwnd, ICON_SMALL2 );
+    ok( res != 0, "expected nonzero icon\n" );
+    check_icon_size( res, 50, 50 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL2 );
+    ok( res2 && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, 50, 50 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+    ret = DestroyIcon( res );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_SETICON, ICON_BIG, (LPARAM)icon );
     ok( res == 0, "wrong previous big icon %p/0\n", res );
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_BIG, 0 );
     ok( res == icon, "wrong big icon after set %p/%p\n", res, icon );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_BIG );
+    ok( res2 && res2 != icon, "got %p\n", res2 );
+    check_icon_size( res2, 10, 10 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_SETICON, ICON_BIG, (LPARAM)icon2 );
     ok( res == icon, "wrong previous big icon %p/%p\n", res, icon );
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_BIG, 0 );
     ok( res == icon2, "wrong big icon after set %p/%p\n", res, icon2 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_BIG );
+    ok( res2 && res2 != icon2, "got %p\n", res2 );
+    check_icon_size( res2, 20, 20 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
 
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL, 0 );
     ok( res == 0, "wrong small icon %p/0\n", res );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL );
+    ok( res2 != 0, "expected nonzero icon\n" );
+    check_icon_size( res2, small_width, small_height );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL2, 0 );
-    ok( (res && res != small_icon && res != icon2) || broken(!res), "wrong small2 icon %p\n", res );
+    ok( res && res != icon3 && res != icon2, "wrong small2 icon %p\n", res );
+    res2 = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL2, 0 );
+    ok( res2 == res, "expected icon to match\n" );
+    check_icon_size( res, small_width, small_height );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL2 );
+    ok( res2 && res2 != icon3 && res2 != icon2 && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, small_width, small_height );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_SETICON, ICON_SMALL, (LPARAM)icon );
     ok( res == 0, "wrong previous small icon %p/0\n", res );
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL, 0 );
     ok( res == icon, "wrong small icon after set %p/%p\n", res, icon );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL );
+    ok( res2 && res2 != icon, "got %p\n", res2 );
+    check_icon_size( res2, 10, 10 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL2, 0 );
-    ok( res == icon || broken(!res), "wrong small2 icon after set %p/%p\n", res, icon );
-    res = (HICON)SendMessageA( hwnd, WM_SETICON, ICON_SMALL, (LPARAM)small_icon );
+    ok( res == icon, "wrong small2 icon after set %p/%p\n", res, icon );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL2 );
+    ok( res2 && res2 != icon && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, 10, 10 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
+    res = (HICON)SendMessageA( hwnd, WM_SETICON, ICON_SMALL, (LPARAM)icon3 );
     ok( res == icon, "wrong previous small icon %p/%p\n", res, icon );
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL, 0 );
-    ok( res == small_icon, "wrong small icon after set %p/%p\n", res, small_icon );
+    ok( res == icon3, "wrong small icon after set %p/%p\n", res, icon3 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL );
+    ok( res2 && res2 != icon3, "got %p\n", res2 );
+    check_icon_size( res2, 30, 30 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_SMALL2, 0 );
-    ok( res == small_icon || broken(!res), "wrong small2 icon after set %p/%p\n", res, small_icon );
+    ok( res == icon3, "wrong small2 icon after set %p/%p\n", res, icon3 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_SMALL2 );
+    ok( res2 && res2 != icon3 && res2 != res, "got %p\n", res2 );
+    check_icon_size( res2, 30, 30 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
 
     /* make sure the big icon hasn't changed */
     res = (HICON)SendMessageA( hwnd, WM_GETICON, ICON_BIG, 0 );
     ok( res == icon2, "wrong big icon after set %p/%p\n", res, icon2 );
+    res2 = pInternalGetWindowIcon( hwnd, ICON_BIG );
+    ok( res2 && res2 != icon2, "got %p\n", res2 );
+    check_icon_size( res2, 20, 20 );
+    ret = DestroyIcon( res2 );
+    ok( ret, "got error %u\n", GetLastError() );
+
+    SetLastError( 0xdeadbeef );
+    res = pInternalGetWindowIcon( NULL, ICON_BIG );
+    ok( !res, "got %p\n", res );
+    ok( GetLastError() == ERROR_INVALID_WINDOW_HANDLE, "got error %u\n", GetLastError() );
+
+    SetLastError( 0xdeadbeef );
+    res = pInternalGetWindowIcon( hwnd, 0xdeadbeef );
+    ok( !res, "got %p\n", res );
+    ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %u\n", GetLastError() );
+
+    thread = CreateThread( NULL, 0, internal_get_icon_thread, hwnd, 0, NULL );
+    ret = WaitForSingleObject( thread, 1000 );
+    ok( !ret, "wait timed out\n" );
+    CloseHandle( thread );
 
     DestroyWindow( hwnd );
+    UnregisterClassA( "IconWindowClass", GetModuleHandleA( NULL ) );
+
+    /* check when the big class icon is missing */
+
+    cls.hIcon = 0;
+    cls.hIconSm = icon5;
+    RegisterClassExA(&cls);
+
+    hwnd = CreateWindowExA(0, "IconWindowClass", "icon test", 0,
+                           100, 100, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL);
+    ok( hwnd != NULL, "failed to create window\n" );
+
+    check_internal_icon_size( hwnd, ICON_BIG, big_width, big_height );
+    check_internal_icon_size( hwnd, ICON_SMALL, 50, 50 );
+    check_internal_icon_size( hwnd, ICON_SMALL2, 50, 50 );
+
+    DestroyWindow( hwnd );
+    UnregisterClassA( "IconWindowClass", GetModuleHandleA( NULL ) );
+
+    /* and when the small class icon is missing */
+
+    cls.hIcon = icon4;
+    cls.hIconSm = 0;
+    RegisterClassExA(&cls);
+    hwnd = CreateWindowExA(0, "IconWindowClass", "icon test", 0,
+                           100, 100, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL);
+    ok( hwnd != NULL, "failed to create window\n" );
+
+    check_internal_icon_size( hwnd, ICON_BIG, 40, 40 );
+    check_internal_icon_size( hwnd, ICON_SMALL, small_width, small_width );
+    check_internal_icon_size( hwnd, ICON_SMALL2, small_width, small_width );
+
+    DestroyWindow( hwnd );
+    UnregisterClassA( "IconWindowClass", GetModuleHandleA( NULL ) );
+
+    /* and when both are missing */
+
+    cls.hIcon = 0;
+    cls.hIconSm = 0;
+    RegisterClassExA(&cls);
+    hwnd = CreateWindowExA(0, "IconWindowClass", "icon test", 0,
+                           100, 100, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL);
+    ok( hwnd != NULL, "failed to create window\n" );
+
+    check_internal_icon_size( hwnd, ICON_BIG, big_width, big_height );
+    check_internal_icon_size( hwnd, ICON_SMALL, big_width, big_height );
+    check_internal_icon_size( hwnd, ICON_SMALL2, big_width, big_height );
+
+    DestroyWindow( hwnd );
+    UnregisterClassA( "IconWindowClass", GetModuleHandleA( NULL ) );
+
+    DestroyIcon( icon );
+    DestroyIcon( icon2 );
+    DestroyIcon( icon3 );
+    DestroyIcon( icon4 );
+    DestroyIcon( icon5 );
 }
 
 static LRESULT WINAPI nccalcsize_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -4219,34 +4424,65 @@ static void test_SetParent(void)
     ok(!IsWindow(popup), "popup still exists\n");
 }
 
+typedef struct
+{
+    DWORD cs_style;
+    DWORD cs_exstyle;
+    DWORD style;
+    DWORD exstyle;
+} test_style;
+
+static LRESULT WINAPI cbt_proc(int ncode, WPARAM wparam, LPARAM lparam)
+{
+    CBT_CREATEWNDW* c = (CBT_CREATEWNDW*)lparam;
+    HWND hwnd = (HWND)wparam;
+    test_style *ts;
+    DWORD style;
+
+    if (ncode !=  HCBT_CREATEWND)
+        return CallNextHookEx(NULL, ncode, wparam, lparam);
+
+    ts = c->lpcs->lpCreateParams;
+    ok(ts != NULL, "lpCreateParams not set\n");
+    ok(c->lpcs->style == ts->cs_style, "style = 0x%08x, expected 0x%08x\n",
+            c->lpcs->style, ts->cs_style);
+    ok(c->lpcs->dwExStyle == ts->cs_exstyle, "exstyle = 0x%08x, expected 0x%08x\n",
+            c->lpcs->dwExStyle, ts->cs_exstyle);
+
+    style = GetWindowLongW(hwnd, GWL_STYLE);
+    ok(style == ts->cs_style, "style = 0x%08x, expected 0x%08x\n",
+            style, ts->cs_style);
+    style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    ok(style == (ts->cs_exstyle & ~WS_EX_LAYERED),
+            "exstyle = 0x%08x, expected 0x%08x\n", style, ts->cs_exstyle);
+    return CallNextHookEx(NULL, ncode, wparam, lparam);
+}
+
 static LRESULT WINAPI StyleCheckProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
-    LPCREATESTRUCTA lpcs;
-    LPSTYLESTRUCT lpss;
+    CREATESTRUCTA *cs;
+    test_style *ts;
+    DWORD style;
 
     switch (msg)
     {
     case WM_NCCREATE:
     case WM_CREATE:
-        lpcs = (LPCREATESTRUCTA)lparam;
-        lpss = lpcs->lpCreateParams;
-        if (lpss)
-        {
-            if ((lpcs->dwExStyle & WS_EX_DLGMODALFRAME) ||
-                ((!(lpcs->dwExStyle & WS_EX_STATICEDGE)) &&
-                    (lpcs->style & (WS_DLGFRAME | WS_THICKFRAME))))
-                ok(lpcs->dwExStyle & WS_EX_WINDOWEDGE, "Window should have WS_EX_WINDOWEDGE style\n");
-            else
-                ok(!(lpcs->dwExStyle & WS_EX_WINDOWEDGE), "Window shouldn't have WS_EX_WINDOWEDGE style\n");
+        cs = (LPCREATESTRUCTA)lparam;
+        ts = cs->lpCreateParams;
 
-            ok((lpss->styleOld & ~WS_EX_WINDOWEDGE) == (lpcs->dwExStyle & ~WS_EX_WINDOWEDGE),
-                "Ex style (0x%08x) should match what the caller passed to CreateWindowEx (0x%08x)\n",
-                lpss->styleOld, lpcs->dwExStyle);
+        ok(ts != NULL, "lpCreateParams not set\n");
+        ok(cs->style == ts->cs_style, "style = 0x%08x, expected 0x%08x\n",
+                cs->style, ts->cs_style);
+        ok(cs->dwExStyle == ts->cs_exstyle, "exstyle = 0x%08x, expected 0x%08x\n",
+                cs->dwExStyle, ts->cs_exstyle);
 
-            ok(lpss->styleNew == lpcs->style,
-                "Style (0x%08x) should match what the caller passed to CreateWindowEx (0x%08x)\n",
-                lpss->styleNew, lpcs->style);
-        }
+        style = GetWindowLongW(hwnd, GWL_STYLE);
+        ok(style == ts->style, "style = 0x%08x, expected 0x%08x\n",
+                style, ts->style);
+        style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        ok(style == ts->exstyle, "exstyle = 0x%08x, expected 0x%08x\n",
+                style, ts->exstyle);
         break;
     }
     return DefWindowProcA(hwnd, msg, wparam, lparam);
@@ -4278,22 +4514,34 @@ static void check_window_style(DWORD dwStyleIn, DWORD dwExStyleIn, DWORD dwStyle
 {
     DWORD dwActualStyle;
     DWORD dwActualExStyle;
-    STYLESTRUCT ss;
+    test_style ts;
     HWND hwnd;
     HWND hwndParent = NULL;
+    HHOOK hook;
 
-    ss.styleNew = dwStyleIn;
-    ss.styleOld = dwExStyleIn;
+    ts.cs_style = dwStyleIn;
+    ts.cs_exstyle = dwExStyleIn;
+    if ((dwExStyleIn & WS_EX_DLGMODALFRAME) ||
+            ((!(dwExStyleIn & WS_EX_STATICEDGE)) &&
+             (dwStyleIn & (WS_DLGFRAME | WS_THICKFRAME))))
+        ts.cs_exstyle |= WS_EX_WINDOWEDGE;
+    else
+        ts.cs_exstyle &= ~WS_EX_WINDOWEDGE;
+    ts.style = dwStyleOut;
+    ts.exstyle = dwExStyleOut;
 
     if (dwStyleIn & WS_CHILD)
     {
-        hwndParent = CreateWindowExA(0, (LPCSTR)MAKEINTATOM(atomStyleCheckClass), NULL,
+        hwndParent = CreateWindowExA(0, "static", NULL,
             WS_OVERLAPPEDWINDOW, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
+        ok(hwndParent != NULL, "CreateWindowExA failed\n");
     }
 
+    hook = SetWindowsHookExW(WH_CBT, cbt_proc, 0, GetCurrentThreadId());
     hwnd = CreateWindowExA(dwExStyleIn, (LPCSTR)MAKEINTATOM(atomStyleCheckClass), NULL,
-                    dwStyleIn, 0, 0, 0, 0, hwndParent, NULL, NULL, &ss);
-    assert(hwnd);
+                    dwStyleIn, 0, 0, 0, 0, hwndParent, NULL, NULL, &ts);
+    ok(hwnd != NULL, "CreateWindowExA failed\n");
+    UnhookWindowsHookEx(hook);
 
     flush_events( TRUE );
 
@@ -4330,9 +4578,7 @@ static void check_window_style(DWORD dwStyleIn, DWORD dwExStyleIn, DWORD dwStyle
     else
         dwExStyleOut = dwExStyleIn & ~WS_EX_WINDOWEDGE;
     ok(dwActualStyle == dwStyleOut, "expected style %#x, got %#x\n", dwStyleOut, dwActualStyle);
-    /* FIXME: Remove the condition below once Wine is fixed */
-    todo_wine_if (dwActualExStyle != dwExStyleOut)
-        ok(dwActualExStyle == dwExStyleOut, "expected ex_style %#x, got %#x\n", dwExStyleOut, dwActualExStyle);
+    ok(dwActualExStyle == dwExStyleOut, "expected ex_style %#x, got %#x\n", dwExStyleOut, dwActualExStyle);
 
     DestroyWindow(hwnd);
     if (hwndParent) DestroyWindow(hwndParent);
@@ -4341,48 +4587,63 @@ static void check_window_style(DWORD dwStyleIn, DWORD dwExStyleIn, DWORD dwStyle
 /* tests what window styles the window manager automatically adds */
 static void test_window_styles(void)
 {
+    static const struct
+    {
+        DWORD style_in;
+        DWORD exstyle_in;
+        DWORD style_out;
+        DWORD exstyle_out;
+    } tests[] = {
+        {0, 0, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE},
+        {WS_DLGFRAME, 0, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE},
+        {WS_THICKFRAME, 0, WS_THICKFRAME|WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE},
+        {WS_DLGFRAME, WS_EX_STATICEDGE, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_STATICEDGE},
+        {WS_THICKFRAME, WS_EX_STATICEDGE, WS_THICKFRAME|WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_STATICEDGE},
+        {WS_OVERLAPPEDWINDOW, 0, WS_CLIPSIBLINGS|WS_OVERLAPPEDWINDOW, WS_EX_WINDOWEDGE},
+        {WS_CHILD, 0, WS_CHILD, 0},
+        {WS_CHILD|WS_DLGFRAME, 0, WS_CHILD|WS_DLGFRAME, WS_EX_WINDOWEDGE},
+        {WS_CHILD|WS_THICKFRAME, 0, WS_CHILD|WS_THICKFRAME, WS_EX_WINDOWEDGE},
+        {WS_CHILD|WS_DLGFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_DLGFRAME, WS_EX_STATICEDGE},
+        {WS_CHILD|WS_THICKFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_THICKFRAME, WS_EX_STATICEDGE},
+        {WS_CHILD|WS_CAPTION, 0, WS_CHILD|WS_CAPTION, WS_EX_WINDOWEDGE},
+        {WS_CHILD|WS_CAPTION|WS_SYSMENU, 0, WS_CHILD|WS_CAPTION|WS_SYSMENU, WS_EX_WINDOWEDGE},
+        {WS_CHILD, WS_EX_WINDOWEDGE, WS_CHILD, 0},
+        {WS_CHILD, WS_EX_DLGMODALFRAME, WS_CHILD, WS_EX_WINDOWEDGE|WS_EX_DLGMODALFRAME},
+        {WS_CHILD, WS_EX_DLGMODALFRAME|WS_EX_STATICEDGE, WS_CHILD, WS_EX_STATICEDGE|WS_EX_WINDOWEDGE|WS_EX_DLGMODALFRAME},
+        {WS_CHILD|WS_POPUP, 0, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, 0},
+        {WS_CHILD|WS_POPUP|WS_DLGFRAME, 0, WS_CHILD|WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE},
+        {WS_CHILD|WS_POPUP|WS_THICKFRAME, 0, WS_CHILD|WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE},
+        {WS_CHILD|WS_POPUP|WS_DLGFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE},
+        {WS_CHILD|WS_POPUP|WS_THICKFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE},
+        {WS_CHILD|WS_POPUP, WS_EX_APPWINDOW, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, WS_EX_APPWINDOW},
+        {WS_CHILD|WS_POPUP, WS_EX_WINDOWEDGE, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, 0},
+        {WS_CHILD, WS_EX_WINDOWEDGE, WS_CHILD, 0},
+        {0, WS_EX_TOOLWINDOW, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_TOOLWINDOW},
+        {WS_POPUP, 0, WS_POPUP|WS_CLIPSIBLINGS, 0},
+        {WS_POPUP, WS_EX_WINDOWEDGE, WS_POPUP|WS_CLIPSIBLINGS, 0},
+        {WS_POPUP|WS_DLGFRAME, 0, WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE},
+        {WS_POPUP|WS_THICKFRAME, 0, WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE},
+        {WS_POPUP|WS_DLGFRAME, WS_EX_STATICEDGE, WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE},
+        {WS_POPUP|WS_THICKFRAME, WS_EX_STATICEDGE, WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE},
+        {WS_CAPTION, WS_EX_STATICEDGE, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_STATICEDGE|WS_EX_WINDOWEDGE},
+        {0, WS_EX_APPWINDOW, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_APPWINDOW|WS_EX_WINDOWEDGE},
+        {0, WS_EX_LAYERED, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_LAYERED|WS_EX_WINDOWEDGE},
+        {0, WS_EX_LAYERED|WS_EX_TRANSPARENT, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_WINDOWEDGE},
+        {0, WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW, WS_CLIPSIBLINGS|WS_CAPTION,
+            WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_WINDOWEDGE},
+    };
+    int i;
+
     register_style_check_class();
 
-    check_window_style(0, 0, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE);
-    check_window_style(WS_DLGFRAME, 0, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE);
-    check_window_style(WS_THICKFRAME, 0, WS_THICKFRAME|WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE);
-    check_window_style(WS_DLGFRAME, WS_EX_STATICEDGE, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_STATICEDGE);
-    check_window_style(WS_THICKFRAME, WS_EX_STATICEDGE, WS_THICKFRAME|WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_STATICEDGE);
-    check_window_style(WS_OVERLAPPEDWINDOW, 0, WS_CLIPSIBLINGS|WS_OVERLAPPEDWINDOW, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD, 0, WS_CHILD, 0);
-    check_window_style(WS_CHILD|WS_DLGFRAME, 0, WS_CHILD|WS_DLGFRAME, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD|WS_THICKFRAME, 0, WS_CHILD|WS_THICKFRAME, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD|WS_DLGFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_DLGFRAME, WS_EX_STATICEDGE);
-    check_window_style(WS_CHILD|WS_THICKFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_THICKFRAME, WS_EX_STATICEDGE);
-    check_window_style(WS_CHILD|WS_CAPTION, 0, WS_CHILD|WS_CAPTION, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD|WS_CAPTION|WS_SYSMENU, 0, WS_CHILD|WS_CAPTION|WS_SYSMENU, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD, WS_EX_WINDOWEDGE, WS_CHILD, 0);
-    check_window_style(WS_CHILD, WS_EX_DLGMODALFRAME, WS_CHILD, WS_EX_WINDOWEDGE|WS_EX_DLGMODALFRAME);
-    check_window_style(WS_CHILD, WS_EX_DLGMODALFRAME|WS_EX_STATICEDGE, WS_CHILD, WS_EX_STATICEDGE|WS_EX_WINDOWEDGE|WS_EX_DLGMODALFRAME);
-    check_window_style(WS_CHILD|WS_POPUP, 0, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, 0);
-    check_window_style(WS_CHILD|WS_POPUP|WS_DLGFRAME, 0, WS_CHILD|WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD|WS_POPUP|WS_THICKFRAME, 0, WS_CHILD|WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE);
-    check_window_style(WS_CHILD|WS_POPUP|WS_DLGFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE);
-    check_window_style(WS_CHILD|WS_POPUP|WS_THICKFRAME, WS_EX_STATICEDGE, WS_CHILD|WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE);
-    check_window_style(WS_CHILD|WS_POPUP, WS_EX_APPWINDOW, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, WS_EX_APPWINDOW);
-    check_window_style(WS_CHILD|WS_POPUP, WS_EX_WINDOWEDGE, WS_CHILD|WS_POPUP|WS_CLIPSIBLINGS, 0);
-    check_window_style(WS_CHILD, WS_EX_WINDOWEDGE, WS_CHILD, 0);
-    check_window_style(0, WS_EX_TOOLWINDOW, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_WINDOWEDGE|WS_EX_TOOLWINDOW);
-    check_window_style(WS_POPUP, 0, WS_POPUP|WS_CLIPSIBLINGS, 0);
-    check_window_style(WS_POPUP, WS_EX_WINDOWEDGE, WS_POPUP|WS_CLIPSIBLINGS, 0);
-    check_window_style(WS_POPUP|WS_DLGFRAME, 0, WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE);
-    check_window_style(WS_POPUP|WS_THICKFRAME, 0, WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_WINDOWEDGE);
-    check_window_style(WS_POPUP|WS_DLGFRAME, WS_EX_STATICEDGE, WS_POPUP|WS_DLGFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE);
-    check_window_style(WS_POPUP|WS_THICKFRAME, WS_EX_STATICEDGE, WS_POPUP|WS_THICKFRAME|WS_CLIPSIBLINGS, WS_EX_STATICEDGE);
-    check_window_style(WS_CAPTION, WS_EX_STATICEDGE, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_STATICEDGE|WS_EX_WINDOWEDGE);
-    check_window_style(0, WS_EX_APPWINDOW, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_APPWINDOW|WS_EX_WINDOWEDGE);
-
-    if (pGetLayeredWindowAttributes)
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
-        check_window_style(0, WS_EX_LAYERED, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_LAYERED|WS_EX_WINDOWEDGE);
-        check_window_style(0, WS_EX_LAYERED|WS_EX_TRANSPARENT, WS_CLIPSIBLINGS|WS_CAPTION, WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_WINDOWEDGE);
-        check_window_style(0, WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW, WS_CLIPSIBLINGS|WS_CAPTION,
-                                                      WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_WINDOWEDGE);
+        if ((tests[i].exstyle_in & WS_EX_LAYERED) && !pGetLayeredWindowAttributes)
+            continue;
+
+        winetest_push_context("style %#x exstyle %#x", tests[i].style_in, tests[i].exstyle_in);
+        check_window_style(tests[i].style_in, tests[i].exstyle_in, tests[i].style_out, tests[i].exstyle_out);
+        winetest_pop_context();
     }
 }
 
@@ -4536,9 +4797,7 @@ static void check_dialog_style(DWORD style_in, DWORD ex_style_in, DWORD style_ou
         ex_style_out = ex_style_in | WS_EX_WINDOWEDGE;
     else
         ex_style_out = ex_style_in & ~WS_EX_WINDOWEDGE;
-    /* FIXME: Remove the condition below once Wine is fixed */
-    todo_wine_if (ex_style != ex_style_out)
-        ok(ex_style == ex_style_out, "expected ex_style %#x, got %#x\n", ex_style_out, ex_style);
+    ok(ex_style == ex_style_out, "expected ex_style %#x, got %#x\n", ex_style_out, ex_style);
 
     DestroyWindow(hwnd);
 
@@ -11419,14 +11678,19 @@ static void test_IsWindowEnabled(void)
 
 static void test_window_placement(void)
 {
-    RECT orig = {100, 200, 300, 400}, orig2 = {200, 300, 400, 500}, rect;
+    RECT orig = {100, 200, 300, 400}, orig2 = {200, 300, 400, 500}, rect, work_rect;
     WINDOWPLACEMENT wp = {sizeof(wp)};
+    MONITORINFO mon_info;
     HWND hwnd;
     BOOL ret;
 
     hwnd = CreateWindowA("MainWindowClass", "wp", WS_OVERLAPPEDWINDOW,
         orig.left, orig.top, orig.right - orig.left, orig.bottom - orig.top, 0, 0, 0, 0);
     ok(!!hwnd, "failed to create window, error %u\n", GetLastError());
+
+    mon_info.cbSize = sizeof(mon_info);
+    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mon_info);
+    work_rect = mon_info.rcWork;
 
     ret = GetWindowPlacement(hwnd, &wp);
     ok(ret, "failed to get window placement, error %u\n", GetLastError());
@@ -11470,7 +11734,6 @@ static void test_window_placement(void)
     ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11488,6 +11751,42 @@ todo_wine
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
         wine_dbgstr_rect(&wp.rcNormalPosition));
 
+    SetWindowPos(hwnd, 0, work_rect.left, work_rect.top, work_rect.right - work_rect.left,
+                 work_rect.bottom - work_rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    ret = GetWindowPlacement(hwnd, &wp);
+    ok(ret, "failed to get window placement, error %u\n", GetLastError());
+    ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
+    ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
+        "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
+    ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
+        "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
+    ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
+        wine_dbgstr_rect(&wp.rcNormalPosition));
+
+    SetWindowPos(hwnd, 0, work_rect.left, work_rect.top, work_rect.right - work_rect.left - 1,
+                 work_rect.bottom - work_rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    ret = GetWindowPlacement(hwnd, &wp);
+    ok(ret, "failed to get window placement, error %u\n", GetLastError());
+    ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
+    ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
+        "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
+    ok(wp.ptMaxPosition.x == work_rect.left && wp.ptMaxPosition.y == work_rect.top,
+        "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
+    ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
+        wine_dbgstr_rect(&wp.rcNormalPosition));
+
+    SetWindowPos(hwnd, 0, work_rect.left, work_rect.top, work_rect.right - work_rect.left,
+                 work_rect.bottom - work_rect.top - 1, SWP_NOZORDER | SWP_NOACTIVATE);
+    ret = GetWindowPlacement(hwnd, &wp);
+    ok(ret, "failed to get window placement, error %u\n", GetLastError());
+    ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
+    ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
+        "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
+    ok(wp.ptMaxPosition.x == work_rect.left && wp.ptMaxPosition.y == work_rect.top,
+        "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
+    ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
+        wine_dbgstr_rect(&wp.rcNormalPosition));
+
     ShowWindow(hwnd, SW_MINIMIZE);
 
     ret = GetWindowPlacement(hwnd, &wp);
@@ -11496,7 +11795,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMINIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11509,7 +11807,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11522,7 +11819,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWNORMAL, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11540,7 +11836,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWNORMAL, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == 100 && wp.ptMinPosition.y == 100,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig2), "got normal pos %s\n",
@@ -11556,7 +11851,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMINIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig2), "got normal pos %s\n",
@@ -11578,7 +11872,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMINIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11599,7 +11892,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMAXIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == 100 && wp.ptMinPosition.y == 100,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11620,7 +11912,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMINIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11634,7 +11925,6 @@ todo_wine
     ok(wp.showCmd == SW_SHOWMINIMIZED, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -11649,7 +11939,6 @@ todo_wine
     ok(wp.showCmd == SW_NORMAL, "got show cmd %u\n", wp.showCmd);
     ok(wp.ptMinPosition.x == -32000 && wp.ptMinPosition.y == -32000,
         "got minimized pos (%d,%d)\n", wp.ptMinPosition.x, wp.ptMinPosition.y);
-todo_wine
     ok(wp.ptMaxPosition.x == -1 && wp.ptMaxPosition.y == -1,
         "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
     ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
@@ -12004,6 +12293,22 @@ static void test_cancel_mode(void)
     DestroyWindow(hwnd2);
 }
 
+static void test_DragDetect(void)
+{
+    POINT pt;
+    BOOL ret;
+
+    ok(!GetCapture(), "got capture window %p\n", GetCapture());
+    ok(!(GetKeyState( VK_LBUTTON ) & 0x8000), "got VK_LBUTTON\n");
+
+    GetCursorPos(&pt);
+    ret = DragDetect(hwndMain, pt);
+    ok(!ret, "got %d\n", ret);
+
+    ok(!GetCapture(), "got capture window %p\n", GetCapture());
+    ok(!(GetKeyState( VK_LBUTTON ) & 0x8000), "got VK_LBUTTON\n");
+}
+
 START_TEST(win)
 {
     char **argv;
@@ -12027,6 +12332,7 @@ START_TEST(win)
     pSetWindowDisplayAffinity = (void *)GetProcAddress( user32, "SetWindowDisplayAffinity" );
     pAdjustWindowRectExForDpi = (void *)GetProcAddress( user32, "AdjustWindowRectExForDpi" );
     pSystemParametersInfoForDpi = (void *)GetProcAddress( user32, "SystemParametersInfoForDpi" );
+    pInternalGetWindowIcon = (void *)GetProcAddress( user32, "InternalGetWindowIcon" );
 
     if (argc == 4)
     {
@@ -12171,6 +12477,7 @@ START_TEST(win)
     test_other_process_window(argv[0]);
     test_SC_SIZE();
     test_cancel_mode();
+    test_DragDetect();
 
     /* add the tests above this line */
     if (hhook) UnhookWindowsHookEx(hhook);

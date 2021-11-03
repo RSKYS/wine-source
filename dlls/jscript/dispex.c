@@ -1489,13 +1489,21 @@ static HRESULT WINAPI DispatchEx_GetIDsOfNames(IDispatchEx *iface, REFIID riid,
     TRACE("(%p)->(%s %p %u %u %p)\n", This, debugstr_guid(riid), rgszNames, cNames,
           lcid, rgDispId);
 
-    for(i=0; i < cNames; i++) {
-        hres = IDispatchEx_GetDispID(&This->IDispatchEx_iface, rgszNames[i], 0, rgDispId+i);
-        if(FAILED(hres))
-            return hres;
+    if(cNames == 0)
+        return S_OK;
+
+    hres = jsdisp_get_id(This, rgszNames[0], 0, rgDispId);
+    if(FAILED(hres))
+        return hres;
+
+    /* DISPIDs for parameters don't seem to be supported */
+    if(cNames > 1) {
+        for(i = 1; i < cNames; i++)
+            rgDispId[i] = DISPID_UNKNOWN;
+        hres = DISP_E_UNKNOWNNAME;
     }
 
-    return S_OK;
+    return hres;
 }
 
 static HRESULT WINAPI DispatchEx_Invoke(IDispatchEx *iface, DISPID dispIdMember,
@@ -1873,7 +1881,7 @@ HRESULT init_dispex_from_constr(jsdisp_t *dispex, script_ctx_t *ctx, const built
         if(is_object_instance(val) && get_object(val))
             prot = iface_to_jsdisp(get_object(val));
         else
-            prot = ctx->object_prototype;
+            prot = jsdisp_addref(ctx->object_prototype);
 
         jsval_release(val);
     }
@@ -2020,6 +2028,7 @@ HRESULT disp_call(script_ctx_t *ctx, IDispatch *disp, DISPID id, WORD flags, uns
     if(jsdisp && jsdisp->ctx == ctx) {
         if(flags & DISPATCH_PROPERTYPUT) {
             FIXME("disp_call(propput) on builtin object\n");
+            jsdisp_release(jsdisp);
             return E_FAIL;
         }
 
@@ -2029,6 +2038,8 @@ HRESULT disp_call(script_ctx_t *ctx, IDispatch *disp, DISPID id, WORD flags, uns
         jsdisp_release(jsdisp);
         return hres;
     }
+    if(jsdisp)
+        jsdisp_release(jsdisp);
 
     flags &= ~DISPATCH_JSCRIPT_INTERNAL_MASK;
     if(ret && argc)
@@ -2098,6 +2109,8 @@ HRESULT disp_call_value(script_ctx_t *ctx, IDispatch *disp, IDispatch *jsthis, W
         jsdisp_release(jsdisp);
         return hres;
     }
+    if(jsdisp)
+        jsdisp_release(jsdisp);
 
     flags &= ~DISPATCH_JSCRIPT_INTERNAL_MASK;
     if(r && argc && flags == DISPATCH_METHOD)
@@ -2135,6 +2148,8 @@ HRESULT disp_call_value(script_ctx_t *ctx, IDispatch *disp, IDispatch *jsthis, W
     if(args != buf)
         heap_free(args);
 
+    if(FAILED(hres))
+        return hres;
     if(!r)
         return S_OK;
 
@@ -2195,6 +2210,8 @@ HRESULT disp_propput(script_ctx_t *ctx, IDispatch *disp, DISPID id, jsval_t val)
         VARIANT var;
         DISPPARAMS dp  = {&var, &dispid, 1, 1};
 
+        if(jsdisp)
+            jsdisp_release(jsdisp);
         hres = jsval_to_variant(val, &var);
         if(FAILED(hres))
             return hres;
@@ -2220,6 +2237,8 @@ HRESULT disp_propput_name(script_ctx_t *ctx, IDispatch *disp, const WCHAR *name,
         BSTR str;
         DISPID id;
 
+        if(jsdisp)
+            jsdisp_release(jsdisp);
         if(!(str = SysAllocString(name)))
             return E_OUTOFMEMORY;
 
@@ -2238,7 +2257,9 @@ HRESULT disp_propput_name(script_ctx_t *ctx, IDispatch *disp, const WCHAR *name,
         return disp_propput(ctx, disp, id, val);
     }
 
-    return jsdisp_propput_name(jsdisp, name, val);
+    hres = jsdisp_propput_name(jsdisp, name, val);
+    jsdisp_release(jsdisp);
+    return hres;
 }
 
 HRESULT jsdisp_propget_name(jsdisp_t *obj, const WCHAR *name, jsval_t *val)
@@ -2302,6 +2323,8 @@ HRESULT disp_propget(script_ctx_t *ctx, IDispatch *disp, DISPID id, jsval_t *val
         jsdisp_release(jsdisp);
         return hres;
     }
+    if(jsdisp)
+        jsdisp_release(jsdisp);
 
     V_VT(&var) = VT_EMPTY;
     hres = disp_invoke(ctx, disp, id, INVOKE_PROPERTYGET, &dp, &var);

@@ -187,6 +187,7 @@ ULONG CDECL wined3d_decref(struct wined3d *wined3d)
     {
         unsigned int i;
 
+        wined3d_mutex_lock();
         for (i = 0; i < wined3d->adapter_count; ++i)
         {
             struct wined3d_adapter *adapter = wined3d->adapters[i];
@@ -194,6 +195,7 @@ ULONG CDECL wined3d_decref(struct wined3d *wined3d)
             adapter->adapter_ops->adapter_destroy(adapter);
         }
         heap_free(wined3d);
+        wined3d_mutex_unlock();
     }
 
     return refcount;
@@ -436,6 +438,7 @@ static const struct wined3d_gpu_description gpu_description_table[] =
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX970M,    "NVIDIA GeForce GTX 970M",          DRIVER_NVIDIA_KEPLER,  3072},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX980,     "NVIDIA GeForce GTX 980",           DRIVER_NVIDIA_KEPLER,  4096},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX980TI,   "NVIDIA GeForce GTX 980 Ti",        DRIVER_NVIDIA_KEPLER,  6144},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GT1030,     "NVIDIA GeForce GT 1030",           DRIVER_NVIDIA_KEPLER,  2048},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1050,    "NVIDIA GeForce GTX 1050",          DRIVER_NVIDIA_KEPLER,  2048},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1050TI,  "NVIDIA GeForce GTX 1050 Ti",       DRIVER_NVIDIA_KEPLER,  4096},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1060_3GB,"NVIDIA GeForce GTX 1060 3GB",      DRIVER_NVIDIA_KEPLER,  3072},
@@ -515,6 +518,7 @@ static const struct wined3d_gpu_description gpu_description_table[] =
     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_10,     "Radeon RX 5700 / 5700 XT",         DRIVER_AMD_RX,           8192},
     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_14,     "Radeon RX 5500M",                  DRIVER_AMD_RX,           4096},
     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_21,     "Radeon RX 6800/6800 XT / 6900 XT", DRIVER_AMD_RX,          16384},
+    {HW_VENDOR_AMD,        CARD_AMD_VANGOGH,               "AMD VANGOGH",                      DRIVER_AMD_RX,           4096},
 
     /* Red Hat */
     {HW_VENDOR_REDHAT,     CARD_REDHAT_VIRGL,              "Red Hat VirtIO GPU",                                        DRIVER_REDHAT_VIRGL,  1024},
@@ -2796,6 +2800,11 @@ static void adapter_no3d_copy_bo_address(struct wined3d_context *context,
     memcpy(dst->addr, src->addr, size);
 }
 
+static void adapter_no3d_flush_bo_address(struct wined3d_context *context,
+        const struct wined3d_const_bo_address *data, size_t size)
+{
+}
+
 static HRESULT adapter_no3d_create_swapchain(struct wined3d_device *device,
         struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
         void *parent, const struct wined3d_parent_ops *parent_ops, struct wined3d_swapchain **swapchain)
@@ -3046,9 +3055,9 @@ static void adapter_no3d_dispatch_compute(struct wined3d_device *device,
 }
 
 static void adapter_no3d_clear_uav(struct wined3d_context *context,
-        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value)
+        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp)
 {
-    ERR("context %p, view %p, clear_value %s.\n", context, view, debug_uvec4(clear_value));
+    ERR("context %p, view %p, clear_value %s, fp %#x.\n", context, view, debug_uvec4(clear_value), fp);
 }
 
 static const struct wined3d_adapter_ops wined3d_adapter_no3d_ops =
@@ -3065,6 +3074,7 @@ static const struct wined3d_adapter_ops wined3d_adapter_no3d_ops =
     .adapter_map_bo_address = adapter_no3d_map_bo_address,
     .adapter_unmap_bo_address = adapter_no3d_unmap_bo_address,
     .adapter_copy_bo_address = adapter_no3d_copy_bo_address,
+    .adapter_flush_bo_address = adapter_no3d_flush_bo_address,
     .adapter_create_swapchain = adapter_no3d_create_swapchain,
     .adapter_destroy_swapchain = adapter_no3d_destroy_swapchain,
     .adapter_create_buffer = adapter_no3d_create_buffer,

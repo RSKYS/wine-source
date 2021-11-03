@@ -73,6 +73,8 @@ _ACRTIMP double __cdecl fmod(double, double);
 _ACRTIMP double __cdecl fmin(double, double);
 _ACRTIMP double __cdecl fmax(double, double);
 _ACRTIMP double __cdecl erf(double);
+_ACRTIMP double __cdecl remquo(double, double, int*);
+_ACRTIMP float __cdecl remquof(float, float, int*);
 
 _ACRTIMP double __cdecl _hypot(double, double);
 _ACRTIMP double __cdecl _j0(double);
@@ -249,10 +251,21 @@ static const union {
 #define FP_ILOGB0 (-0x7fffffff - _C2)
 #define FP_ILOGBNAN 0x7fffffff
 
+#if _MSVCR_VER >= 120
+
 _ACRTIMP short __cdecl _dclass(double);
 _ACRTIMP short __cdecl _fdclass(float);
 _ACRTIMP int   __cdecl _dsign(double);
 _ACRTIMP int   __cdecl _fdsign(float);
+
+#define fpclassify(x) (sizeof(x) == sizeof(float) ? _fdclass(x) : _dclass(x))
+#define signbit(x)    (sizeof(x) == sizeof(float) ? _fdsign(x) : _dsign(x))
+#define isinf(x)      (fpclassify(x) == FP_INFINITE)
+#define isnan(x)      (fpclassify(x) == FP_NAN)
+#define isnormal(x)   (fpclassify(x) == FP_NORMAL)
+#define isfinite(x)   (fpclassify(x) <= 0)
+
+#else
 
 static inline int __isnanf(float x)
 {
@@ -300,6 +313,8 @@ static inline int __signbit(double x)
 #define isnormal(x) (sizeof(x) == sizeof(float) ? __isnormalf(x) : __isnormal(x))
 #define signbit(x)  (sizeof(x) == sizeof(float) ? __signbitf(x) : __signbit(x))
 #define isfinite(x) (!isinf(x) && !isnan(x))
+
+#endif
 
 #ifdef __cplusplus
 }
