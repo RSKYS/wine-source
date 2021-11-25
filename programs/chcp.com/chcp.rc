@@ -1,6 +1,5 @@
 /*
- * Copyright (C) 2003 Robert Shearman
- *               2005 Huw Davies
+ * Copyright 2021 Hugh McMaster
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,9 +14,20 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
- *
  */
 
-#pragma makedep regtypelib
+#include "resource.h"
 
-#include "stdole2.idl"
+#pragma makedep po
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    STRING_ACTIVE_CODE_PAGE, "Active code page: %1!u!\n"
+    STRING_INVALID_CODE_PAGE, "Invalid code page\n"
+    STRING_USAGE, "CHCP [number]\n\n\
+\  Sets or displays the active console code page.\n\n\
+\  number   The console code page to activate.\n\n\
+\  Type CHCP without a number to display the active console code page.\n\n"
+}

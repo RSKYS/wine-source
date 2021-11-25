@@ -353,8 +353,11 @@ struct symt_function* symt_new_function(struct module* module,
         init_function_or_inlinesite(sym, module, SymTagFunction, &compiland->symt, name, addr, size, sig_type);
         sym->next_inlinesite = NULL; /* first of list */
         symt_add_module_ht(module, (struct symt_ht*)sym);
-        p = vector_add(&compiland->vchildren, &module->pool);
-        *p = &sym->symt;
+        if (compiland)
+        {
+            p = vector_add(&compiland->vchildren, &module->pool);
+            *p = &sym->symt;
+        }
     }
     return sym;
 }
@@ -418,6 +421,11 @@ void symt_add_func_line(struct module* module, struct symt_function* func,
     }
     vlen = vector_length(&func->vlines);
     prev = vlen ? vector_at(&func->vlines, vlen - 1) : NULL;
+    if (last_matches && prev && addr == prev->u.address)
+    {
+        WARN("Duplicate addition of line number in %s\n", func->hash_elt.name);
+        return;
+    }
     if (!last_matches)
     {
         /* we shouldn't have line changes on first line of function */

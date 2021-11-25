@@ -1039,8 +1039,7 @@ static void test_odbc_provider(void)
         CoTaskMemFree(propinfoset);
 
         hr = IDBProperties_GetProperties(props, 1, &propidlist, &propcnt, &propset);
-        todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
-        if (hr == S_OK) { /* Remove if, once _GetProperties is implemented */
+        ok(hr == S_OK, "got 0x%08x\n", hr);
         ok(propidlist.cPropertyIDs == 14, "got %d\n", propinfoset->cPropertyInfos);
 
         for (i = 0; i < propidlist.cPropertyIDs; i++)
@@ -1049,7 +1048,6 @@ static void test_odbc_provider(void)
                     propidlist.rgPropertyIDs[i]);
 
             propidlist.rgPropertyIDs[i] = propinfoset->rgPropertyInfos[i].dwPropertyID;
-        }
         }
 
         CoTaskMemFree(propidlist.rgPropertyIDs);
@@ -1066,14 +1064,14 @@ static void test_odbc_enumerator(void)
     IRowset *rowset;
 
     hr = CoCreateInstance( &CLSID_MSDASQL_ENUMERATOR, NULL, CLSCTX_ALL, &IID_ISourcesRowset, (void **)&source);
-    todo_wine ok(hr == S_OK, "Failed to create object 0x%08x\n", hr);
+    ok(hr == S_OK, "Failed to create object 0x%08x\n", hr);
     if (FAILED(hr))
     {
         return;
     }
 
     hr = ISourcesRowset_GetSourcesRowset(source, NULL, &IID_IRowset, 0, 0, (IUnknown**)&rowset);
-    todo_wine ok(hr == S_OK, "Failed to create object 0x%08x\n", hr);
+    ok(hr == S_OK, "Failed to create object 0x%08x\n", hr);
     if (hr == S_OK)
     {
         IAccessor *accessor;
@@ -1085,7 +1083,7 @@ static void test_odbc_enumerator(void)
             IAccessor_Release(accessor);
 
         hr = IRowset_QueryInterface(rowset, &IID_IRowsetInfo, (void **)&info);
-        ok(hr == S_OK, "got %08x\n", hr);
+        todo_wine ok(hr == S_OK, "got %08x\n", hr);
         if (hr == S_OK)
             IRowsetInfo_Release(info);
 

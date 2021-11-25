@@ -43,6 +43,21 @@
 #ifdef HAVE_SYS_SYSINFO_H
 # include <sys/sysinfo.h>
 #endif
+#ifdef HAVE_SYS_SYSCTL_H
+# include <sys/sysctl.h>
+#endif
+#ifdef HAVE_SYS_PARAM_H
+# include <sys/param.h>
+#endif
+#ifdef HAVE_SYS_QUEUE_H
+# include <sys/queue.h>
+#endif
+#ifdef HAVE_SYS_USER_H
+# include <sys/user.h>
+#endif
+#ifdef HAVE_LIBPROCSTAT_H
+# include <libprocstat.h>
+#endif
 #include <unistd.h>
 #include <dlfcn.h>
 #ifdef HAVE_VALGRIND_VALGRIND_H
@@ -2106,13 +2121,14 @@ static SIZE_T get_committed_size( struct file_view *view, void *base, BYTE *vpro
 
 
 /***********************************************************************
- *           decommit_view
+ *           decommit_pages
  *
  * Decommit some pages of a given view.
  * virtual_mutex must be held by caller.
  */
 static NTSTATUS decommit_pages( struct file_view *view, size_t start, size_t size )
 {
+    if (!size) size = view->size;
     if (anon_mmap_fixed( (char *)view->base + start, size, PROT_NONE, 0 ) != MAP_FAILED)
     {
         set_page_vprot_bits( (char *)view->base + start, size, 0, VPROT_COMMITTED );
@@ -3006,6 +3022,7 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
     void *ptr = NULL;
     NTSTATUS status = STATUS_SUCCESS;
     SIZE_T block_size = signal_stack_mask + 1;
+    BOOL is_wow = !!NtCurrentTeb()->WowTebOffset;
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     if (next_free_teb)
@@ -3020,7 +3037,7 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
         {
             SIZE_T total = 32 * block_size;
 
-            if ((status = NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, is_win64 ? 0x7fffffff : 0,
+            if ((status = NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, is_win64 && is_wow ? 0x7fffffff : 0,
                                                    &total, MEM_RESERVE, PAGE_READWRITE )))
             {
                 server_leave_uninterrupted_section( &virtual_mutex, &sigset );
@@ -3033,7 +3050,7 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
         NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &block_size,
                                  MEM_COMMIT, PAGE_READWRITE );
     }
-    *ret_teb = teb = init_teb( ptr, !!NtCurrentTeb()->WowTebOffset );
+    *ret_teb = teb = init_teb( ptr, is_wow );
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
 
     if ((status = signal_alloc_thread( teb )))
@@ -3950,7 +3967,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
 
     /* Fix the parameters */
 
-    size = ROUND_SIZE( addr, size );
+    if (size) size = ROUND_SIZE( addr, size );
     base = ROUND_ADDR( addr, page_mask );
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
@@ -3959,7 +3976,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     if (!base)
     {
         /* address 1 is magic to mean release reserved space */
-        if (addr == (void *)1 && !*size_ptr && type == MEM_RELEASE) virtual_release_address_space();
+        if (addr == (void *)1 && !size && type == MEM_RELEASE) virtual_release_address_space();
         else status = STATUS_INVALID_PARAMETER;
     }
     else if (!(view = find_view( base, size )) || !is_view_valloc( view ))
@@ -3970,17 +3987,19 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     {
         /* Free the pages */
 
-        if (size || (base != view->base)) status = STATUS_INVALID_PARAMETER;
+        if (size) status = STATUS_INVALID_PARAMETER;
+        else if (base != view->base) status = STATUS_FREE_VM_NOT_AT_BASE;
         else
         {
-            delete_view( view );
             *addr_ptr = base;
-            *size_ptr = size;
+            *size_ptr = view->size;
+            delete_view( view );
         }
     }
     else if (type == MEM_DECOMMIT)
     {
-        status = decommit_pages( view, base - (char *)view->base, size );
+        if (!size && base != view->base) status = STATUS_FREE_VM_NOT_AT_BASE;
+        else status = decommit_pages( view, base - (char *)view->base, size );
         if (status == STATUS_SUCCESS)
         {
             *addr_ptr = base;
@@ -4242,7 +4261,7 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
                                     MEMORY_WORKING_SET_EX_INFORMATION *info,
                                     SIZE_T len, SIZE_T *res_len )
 {
-    FILE *f;
+    FILE *f = NULL;
     MEMORY_WORKING_SET_EX_INFORMATION *p;
     sigset_t sigset;
 
@@ -4252,6 +4271,58 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
         return STATUS_INVALID_INFO_CLASS;
     }
 
+#if defined(HAVE_LIBPROCSTAT)
+    {
+        struct procstat *pstat;
+        unsigned int proc_count;
+        struct kinfo_proc *kip = NULL;
+        unsigned int vmentry_count = 0;
+        struct kinfo_vmentry *vmentries = NULL;
+
+        pstat = procstat_open_sysctl();
+        if (pstat)
+            kip = procstat_getprocs( pstat, KERN_PROC_PID, getpid(), &proc_count );
+        if (kip)
+            vmentries = procstat_getvmmap( pstat, kip, &vmentry_count );
+        if (vmentries == NULL)
+            WARN( "couldn't get process vmmap, errno %d\n", errno );
+
+        server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+        for (p = info; (UINT_PTR)(p + 1) <= (UINT_PTR)info + len; p++)
+        {
+             int i;
+             struct kinfo_vmentry *entry = NULL;
+             BYTE vprot;
+             struct file_view *view;
+
+             for (i = 0; i < vmentry_count && entry == NULL; i++)
+             {
+                 if (vmentries[i].kve_start <= (ULONG_PTR)p->VirtualAddress && (ULONG_PTR)p->VirtualAddress <= vmentries[i].kve_end)
+                     entry = &vmentries[i];
+             }
+             memset( &p->VirtualAttributes, 0, sizeof(p->VirtualAttributes) );
+             if ((view = find_view( p->VirtualAddress, 0 )) &&
+                 get_committed_size( view, p->VirtualAddress, &vprot, VPROT_COMMITTED ) &&
+                 (vprot & VPROT_COMMITTED))
+             {
+                 p->VirtualAttributes.Valid = !(vprot & VPROT_GUARD) && (vprot & 0x0f) && entry && entry->kve_type != KVME_TYPE_SWAP;
+                 p->VirtualAttributes.Shared = !is_view_valloc( view );
+                 if (p->VirtualAttributes.Shared && p->VirtualAttributes.Valid)
+                     p->VirtualAttributes.ShareCount = 1; /* FIXME */
+                 if (p->VirtualAttributes.Valid)
+                     p->VirtualAttributes.Win32Protection = get_win32_prot( vprot, view->protect );
+             }
+        }
+        server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+
+        if (vmentries)
+            procstat_freevmmap( pstat, vmentries );
+        if (kip)
+            procstat_freeprocs( pstat, kip );
+        if (pstat)
+            procstat_close( pstat );
+    }
+#else
     f = fopen( "/proc/self/pagemap", "rb" );
     if (!f)
     {
@@ -4288,6 +4359,7 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
         }
     }
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+#endif
 
     if (f)
         fclose( f );

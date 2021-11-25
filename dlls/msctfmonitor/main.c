@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Zebediah Figura
+ * Copyright 2021 Louis Lenders
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,7 +16,12 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "windef.h"
+#include "wine/debug.h"
 
-/* @makedep: typelib.tlb */
-typelib.tlb TYPELIB typelib.tlb
+WINE_DEFAULT_DEBUG_CHANNEL(msctfmonitor);
+
+HRESULT WINAPI InitLocalMsCtfMonitor(DWORD flags)
+{
+    FIXME("%d stub!\n", flags);
+    return E_FAIL;
+}

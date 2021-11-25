@@ -60,6 +60,24 @@ struct _dispex_prop_t {
     int bucket_next;
 };
 
+static void fix_protref_prop(jsdisp_t *jsdisp, dispex_prop_t *prop)
+{
+    DWORD ref;
+
+    if(prop->type != PROP_PROTREF)
+        return;
+    ref = prop->u.ref;
+
+    while((jsdisp = jsdisp->prototype)) {
+        if(ref >= jsdisp->prop_cnt || jsdisp->props[ref].type == PROP_DELETED)
+            break;
+        if(jsdisp->props[ref].type != PROP_PROTREF)
+            return;
+        ref = jsdisp->props[ref].u.ref;
+    }
+    prop->type = PROP_DELETED;
+}
+
 static inline DISPID prop_to_id(jsdisp_t *This, dispex_prop_t *prop)
 {
     return prop - This->props;
@@ -67,10 +85,11 @@ static inline DISPID prop_to_id(jsdisp_t *This, dispex_prop_t *prop)
 
 static inline dispex_prop_t *get_prop(jsdisp_t *This, DISPID id)
 {
-    if(id < 0 || id >= This->prop_cnt || This->props[id].type == PROP_DELETED)
+    if(id < 0 || id >= This->prop_cnt)
         return NULL;
+    fix_protref_prop(This, &This->props[id]);
 
-    return This->props+id;
+    return This->props[id].type == PROP_DELETED ? NULL : &This->props[id];
 }
 
 static inline BOOL is_function_prop(dispex_prop_t *prop)
@@ -90,8 +109,12 @@ static inline BOOL is_function_prop(dispex_prop_t *prop)
 static DWORD get_flags(jsdisp_t *This, dispex_prop_t *prop)
 {
     if(prop->type == PROP_PROTREF) {
-        dispex_prop_t *parent = get_prop(This->prototype, prop->u.ref);
-        if(!parent) {
+        dispex_prop_t *parent = NULL;
+
+        if(prop->u.ref < This->prototype->prop_cnt)
+            parent = &This->prototype->props[prop->u.ref];
+
+        if(!parent || parent->type == PROP_DELETED) {
             prop->type = PROP_DELETED;
             return 0;
         }
@@ -162,8 +185,8 @@ static inline HRESULT resize_props(jsdisp_t *This)
     This->props = props;
 
     for(i=0; i<This->buf_size; i++) {
-        This->props[i].bucket_head = 0;
-        This->props[i].bucket_next = 0;
+        This->props[i].bucket_head = ~0;
+        This->props[i].bucket_next = ~0;
     }
 
     for(i=1; i<This->prop_cnt; i++) {
@@ -214,14 +237,14 @@ static dispex_prop_t *alloc_protref(jsdisp_t *This, const WCHAR *name, DWORD ref
 static HRESULT find_prop_name(jsdisp_t *This, unsigned hash, const WCHAR *name, dispex_prop_t **ret)
 {
     const builtin_prop_t *builtin;
-    unsigned bucket, pos, prev = 0;
+    unsigned bucket, pos, prev = ~0;
     dispex_prop_t *prop;
 
     bucket = get_props_idx(This, hash);
     pos = This->props[bucket].bucket_head;
-    while(pos != 0) {
+    while(pos != ~0) {
         if(!wcscmp(name, This->props[pos].name)) {
-            if(prev != 0) {
+            if(prev != ~0) {
                 This->props[prev].bucket_next = This->props[pos].bucket_next;
                 This->props[pos].bucket_next = This->props[bucket].bucket_head;
                 This->props[bucket].bucket_head = pos;
@@ -284,6 +307,7 @@ static HRESULT find_prop_name_prot(jsdisp_t *This, unsigned hash, const WCHAR *n
     if(prop && prop->type==PROP_DELETED) {
         del = prop;
     } else if(prop) {
+        fix_protref_prop(This, prop);
         *ret = prop;
         return S_OK;
     }
@@ -292,7 +316,7 @@ static HRESULT find_prop_name_prot(jsdisp_t *This, unsigned hash, const WCHAR *n
         hres = find_prop_name_prot(This->prototype, hash, name, &prop);
         if(FAILED(hres))
             return hres;
-        if(prop) {
+        if(prop && prop->type != PROP_DELETED) {
             if(del) {
                 del->type = PROP_PROTREF;
                 del->u.ref = prop - This->prototype->props;
@@ -461,7 +485,8 @@ static HRESULT prop_put(jsdisp_t *This, dispex_prop_t *prop, jsval_t val)
             prop_iter = prototype_iter->props + prop_iter->u.ref;
         } while(prop_iter->type == PROP_PROTREF);
 
-        if(prop_iter->type == PROP_ACCESSOR)
+        if(prop_iter->type == PROP_ACCESSOR ||
+           (prop_iter->type == PROP_BUILTIN && prop_iter->u.p->setter))
             prop = prop_iter;
     }
 
@@ -1402,7 +1427,7 @@ static HRESULT WINAPI DispatchEx_GetTypeInfo(IDispatchEx *iface, UINT iTInfo, LC
 
         /* If two identifiers differ only by case, the TypeInfo fails */
         pos = This->props[get_props_idx(This, prop->hash)].bucket_head;
-        while (pos)
+        while (pos != ~0)
         {
             cur = This->props + pos;
 
@@ -1551,6 +1576,8 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
         TRACE("invalid id\n");
         return DISP_E_MEMBERNOTFOUND;
     }
+    if(id == DISPID_VALUE && wFlags & (DISPATCH_PROPERTYGET | DISPATCH_PROPERTYPUT))
+        prop = NULL;
 
     enter_script(This->ctx, &ei);
 
@@ -1579,7 +1606,14 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
     case DISPATCH_PROPERTYGET: {
         jsval_t r;
 
-        hres = prop_get(This, prop, &r);
+        if(prop)
+            hres = prop_get(This, prop, &r);
+        else {
+            hres = to_primitive(This->ctx, jsval_obj(This), &r, NO_HINT);
+            if(hres == JS_E_TO_PRIMITIVE)
+                hres = DISP_E_MEMBERNOTFOUND;
+        }
+
         if(SUCCEEDED(hres)) {
             hres = jsval_to_variant(r, pvarRes);
             jsval_release(r);
@@ -1589,6 +1623,11 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
     case DISPATCH_PROPERTYPUT: {
         jsval_t val;
         DWORD i;
+
+        if(!prop) {
+            hres = DISP_E_MEMBERNOTFOUND;
+            break;
+        }
 
         for(i=0; i < pdp->cNamedArgs; i++) {
             if(pdp->rgdispidNamedArgs[i] == DISPID_PROPERTYPUT)
@@ -1620,19 +1659,27 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
 
 static HRESULT delete_prop(dispex_prop_t *prop, BOOL *ret)
 {
+    if(prop->type == PROP_PROTREF) {
+        *ret = TRUE;
+        return S_OK;
+    }
+
     if(!(prop->flags & PROPF_CONFIGURABLE)) {
         *ret = FALSE;
         return S_OK;
     }
 
-    *ret = TRUE; /* FIXME: not exactly right */
+    *ret = TRUE;
 
-    if(prop->type == PROP_JSVAL) {
+    if(prop->type == PROP_JSVAL)
         jsval_release(prop->u.val);
-        prop->type = PROP_DELETED;
+    if(prop->type == PROP_ACCESSOR) {
+        if(prop->u.accessor.getter)
+            jsdisp_release(prop->u.accessor.getter);
+        if(prop->u.accessor.setter)
+            jsdisp_release(prop->u.accessor.setter);
     }
-    if(prop->type == PROP_ACCESSOR)
-        FIXME("not supported on accessor property\n");
+    prop->type = PROP_DELETED;
     return S_OK;
 }
 
@@ -1752,6 +1799,8 @@ jsdisp_t *to_jsdisp(IDispatch *disp)
 
 HRESULT init_dispex(jsdisp_t *dispex, script_ctx_t *ctx, const builtin_info_t *builtin_info, jsdisp_t *prototype)
 {
+    unsigned i;
+
     TRACE("%p (%p)\n", dispex, prototype);
 
     dispex->IDispatchEx_iface.lpVtbl = &DispatchExVtbl;
@@ -1762,6 +1811,11 @@ HRESULT init_dispex(jsdisp_t *dispex, script_ctx_t *ctx, const builtin_info_t *b
     dispex->props = heap_alloc_zero(sizeof(dispex_prop_t)*(dispex->buf_size=4));
     if(!dispex->props)
         return E_OUTOFMEMORY;
+
+    for(i = 0; i < dispex->buf_size; i++) {
+        dispex->props[i].bucket_head = ~0;
+        dispex->props[i].bucket_next = ~0;
+    }
 
     dispex->prototype = prototype;
     if(prototype)
@@ -2529,7 +2583,7 @@ HRESULT jsdisp_define_property(jsdisp_t *obj, const WCHAR *name, property_desc_t
     if(FAILED(hres))
         return hres;
 
-    if((!prop || prop->type == PROP_DELETED) && !obj->extensible)
+    if((!prop || prop->type == PROP_DELETED || prop->type == PROP_PROTREF) && !obj->extensible)
         return throw_error(obj->ctx, JS_E_OBJECT_NONEXTENSIBLE, name);
 
     if(!prop && !(prop = alloc_prop(obj, name, PROP_DELETED, 0)))
@@ -2652,6 +2706,26 @@ HRESULT jsdisp_define_data_property(jsdisp_t *obj, const WCHAR *name, unsigned f
     property_desc_t prop_desc = { flags, flags, TRUE };
     prop_desc.value = value;
     return jsdisp_define_property(obj, name, &prop_desc);
+}
+
+HRESULT jsdisp_change_prototype(jsdisp_t *obj, jsdisp_t *proto)
+{
+    DWORD i;
+
+    if(obj->prototype == proto)
+        return S_OK;
+
+    if(obj->prototype) {
+        for(i = 0; i < obj->prop_cnt; i++)
+            if(obj->props[i].type == PROP_PROTREF)
+                obj->props[i].type = PROP_DELETED;
+        jsdisp_release(obj->prototype);
+    }
+
+    obj->prototype = proto;
+    if(proto)
+        jsdisp_addref(proto);
+    return S_OK;
 }
 
 void jsdisp_freeze(jsdisp_t *obj, BOOL seal)

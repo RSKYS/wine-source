@@ -31,6 +31,7 @@
 
 #include "wine/test.h"
 
+DEFINE_GUID(DBPROPSET_DATASOURCEINFO, 0xc8b522bb, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
 DEFINE_GUID(DBPROPSET_DBINITALL, 0xc8b522ca, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
 DEFINE_GUID(DBPROPSET_DBINIT,    0xc8b522bc, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
 
@@ -72,9 +73,22 @@ static void test_Properties(void)
     HRESULT hr;
     IDBProperties *props;
     DBPROPIDSET propidset;
+    DBPROPID propid;
     ULONG infocount;
     DBPROPINFOSET *propinfoset;
+    DBPROPIDSET propidlist;
+    DBPROPSET *propset;
     WCHAR *desc;
+    ULONG propcnt;
+    ULONG i;
+    DBPROPID properties[14] =
+    {
+        DBPROP_AUTH_PASSWORD, DBPROP_AUTH_PERSIST_SENSITIVE_AUTHINFO, DBPROP_AUTH_USERID,
+        DBPROP_INIT_DATASOURCE, DBPROP_INIT_HWND, DBPROP_INIT_LOCATION,
+        DBPROP_INIT_MODE, DBPROP_INIT_PROMPT, DBPROP_INIT_TIMEOUT,
+        DBPROP_INIT_PROVIDERSTRING, DBPROP_INIT_LCID, DBPROP_INIT_CATALOG,
+        DBPROP_INIT_OLEDBSERVICES, DBPROP_INIT_GENERALTIMEOUT
+    };
 
     hr = CoCreateInstance( &CLSID_MSDASQL, NULL, CLSCTX_ALL, &IID_IDBProperties, (void **)&props);
     ok(hr == S_OK, "Failed to create object 0x%08x\n", hr);
@@ -88,18 +102,26 @@ static void test_Properties(void)
     ok(hr == S_OK, "got 0x%08x\n", hr);
     if (hr == S_OK)
     {
-        ULONG i;
         VARTYPE types[14] = { VT_BSTR, VT_BOOL, VT_BSTR, VT_BSTR, intptr_vartype, VT_BSTR, VT_I4, VT_I2 , VT_I4, VT_BSTR, VT_I4, VT_BSTR, VT_I4, VT_I4 };
 
         ok(IsEqualGUID(&propinfoset->guidPropertySet, &DBPROPSET_DBINIT), "got %s\n", debugstr_guid(&propinfoset->guidPropertySet));
         ok(propinfoset->cPropertyInfos == 14, "got %d\n", propinfoset->cPropertyInfos);
 
+        propidlist.guidPropertySet = DBPROPSET_DBINIT;
+        propidlist.cPropertyIDs = propinfoset->cPropertyInfos;
+        propidlist.rgPropertyIDs = CoTaskMemAlloc(propinfoset->cPropertyInfos * sizeof(DBPROP));
+
         for (i = 0; i < propinfoset->cPropertyInfos; i++)
         {
-            trace("%d: pwszDescription: %s\n", i, debugstr_w(propinfoset->rgPropertyInfos[i].pwszDescription) );
             ok(propinfoset->rgPropertyInfos[i].vtType == types[i], "got %d\n", propinfoset->rgPropertyInfos[i].vtType);
             ok(propinfoset->rgPropertyInfos[i].dwFlags == (DBPROPFLAGS_DBINIT | DBPROPFLAGS_READ | DBPROPFLAGS_WRITE),
                 "got %d\n", propinfoset->rgPropertyInfos[i].dwFlags);
+            ok(properties[i] == propinfoset->rgPropertyInfos[i].dwPropertyID, "%d, got %d\n", i,
+                    propinfoset->rgPropertyInfos[i].dwPropertyID);
+            ok(propinfoset->rgPropertyInfos[i].vtType != VT_EMPTY, "%d, got %d\n", i,
+                    propinfoset->rgPropertyInfos[i].vtType);
+
+            propidlist.rgPropertyIDs[i] = propinfoset->rgPropertyInfos[i].dwPropertyID;
         }
 
         for (i = 0; i < propinfoset->cPropertyInfos; i++)
@@ -107,7 +129,56 @@ static void test_Properties(void)
 
         CoTaskMemFree(propinfoset->rgPropertyInfos);
         CoTaskMemFree(propinfoset);
+
+        hr = IDBProperties_GetProperties(props, 1, &propidlist, &propcnt, &propset);
+        ok(hr == S_OK, "got 0x%08x\n", hr);
+        ok(propidlist.cPropertyIDs == 14, "got %d\n", propidlist.cPropertyIDs);
+        ok(propset->cProperties == 14, "got %d\n", propset->cProperties);
+
+        for (i = 0; i < propidlist.cPropertyIDs; i++)
+        {
+            VARTYPE vartype = VT_EMPTY;
+
+            ok(properties[i] == propidlist.rgPropertyIDs[i], "%d, got %d\n", i, propidlist.rgPropertyIDs[i]);
+
+            if(properties[i] == DBPROP_INIT_PROMPT)
+            {
+                ok(V_I2(&propset->rgProperties[i].vValue) == 4, "wrong value %s\n", debugstr_variant(&propset->rgProperties[i].vValue));
+                vartype = VT_I2;
+            }
+            else if(properties[i] == DBPROP_INIT_LCID)
+            {
+                ok(V_I4(&propset->rgProperties[i].vValue) == GetUserDefaultLCID(), "wrong value %s\n", debugstr_variant(&propset->rgProperties[i].vValue));
+                vartype = VT_I4;
+            }
+            else if(properties[i] == DBPROP_INIT_OLEDBSERVICES)
+            {
+                ok(V_I4(&propset->rgProperties[i].vValue) == -1, "wrong value %s\n", debugstr_variant(&propset->rgProperties[i].vValue));
+                vartype = VT_I4;
+            }
+
+            ok(V_VT(&propset->rgProperties[i].vValue) == vartype, "%d wrong type %d\n", i, V_VT(&propset->rgProperties[i].vValue));
+        }
+
+        CoTaskMemFree(propidlist.rgPropertyIDs);
+        CoTaskMemFree(propset);
     }
+
+    propid = DBPROP_MULTIPLERESULTS;
+    propidlist.rgPropertyIDs = &propid;
+    propidlist.cPropertyIDs = 1;
+    propidlist.guidPropertySet = DBPROPSET_DATASOURCEINFO;
+
+    propcnt = 0;
+    propset = NULL;
+    hr = IDBProperties_GetProperties(props, 1, &propidlist, &propcnt, &propset);
+    ok(hr == DB_E_ERRORSOCCURRED, "got 0x%08x\n", hr);
+    ok(IsEqualGUID(&propset->guidPropertySet, &DBPROPSET_DATASOURCEINFO), "got %s\n", debugstr_guid(&propset->guidPropertySet));
+    ok(propset->cProperties == 1, "got %d\n", propset->cProperties);
+    ok(propset->rgProperties[0].dwPropertyID == DBPROP_MULTIPLERESULTS, "got %d\n", propset->rgProperties[0].dwPropertyID);
+    ok(propset->rgProperties[0].dwStatus == DBPROPSTATUS_NOTSUPPORTED, "got %d\n", propset->rgProperties[0].dwStatus);
+
+    CoTaskMemFree(propset);
 
     IDBProperties_Release(props);
 }
@@ -122,11 +193,16 @@ static void test_command_interfaces(IUnknown *cmd)
     ICommandStream *commandstream;
     IColumnsInfo *colinfo;
     IMultipleResults *multiple;
+    ICommandWithParameters *cmdwithparams;
     IUnknown *unk;
 
     hr = IUnknown_QueryInterface(cmd, &IID_ICommandProperties, (void**)&commandProp);
     ok(hr == S_OK, "got 0x%08x\n", hr);
     ICommandProperties_Release(commandProp);
+
+    hr = IUnknown_QueryInterface(cmd, &IID_ICommandWithParameters, (void**)&cmdwithparams);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    ICommandWithParameters_Release(cmdwithparams);
 
     hr = IUnknown_QueryInterface(cmd, &IID_ICommandText, (void**)&comand_text);
     ok(hr == S_OK, "got 0x%08x\n", hr);
@@ -189,6 +265,12 @@ if (0)
     hr = ICommandText_SetCommandText(comand_text, &DBGUID_DEFAULT, L"select * from testing");
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
+
+    hr = ICommandText_GetCommandText(comand_text, NULL, &str);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    ok (!lstrcmpW(L"select * from testing", str), "got %s\n", debugstr_w(str));
+    HeapFree(GetProcessHeap(), 0, str);
+
     /* dialect empty value */
     hr = ICommandText_GetCommandText(comand_text, &dialect, &str);
     ok(hr == DB_S_DIALECTIGNORED, "got 0x%08x\n", hr);
@@ -222,17 +304,29 @@ static void test_command_dbsession(IUnknown *cmd, IUnknown *session)
     ICommandText_Release(comand_text);
 }
 
-static void test_rowset_interfaces(IRowset *rowset)
+static void test_rowset_interfaces(IRowset *rowset, ICommandText *commandtext)
 {
     IRowsetInfo *info;
     IColumnsInfo *col_info;
     IColumnsRowset *col_rs;
     IAccessor *accessor;
+    ICommandText *specification = NULL;
     IUnknown *unk;
     HRESULT hr;
 
     hr = IRowset_QueryInterface(rowset, &IID_IRowsetInfo, (void**)&info);
     ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    hr = IRowsetInfo_GetSpecification(info, &IID_ICommandText, NULL);
+    ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
+
+    hr = IRowsetInfo_GetSpecification(info, &IID_ICommandText, (IUnknown**)&specification);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    if (specification)
+    {
+        ok(commandtext == specification, "got 0x%08x\n", hr);
+        ICommandText_Release(specification);
+    }
     IRowsetInfo_Release(info);
 
     hr = IRowset_QueryInterface(rowset, &IID_IColumnsInfo, (void**)&col_info);
@@ -293,7 +387,7 @@ static void test_command_rowset(IUnknown *cmd)
         hr = IUnknown_QueryInterface(unk, &IID_IRowset, (void**)&rowset);
         ok(hr == S_OK, "got 0x%08x\n", hr);
 
-        test_rowset_interfaces(rowset);
+        test_rowset_interfaces(rowset, comand_text);
 
         IRowset_Release(rowset);
         IUnknown_Release(unk);
@@ -305,7 +399,7 @@ static void test_command_rowset(IUnknown *cmd)
 
 static void test_sessions(void)
 {
-    IDBProperties *props;
+    IDBProperties *props, *dsource = NULL;
     IDBInitialize *dbinit = NULL;
     IDataInitialize *datainit;
     IDBCreateSession *dbsession = NULL;
@@ -314,6 +408,8 @@ static void test_sessions(void)
     IDBCreateCommand *create_command = NULL;
     IGetDataSource *datasource = NULL;
     ISessionProperties *session_props = NULL;
+    IUnknown *unimplemented = NULL;
+    ITransactionJoin *join = NULL;
     IUnknown *cmd = NULL;
     HRESULT hr;
     BSTR connect_str;
@@ -360,7 +456,23 @@ static void test_sessions(void)
 
     hr = IUnknown_QueryInterface(session, &IID_IGetDataSource, (void**)&datasource);
     ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    hr = IGetDataSource_GetDataSource(datasource, &IID_IDBProperties, (IUnknown**)&dsource);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    ok(dsource == props, "different pointers\n");
+    IDBProperties_Release(dsource);
     IGetDataSource_Release(datasource);
+
+    hr = IUnknown_QueryInterface(session, &IID_ITransactionJoin, (void**)&join);
+    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
+    if(hr == S_OK)
+        ITransactionJoin_Release(join);
+
+    hr = IUnknown_QueryInterface(session, &IID_IBindResource, (void**)&unimplemented);
+    ok(hr == E_NOINTERFACE, "got 0x%08x\n", hr);
+
+    hr = IUnknown_QueryInterface(session, &IID_ICreateRow, (void**)&unimplemented);
+    ok(hr == E_NOINTERFACE, "got 0x%08x\n", hr);
 
     hr = IUnknown_QueryInterface(session, &IID_ISessionProperties, (void**)&session_props);
     ok(hr == S_OK, "got 0x%08x\n", hr);
@@ -461,6 +573,93 @@ static void cleanup_database(void)
     DeleteFileA(mdbpath);
 }
 
+static void test_enumeration(void)
+{
+    ISourcesRowset *source;
+    IRowset *rowset, *rowset2;
+    IColumnsInfo *columninfo;
+    IAccessor *accessor;
+    DBBINDING bindings = { 1, 0, 0, 512, NULL, NULL, NULL, DBPART_VALUE | DBPART_STATUS, DBMEMOWNER_CLIENTOWNED, DBPARAMIO_NOTPARAM, 514, 0, DBTYPE_WSTR, 0, 0 };
+    HACCESSOR hacc;
+    HRESULT hr;
+
+    DBCOLUMNINFO colinfo_data[] =
+    {
+        { NULL,                           NULL, 0, DBCOLUMNFLAGS_ISFIXEDLENGTH | DBCOLUMNFLAGS_ISBOOKMARK, 4,  DBTYPE_UI4,  10, 255 },
+        { (WCHAR*)L"SOURCES_NAME",        NULL, 1, DBCOLUMNFLAGS_MAYBENULL | DBCOLUMNFLAGS_WRITEUNKNOWN, 128, DBTYPE_WSTR, 255, 255 },
+        { (WCHAR*)L"SOURCES_PARSENAME",   NULL, 2, DBCOLUMNFLAGS_MAYBENULL | DBCOLUMNFLAGS_WRITEUNKNOWN, 128, DBTYPE_WSTR, 255, 255 },
+        { (WCHAR*)L"SOURCES_DESCRIPTION", NULL, 3, DBCOLUMNFLAGS_MAYBENULL | DBCOLUMNFLAGS_WRITEUNKNOWN, 128, DBTYPE_WSTR, 255, 255 },
+        { (WCHAR*)L"SOURCES_TYPE",        NULL, 4, DBCOLUMNFLAGS_ISFIXEDLENGTH | DBCOLUMNFLAGS_MAYBENULL | DBCOLUMNFLAGS_WRITEUNKNOWN, 2, DBTYPE_UI2, 5, 255 },
+        { (WCHAR*)L"SOURCES_ISPARENT",    NULL, 5, DBCOLUMNFLAGS_ISFIXEDLENGTH | DBCOLUMNFLAGS_MAYBENULL | DBCOLUMNFLAGS_WRITEUNKNOWN, 2, DBTYPE_BOOL, 255, 255 }
+    };
+
+    hr = CoCreateInstance( &CLSID_MSDASQL_ENUMERATOR, NULL, CLSCTX_INPROC_SERVER, &IID_ISourcesRowset,
+                                (void **)&source );
+    if ( FAILED(hr))
+    {
+        skip("Failed create Enumerator object\n");
+        return;
+    }
+
+    hr = ISourcesRowset_GetSourcesRowset(source, NULL, &IID_IRowset, 0, NULL, (IUnknown**)&rowset);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    hr = ISourcesRowset_GetSourcesRowset(source, NULL, &IID_IRowset, 0, NULL, (IUnknown**)&rowset2);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    ok(rowset != rowset2, "same pointer\n");
+    IRowset_Release(rowset2);
+
+    hr = IRowset_QueryInterface(rowset, &IID_IColumnsInfo, (void**)&columninfo);
+    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
+    if (hr == S_OK)
+    {
+        DBORDINAL columns;
+        DBCOLUMNINFO *dbcolumninfo;
+        OLECHAR *buffer;
+        int i;
+
+        hr = IColumnsInfo_GetColumnInfo(columninfo, &columns, &dbcolumninfo, &buffer);
+        ok(hr == S_OK, "got 0x%08x\n", hr);
+        ok(columns == 6, "got %lu\n", columns);
+
+        for( i = 0; i < columns; i++ )
+        {
+            if (!dbcolumninfo[i].pwszName || !colinfo_data[i].pwszName)
+                ok (dbcolumninfo[i].pwszName == colinfo_data[i].pwszName, "got %p/%p", dbcolumninfo[i].pwszName, colinfo_data[i].pwszName);
+            else
+                ok ( !wcscmp(dbcolumninfo[i].pwszName, colinfo_data[i].pwszName), "got %p/%p",
+                     debugstr_w(dbcolumninfo[i].pwszName), debugstr_w(colinfo_data[i].pwszName));
+
+            ok (dbcolumninfo[i].pTypeInfo == colinfo_data[i].pTypeInfo, "got %p/%p", dbcolumninfo[i].pTypeInfo, colinfo_data[i].pTypeInfo);
+            ok (dbcolumninfo[i].iOrdinal == colinfo_data[i].iOrdinal, "got %ld/%ld", dbcolumninfo[i].iOrdinal, colinfo_data[i].iOrdinal);
+            ok (dbcolumninfo[i].dwFlags == colinfo_data[i].dwFlags, "got 0x%08x/0x%0x8", dbcolumninfo[i].dwFlags, colinfo_data[i].dwFlags);
+            ok (dbcolumninfo[i].ulColumnSize == colinfo_data[i].ulColumnSize, "got %lu/%lu", dbcolumninfo[i].ulColumnSize, colinfo_data[i].ulColumnSize);
+            ok (dbcolumninfo[i].wType == colinfo_data[i].wType, "got %d/%d", dbcolumninfo[i].wType, colinfo_data[i].wType);
+            ok (dbcolumninfo[i].bPrecision == colinfo_data[i].bPrecision, "got %d/%d", dbcolumninfo[i].bPrecision, colinfo_data[i].bPrecision);
+            ok (dbcolumninfo[i].bScale == colinfo_data[i].bScale, "got %d/%d", dbcolumninfo[i].bScale, colinfo_data[i].bScale);
+        }
+
+        CoTaskMemFree(buffer);
+        IColumnsInfo_Release(columninfo);
+    }
+
+    hr = IRowset_QueryInterface(rowset, &IID_IAccessor, (void**)&accessor);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    /* Request only SOURCES_NAME column */
+    hr = IAccessor_CreateAccessor(accessor, DBACCESSOR_ROWDATA, 1, &bindings, 0, &hacc, NULL);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+    ok(hacc != 0, "got %Ix\n", hacc);
+
+    hr = IAccessor_ReleaseAccessor(accessor, hacc, NULL);
+    ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    IAccessor_Release(accessor);
+
+    IRowset_Release(rowset);
+    ISourcesRowset_Release(source);
+}
+
 START_TEST(provider)
 {
     CoInitialize(0);
@@ -470,6 +669,8 @@ START_TEST(provider)
     test_msdasql();
     test_Properties();
     test_sessions();
+
+    test_enumeration();
 
     cleanup_database();
 

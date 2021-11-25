@@ -29,12 +29,11 @@
 # error You must include port.h before all other headers
 #endif
 
-#include <sys/types.h>
-#include <string.h>
-#include <stdlib.h>
-#ifdef HAVE_UNISTD_H
-# include <unistd.h>
+#ifdef WINE_UNIX_LIB
+# error port.h should not be used in Unix libraries
 #endif
+
+#include <sys/types.h>
 
 
 /****************************************************************

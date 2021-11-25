@@ -1,5 +1,5 @@
 /*
- * Copyright 2010 Jacek Caban for CodeWeavers
+ * Copyright 2021 Hugh McMaster
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,5 +16,10 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-/* @makedep: ihost.tlb */
-1 TYPELIB ihost.tlb
+#include <windef.h>
+
+/* Translation IDs */
+
+#define STRING_ACTIVE_CODE_PAGE   100
+#define STRING_INVALID_CODE_PAGE  101
+#define STRING_USAGE              102

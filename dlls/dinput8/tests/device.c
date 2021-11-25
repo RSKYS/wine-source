@@ -90,67 +90,100 @@ static void flush_events(void)
     }
 }
 
-static void test_device_input(IDirectInputDevice8A *lpdid, DWORD event_type, DWORD event, UINT_PTR expected)
+static void test_device_input( IDirectInputDevice8A *device, DWORD type, DWORD code, UINT_PTR expected )
 {
     HRESULT hr;
     DIDEVICEOBJECTDATA obj_data;
-    DWORD data_size = 1;
+    DWORD res, data_size = 1;
+    HANDLE event;
     int i;
 
-    hr = IDirectInputDevice8_Acquire(lpdid);
-    ok (SUCCEEDED(hr), "Failed to acquire device hr=%08x\n", hr);
+    event = CreateEventW( NULL, FALSE, FALSE, NULL );
+    ok( event != NULL, "CreateEventW failed, error %u\n", GetLastError() );
 
-    if (event_type == INPUT_KEYBOARD)
-        keybd_event(0, event, KEYEVENTF_SCANCODE, 0);
+    IDirectInputDevice_Unacquire( device );
 
-    if (event_type == INPUT_MOUSE)
-        mouse_event( event, 0, 0, 0, 0);
+    hr = IDirectInputDevice8_SetEventNotification( device, event );
+    ok( hr == DI_OK, "SetEventNotification returned %#x\n", hr );
 
-    flush_events();
-    IDirectInputDevice8_Poll(lpdid);
-    hr = IDirectInputDevice8_GetDeviceData(lpdid, sizeof(obj_data), &obj_data, &data_size, 0);
+    hr = IDirectInputDevice8_Acquire( device );
+    ok( hr == DI_OK, "Acquire returned %#x\n", hr );
 
-    if (data_size != 1)
+    if (type == INPUT_KEYBOARD)
     {
-        win_skip("We're not able to inject input into Windows dinput8 with events\n");
-        IDirectInputDevice_Unacquire(lpdid);
-        return;
+        keybd_event( 0, code, KEYEVENTF_SCANCODE, 0 );
+        res = WaitForSingleObject( event, 100 );
+        ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+
+        keybd_event( 0, code, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0 );
+        res = WaitForSingleObject( event, 100 );
+        ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+    }
+    if (type == INPUT_MOUSE)
+    {
+        mouse_event( MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0 );
+        res = WaitForSingleObject( event, 100 );
+        ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+
+        mouse_event( MOUSEEVENTF_LEFTUP, 0, 0, 0, 0 );
+        res = WaitForSingleObject( event, 100 );
+        ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
     }
 
-    ok (obj_data.uAppData == expected, "Retrieval of action failed uAppData=%lu expected=%lu\n", obj_data.uAppData, expected);
+    hr = IDirectInputDevice8_GetDeviceData( device, sizeof(obj_data), &obj_data, &data_size, 0 );
+    ok( hr == DI_OK, "GetDeviceData returned %#x\n", hr );
+    ok( data_size == 1, "got data size %u, expected 1\n", data_size );
+    ok( obj_data.uAppData == expected, "got action uAppData %p, expected %p\n",
+        (void *)obj_data.uAppData, (void *)expected );
 
     /* Check for buffer overflow */
     for (i = 0; i < 17; i++)
-        if (event_type == INPUT_KEYBOARD)
+    {
+        if (type == INPUT_KEYBOARD)
         {
-            keybd_event( VK_SPACE, DIK_SPACE, 0, 0);
-            keybd_event( VK_SPACE, DIK_SPACE, KEYEVENTF_KEYUP, 0);
-        }
-        else if (event_type == INPUT_MOUSE)
-        {
-            mouse_event(MOUSEEVENTF_LEFTDOWN, 1, 1, 0, 0);
-            mouse_event(MOUSEEVENTF_LEFTUP, 1, 1, 0, 0);
-        }
+            keybd_event( VK_SPACE, DIK_SPACE, 0, 0 );
+            res = WaitForSingleObject( event, 100 );
+            ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
 
-    flush_events();
-    IDirectInputDevice8_Poll(lpdid);
+            keybd_event( VK_SPACE, DIK_SPACE, KEYEVENTF_KEYUP, 0 );
+            res = WaitForSingleObject( event, 100 );
+            ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+        }
+        if (type == INPUT_MOUSE)
+        {
+            mouse_event( MOUSEEVENTF_LEFTDOWN, 1, 1, 0, 0 );
+            res = WaitForSingleObject( event, 100 );
+            ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+
+            mouse_event( MOUSEEVENTF_LEFTUP, 1, 1, 0, 0 );
+            res = WaitForSingleObject( event, 100 );
+            ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x\n", res );
+        }
+    }
 
     data_size = 1;
-    hr = IDirectInputDevice8_GetDeviceData(lpdid, sizeof(obj_data), &obj_data, &data_size, 0);
-    ok(hr == DI_BUFFEROVERFLOW, "GetDeviceData() failed: %08x\n", hr);
+    hr = IDirectInputDevice8_GetDeviceData( device, sizeof(obj_data), &obj_data, &data_size, 0 );
+    ok( hr == DI_BUFFEROVERFLOW, "GetDeviceData returned %#x\n", hr );
     data_size = 1;
-    hr = IDirectInputDevice8_GetDeviceData(lpdid, sizeof(obj_data), &obj_data, &data_size, 0);
-    ok(hr == DI_OK && data_size == 1, "GetDeviceData() failed: %08x cnt:%d\n", hr, data_size);
+    hr = IDirectInputDevice8_GetDeviceData( device, sizeof(obj_data), &obj_data, &data_size, 0 );
+    ok( hr == DI_OK, "GetDeviceData returned %#x\n", hr );
+    ok( data_size == 1, "got data_size %u, expected 1\n", data_size );
 
     /* drain device's queue */
     while (data_size == 1)
     {
-        hr = IDirectInputDevice8_GetDeviceData(lpdid, sizeof(obj_data), &obj_data, &data_size, 0);
-        ok(hr == DI_OK, "GetDeviceData() failed: %08x cnt:%d\n", hr, data_size);
+        hr = IDirectInputDevice8_GetDeviceData( device, sizeof(obj_data), &obj_data, &data_size, 0 );
+        ok( hr == DI_OK, "GetDeviceData returned %#x\n", hr );
         if (hr != DI_OK) break;
     }
 
-    IDirectInputDevice_Unacquire(lpdid);
+    hr = IDirectInputDevice_Unacquire( device );
+    ok( hr == DI_OK, "Unacquire returned %#x\n", hr );
+
+    hr = IDirectInputDevice8_SetEventNotification( device, NULL );
+    ok( hr == DI_OK, "SetEventNotification returned %#x\n", hr );
+
+    CloseHandle( event );
 }
 
 static void test_build_action_map(IDirectInputDevice8A *lpdid, DIACTIONFORMATA *lpdiaf,
@@ -1296,6 +1329,8 @@ static void test_mouse_info(void)
     ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_DEADZONE returned %#x\n", hr );
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_SATURATION, &prop_dword.diph );
     ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_SATURATION returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_CALIBRATIONMODE, &prop_dword.diph );
+    ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_CALIBRATIONMODE returned %#x\n", hr );
     prop_range.diph.dwHow = DIPH_BYOFFSET;
     prop_range.diph.dwObj = DIMOFS_X;
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_RANGE, &prop_range.diph );
@@ -1374,12 +1409,32 @@ static void test_mouse_info(void)
     ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_DEADZONE returned %#x\n", hr );
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_SATURATION, &prop_dword.diph );
     ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_SATURATION returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_CALIBRATIONMODE, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_CALIBRATIONMODE returned %#x\n", hr );
     prop_range.lMin = 0xdeadbeef;
     prop_range.lMax = 0xdeadbeef;
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_RANGE, &prop_range.diph );
     ok( hr == DI_OK, "GetProperty DIPROP_RANGE returned %#x\n", hr );
     ok( prop_range.lMin == DIPROPRANGE_NOMIN, "got %d expected %d\n", prop_range.lMin, DIPROPRANGE_NOMIN );
     ok( prop_range.lMax == DIPROPRANGE_NOMAX, "got %d expected %d\n", prop_range.lMax, DIPROPRANGE_NOMAX );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_LOGICALRANGE, &prop_range.diph );
+    ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_LOGICALRANGE returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_PHYSICALRANGE, &prop_range.diph );
+    ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_PHYSICALRANGE returned %#x\n", hr );
+
+    prop_string.diph.dwHow = DIPH_BYOFFSET;
+    prop_string.diph.dwObj = DIMOFS_X;
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_KEYNAME, &prop_string.diph );
+    ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_KEYNAME returned %#x\n", hr );
+
+    prop_range.diph.dwHow = DIPH_DEVICE;
+    prop_range.diph.dwObj = 0;
+    prop_dword.dwData = 0xdeadbeef;
+    hr = IDirectInputDevice8_SetProperty( device, DIPROP_FFGAIN, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "SetProperty DIPROP_FFGAIN returned %#x\n", hr );
+    prop_dword.dwData = 1000;
+    hr = IDirectInputDevice8_SetProperty( device, DIPROP_FFGAIN, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "SetProperty DIPROP_FFGAIN returned %#x\n", hr );
 
     res = 0;
     hr = IDirectInputDevice8_EnumObjects( device, check_object_count, &res, DIDFT_AXIS | DIDFT_PSHBUTTON );
@@ -1618,10 +1673,16 @@ static void test_keyboard_info(void)
     ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_DEADZONE returned %#x\n", hr );
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_SATURATION, &prop_dword.diph );
     ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_SATURATION returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_CALIBRATIONMODE, &prop_dword.diph );
+    ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_CALIBRATIONMODE returned %#x\n", hr );
     prop_range.diph.dwHow = DIPH_BYOFFSET;
     prop_range.diph.dwObj = 1;
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_RANGE, &prop_range.diph );
     ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_RANGE returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_LOGICALRANGE, &prop_range.diph );
+    ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_LOGICALRANGE returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_PHYSICALRANGE, &prop_range.diph );
+    ok( hr == DIERR_NOTFOUND, "GetProperty DIPROP_PHYSICALRANGE returned %#x\n", hr );
 
     prop_dword.diph.dwHow = DIPH_DEVICE;
     prop_dword.diph.dwObj = 0;
@@ -1694,10 +1755,21 @@ static void test_keyboard_info(void)
     ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_DEADZONE returned %#x\n", hr );
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_SATURATION, &prop_dword.diph );
     ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_SATURATION returned %#x\n", hr );
+    hr = IDirectInputDevice8_GetProperty( device, DIPROP_CALIBRATIONMODE, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_CALIBRATIONMODE returned %#x\n", hr );
     prop_range.diph.dwHow = DIPH_BYOFFSET;
     prop_range.diph.dwObj = 1;
     hr = IDirectInputDevice8_GetProperty( device, DIPROP_RANGE, &prop_range.diph );
     ok( hr == DIERR_UNSUPPORTED, "GetProperty DIPROP_RANGE returned %#x\n", hr );
+
+    prop_range.diph.dwHow = DIPH_DEVICE;
+    prop_range.diph.dwObj = 0;
+    prop_dword.dwData = 0xdeadbeef;
+    hr = IDirectInputDevice8_SetProperty( device, DIPROP_FFGAIN, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "SetProperty DIPROP_FFGAIN returned %#x\n", hr );
+    prop_dword.dwData = 1000;
+    hr = IDirectInputDevice8_SetProperty( device, DIPROP_FFGAIN, &prop_dword.diph );
+    ok( hr == DIERR_UNSUPPORTED, "SetProperty DIPROP_FFGAIN returned %#x\n", hr );
 
     res = 0;
     hr = IDirectInputDevice8_EnumObjects( device, check_object_count, &res, DIDFT_AXIS | DIDFT_PSHBUTTON );

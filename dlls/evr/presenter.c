@@ -116,6 +116,12 @@ struct video_presenter
     unsigned int ar_mode;
     unsigned int state;
     unsigned int flags;
+
+    struct
+    {
+        int presented;
+    } frame_stats;
+
     CRITICAL_SECTION cs;
 };
 
@@ -477,8 +483,6 @@ static void video_presenter_sample_present(struct video_presenter *presenter, IM
 {
     IDirect3DSurface9 *surface, *backbuffer;
     IDirect3DDevice9 *device;
-    D3DSURFACE_DESC desc;
-    RECT dst, src;
     HRESULT hr;
 
     if (!presenter->swapchain)
@@ -500,38 +504,8 @@ static void video_presenter_sample_present(struct video_presenter *presenter, IM
     IDirect3DSwapChain9_GetDevice(presenter->swapchain, &device);
     IDirect3DDevice9_StretchRect(device, surface, NULL, backbuffer, NULL, D3DTEXF_POINT);
 
-    IDirect3DSurface9_GetDesc(surface, &desc);
-    SetRect(&src, 0, 0, desc.Width, desc.Height);
-
-    IDirect3DSurface9_GetDesc(backbuffer, &desc);
-    SetRect(&dst, 0, 0, desc.Width, desc.Height);
-
-    if (presenter->ar_mode & MFVideoARMode_PreservePicture)
-    {
-        unsigned int src_width = src.right - src.left, src_height = src.bottom - src.top;
-        unsigned int dst_width = dst.right - dst.left, dst_height = dst.bottom - dst.top;
-
-        if (src_width * dst_height > dst_width * src_height)
-        {
-            /* src is "wider" than dst. */
-            unsigned int dst_center = (dst.top + dst.bottom) / 2;
-            unsigned int scaled_height = src_height * dst_width / src_width;
-
-            dst.top = dst_center - scaled_height / 2;
-            dst.bottom = dst.top + scaled_height;
-        }
-        else if (src_width * dst_height < dst_width * src_height)
-        {
-            /* src is "taller" than dst. */
-            unsigned int dst_center = (dst.left + dst.right) / 2;
-            unsigned int scaled_width = src_width * dst_height / src_height;
-
-            dst.left = dst_center - scaled_width / 2;
-            dst.right = dst.left + scaled_width;
-        }
-    }
-
-    IDirect3DSwapChain9_Present(presenter->swapchain, &src, &dst, NULL, NULL, 0);
+    IDirect3DSwapChain9_Present(presenter->swapchain, NULL, NULL, NULL, NULL, 0);
+    presenter->frame_stats.presented++;
 
     IDirect3DDevice9_Release(device);
     IDirect3DSurface9_Release(backbuffer);
@@ -934,6 +908,7 @@ static HRESULT WINAPI video_presenter_OnClockStop(IMFVideoPresenter *iface, MFTI
 
     EnterCriticalSection(&presenter->cs);
     presenter->state = PRESENTER_STATE_STOPPED;
+    presenter->frame_stats.presented = 0;
     LeaveCriticalSection(&presenter->cs);
 
     return S_OK;
@@ -1766,9 +1741,27 @@ static HRESULT WINAPI video_presenter_qualprop_get_FramesDroppedInRenderer(IQual
 
 static HRESULT WINAPI video_presenter_qualprop_get_FramesDrawn(IQualProp *iface, int *frames)
 {
-    FIXME("%p, %p stub.\n", iface, frames);
+    struct video_presenter *presenter = impl_from_IQualProp(iface);
+    HRESULT hr = S_OK;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, frames);
+
+    EnterCriticalSection(&presenter->cs);
+
+    switch (presenter->state)
+    {
+        case PRESENTER_STATE_STARTED:
+        case PRESENTER_STATE_PAUSED:
+            if (frames) *frames = presenter->frame_stats.presented;
+            else hr = E_POINTER;
+            break;
+        default:
+            hr = E_NOTIMPL;
+    }
+
+    LeaveCriticalSection(&presenter->cs);
+
+    return hr;
 }
 
 static HRESULT WINAPI video_presenter_qualprop_get_AvgFrameRate(IQualProp *iface, int *avg_frame_rate)

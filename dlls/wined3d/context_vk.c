@@ -247,15 +247,28 @@ static VkStencilOp vk_stencil_op_from_wined3d(enum wined3d_stencil_op op)
     }
 }
 
+static void wined3d_allocator_chunk_vk_lock(struct wined3d_allocator_chunk_vk *chunk_vk)
+{
+    wined3d_device_vk_allocator_lock(wined3d_device_vk_from_allocator(chunk_vk->c.allocator));
+}
+
+static void wined3d_allocator_chunk_vk_unlock(struct wined3d_allocator_chunk_vk *chunk_vk)
+{
+    wined3d_device_vk_allocator_unlock(wined3d_device_vk_from_allocator(chunk_vk->c.allocator));
+}
+
 void *wined3d_allocator_chunk_vk_map(struct wined3d_allocator_chunk_vk *chunk_vk,
         struct wined3d_context_vk *context_vk)
 {
     struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
     const struct wined3d_vk_info *vk_info = context_vk->vk_info;
+    void *map_ptr;
     VkResult vr;
 
     TRACE("chunk %p, memory 0x%s, map_ptr %p.\n", chunk_vk,
             wine_dbgstr_longlong(chunk_vk->vk_memory), chunk_vk->c.map_ptr);
+
+    wined3d_allocator_chunk_vk_lock(chunk_vk);
 
     if (!chunk_vk->c.map_ptr && (vr = VK_CALL(vkMapMemory(device_vk->vk_device,
             chunk_vk->vk_memory, 0, VK_WHOLE_SIZE, 0, &chunk_vk->c.map_ptr))) < 0)
@@ -265,8 +278,11 @@ void *wined3d_allocator_chunk_vk_map(struct wined3d_allocator_chunk_vk *chunk_vk
     }
 
     ++chunk_vk->c.map_count;
+    map_ptr = chunk_vk->c.map_ptr;
 
-    return chunk_vk->c.map_ptr;
+    wined3d_allocator_chunk_vk_unlock(chunk_vk);
+
+    return map_ptr;
 }
 
 void wined3d_allocator_chunk_vk_unmap(struct wined3d_allocator_chunk_vk *chunk_vk,
@@ -277,11 +293,18 @@ void wined3d_allocator_chunk_vk_unmap(struct wined3d_allocator_chunk_vk *chunk_v
 
     TRACE("chunk_vk %p, context_vk %p.\n", chunk_vk, context_vk);
 
+    wined3d_allocator_chunk_vk_lock(chunk_vk);
+
     if (--chunk_vk->c.map_count)
+    {
+        wined3d_allocator_chunk_vk_unlock(chunk_vk);
         return;
+    }
 
     VK_CALL(vkUnmapMemory(device_vk->vk_device, chunk_vk->vk_memory));
     chunk_vk->c.map_ptr = NULL;
+
+    wined3d_allocator_chunk_vk_unlock(chunk_vk);
 }
 
 VkDeviceMemory wined3d_context_vk_allocate_vram_chunk_memory(struct wined3d_context_vk *context_vk,
@@ -313,27 +336,43 @@ static struct wined3d_allocator_block *wined3d_context_vk_allocate_memory(struct
     struct wined3d_allocator *allocator = &device_vk->allocator;
     struct wined3d_allocator_block *block;
 
+    wined3d_device_vk_allocator_lock(device_vk);
+
     if (size > WINED3D_ALLOCATOR_CHUNK_SIZE / 2)
     {
         *vk_memory = wined3d_context_vk_allocate_vram_chunk_memory(context_vk, memory_type, size);
+        wined3d_device_vk_allocator_unlock(device_vk);
         return NULL;
     }
 
     if (!(block = wined3d_allocator_allocate(allocator, &context_vk->c, memory_type, size)))
     {
+        wined3d_device_vk_allocator_unlock(device_vk);
         *vk_memory = VK_NULL_HANDLE;
         return NULL;
     }
 
     *vk_memory = wined3d_allocator_chunk_vk(block->chunk)->vk_memory;
 
+    wined3d_device_vk_allocator_unlock(device_vk);
     return block;
+}
+
+static void wined3d_context_vk_free_memory(struct wined3d_context_vk *context_vk, struct wined3d_allocator_block *block)
+{
+    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
+
+    assert(block->chunk->allocator == &device_vk->allocator);
+    wined3d_device_vk_allocator_lock(device_vk);
+    wined3d_allocator_block_free(block);
+    wined3d_device_vk_allocator_unlock(device_vk);
 }
 
 static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context_vk,
         VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_type, struct wined3d_bo_vk *bo)
 {
     const struct wined3d_adapter_vk *adapter_vk = wined3d_adapter_vk(context_vk->c.device->adapter);
+    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
     const VkPhysicalDeviceLimits *limits = &adapter_vk->device_limits;
     struct wined3d_bo_slab_vk_key key;
     struct wined3d_bo_slab_vk *slab;
@@ -360,6 +399,8 @@ static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context
     key.usage = usage;
     key.size = 32 * object_size;
 
+    wined3d_device_vk_allocator_lock(device_vk);
+
     if ((entry = wine_rb_get(&context_vk->bo_slab_available, &key)))
     {
         slab = WINE_RB_ENTRY_VALUE(entry, struct wined3d_bo_slab_vk, entry);
@@ -369,26 +410,29 @@ static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context
     {
         if (!(slab = heap_alloc_zero(sizeof(*slab))))
         {
+            wined3d_device_vk_allocator_unlock(device_vk);
             ERR("Failed to allocate bo slab.\n");
+            return false;
+        }
+
+        if (wine_rb_put(&context_vk->bo_slab_available, &key, &slab->entry) < 0)
+        {
+            wined3d_device_vk_allocator_unlock(device_vk);
+            ERR("Failed to add slab to available tree.\n");
+            heap_free(slab);
             return false;
         }
 
         slab->requested_memory_type = memory_type;
         if (!wined3d_context_vk_create_bo(context_vk, key.size, usage, memory_type, &slab->bo))
         {
+            wined3d_device_vk_allocator_unlock(device_vk);
             ERR("Failed to create slab bo.\n");
+            wine_rb_remove(&context_vk->bo_slab_available, &slab->entry);
             heap_free(slab);
             return false;
         }
         slab->map = ~0u;
-
-        if (wine_rb_put(&context_vk->bo_slab_available, &key, &slab->entry) < 0)
-        {
-            ERR("Failed to add slab to available tree.\n");
-            wined3d_context_vk_destroy_bo(context_vk, &slab->bo);
-            heap_free(slab);
-            return false;
-        }
 
         TRACE("Created new bo slab %p.\n", slab);
     }
@@ -407,11 +451,13 @@ static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context
         }
     }
 
+    wined3d_device_vk_allocator_unlock(device_vk);
+
     *bo = slab->bo;
     bo->memory = NULL;
     bo->slab = slab;
-    bo->buffer_offset = idx * object_size;
-    bo->b.memory_offset = slab->bo.b.memory_offset + bo->buffer_offset;
+    bo->b.buffer_offset = idx * object_size;
+    bo->b.memory_offset = slab->bo.b.memory_offset + bo->b.buffer_offset;
     bo->size = size;
     list_init(&bo->b.users);
     bo->command_buffer_id = 0;
@@ -419,7 +465,7 @@ static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context
 
     TRACE("Using buffer 0x%s, memory 0x%s, offset 0x%s for bo %p.\n",
             wine_dbgstr_longlong(bo->vk_buffer), wine_dbgstr_longlong(bo->vk_memory),
-            wine_dbgstr_longlong(bo->buffer_offset), bo);
+            wine_dbgstr_longlong(bo->b.buffer_offset), bo);
 
     return true;
 }
@@ -480,7 +526,7 @@ BOOL wined3d_context_vk_create_bo(struct wined3d_context_vk *context_vk, VkDevic
     {
         ERR("Failed to bind buffer memory, vr %s.\n", wined3d_debug_vkresult(vr));
         if (bo->memory)
-            wined3d_allocator_block_free(bo->memory);
+            wined3d_context_vk_free_memory(context_vk, bo->memory);
         else
             VK_CALL(vkFreeMemory(device_vk->vk_device, bo->vk_memory, NULL));
         VK_CALL(vkDestroyBuffer(device_vk->vk_device, bo->vk_buffer, NULL));
@@ -488,7 +534,7 @@ BOOL wined3d_context_vk_create_bo(struct wined3d_context_vk *context_vk, VkDevic
     }
 
     bo->b.map_ptr = NULL;
-    bo->buffer_offset = 0;
+    bo->b.buffer_offset = 0;
     bo->size = size;
     bo->usage = usage;
     bo->memory_type = adapter_vk->memory_properties.memoryTypes[memory_type_idx].propertyFlags;
@@ -574,7 +620,7 @@ BOOL wined3d_context_vk_create_image(struct wined3d_context_vk *context_vk, VkIm
     {
         VK_CALL(vkDestroyImage(device_vk->vk_device, image->vk_image, NULL));
         if (image->memory)
-            wined3d_allocator_block_free(image->memory);
+            wined3d_context_vk_free_memory(context_vk, image->memory);
         else
             VK_CALL(vkFreeMemory(device_vk->vk_device, image->vk_memory, NULL));
         ERR("Failed to bind image memory, vr %s.\n", wined3d_debug_vkresult(vr));
@@ -688,7 +734,7 @@ void wined3d_context_vk_destroy_allocator_block(struct wined3d_context_vk *conte
 
     if (context_vk->completed_command_buffer_id > command_buffer_id)
     {
-        wined3d_allocator_block_free(block);
+        wined3d_context_vk_free_memory(context_vk, block);
         TRACE("Freed block %p.\n", block);
         return;
     }
@@ -707,10 +753,13 @@ void wined3d_context_vk_destroy_allocator_block(struct wined3d_context_vk *conte
 static void wined3d_bo_slab_vk_free_slice(struct wined3d_bo_slab_vk *slab,
         SIZE_T idx, struct wined3d_context_vk *context_vk)
 {
+    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
     struct wined3d_bo_slab_vk_key key;
     struct wine_rb_entry *entry;
 
     TRACE("slab %p, idx %lu, context_vk %p.\n", slab, idx, context_vk);
+
+    wined3d_device_vk_allocator_lock(device_vk);
 
     if (!slab->map)
     {
@@ -729,6 +778,8 @@ static void wined3d_bo_slab_vk_free_slice(struct wined3d_bo_slab_vk *slab,
         }
     }
     slab->map |= 1u << idx;
+
+    wined3d_device_vk_allocator_unlock(device_vk);
 }
 
 static void wined3d_context_vk_destroy_bo_slab_slice(struct wined3d_context_vk *context_vk,
@@ -910,7 +961,7 @@ void wined3d_context_vk_destroy_bo(struct wined3d_context_vk *context_vk, const 
         if (bo->b.map_ptr)
             wined3d_bo_slab_vk_unmap(slab_vk, context_vk);
         object_size = slab_vk->bo.size / 32;
-        idx = bo->buffer_offset / object_size;
+        idx = bo->b.buffer_offset / object_size;
         wined3d_context_vk_destroy_bo_slab_slice(context_vk, slab_vk, idx, bo->command_buffer_id);
         return;
     }
@@ -1000,7 +1051,7 @@ static void wined3d_context_vk_cleanup_resources(struct wined3d_context_vk *cont
 
             case WINED3D_RETIRED_ALLOCATOR_BLOCK_VK:
                 TRACE("Destroying block %p.\n", o->u.block);
-                wined3d_allocator_block_free(o->u.block);
+                wined3d_context_vk_free_memory(context_vk, o->u.block);
                 break;
 
             case WINED3D_RETIRED_BO_SLAB_SLICE_VK:
@@ -2468,7 +2519,7 @@ static void wined3d_context_vk_bind_vertex_buffers(struct wined3d_context_vk *co
         {
             buffer_vk = wined3d_buffer_vk(buffer);
             buffer_info = wined3d_buffer_vk_get_buffer_info(buffer_vk);
-            wined3d_context_vk_reference_bo(context_vk, &buffer_vk->bo);
+            wined3d_context_vk_reference_bo(context_vk, wined3d_bo_vk(buffer->buffer_object));
             buffers[count] = buffer_info->buffer;
             offsets[count] = buffer_info->offset + stream->offset;
             ++count;
@@ -2507,7 +2558,7 @@ static void wined3d_context_vk_bind_stream_output_buffers(struct wined3d_context
         {
             buffer_vk = wined3d_buffer_vk(buffer);
             buffer_info = wined3d_buffer_vk_get_buffer_info(buffer_vk);
-            wined3d_context_vk_reference_bo(context_vk, &buffer_vk->bo);
+            wined3d_context_vk_reference_bo(context_vk, wined3d_bo_vk(buffer->buffer_object));
             buffers[count] = buffer_info->buffer;
             if ((offsets[count] = stream->offset) == ~0u)
             {
@@ -2709,7 +2760,7 @@ static bool wined3d_shader_descriptor_writes_vk_add_cbv_write(struct wined3d_sha
     if (!wined3d_shader_descriptor_writes_vk_add_write(writes, vk_descriptor_set,
             binding->binding_idx, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, buffer_info, NULL, NULL))
         return false;
-    wined3d_context_vk_reference_bo(context_vk, &buffer_vk->bo);
+    wined3d_context_vk_reference_bo(context_vk, wined3d_bo_vk(buffer->buffer_object));
     return true;
 }
 
@@ -3357,7 +3408,7 @@ VkCommandBuffer wined3d_context_vk_apply_draw_state(struct wined3d_context_vk *c
             idx_type = VK_INDEX_TYPE_UINT32;
         buffer_vk = wined3d_buffer_vk(state->index_buffer);
         buffer_info = wined3d_buffer_vk_get_buffer_info(buffer_vk);
-        wined3d_context_vk_reference_bo(context_vk, &buffer_vk->bo);
+        wined3d_context_vk_reference_bo(context_vk, wined3d_bo_vk(buffer_vk->b.buffer_object));
         VK_CALL(vkCmdBindIndexBuffer(vk_command_buffer, buffer_info->buffer,
                 buffer_info->offset + state->index_offset, idx_type));
     }

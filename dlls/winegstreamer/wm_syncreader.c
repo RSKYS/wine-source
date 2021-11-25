@@ -83,8 +83,8 @@ static HRESULT WINAPI WMSyncReader_GetNextSample(IWMSyncReader2 *iface,
         DWORD *flags, DWORD *output_number, WORD *ret_stream_number)
 {
     struct sync_reader *reader = impl_from_IWMSyncReader2(iface);
+    HRESULT hr = NS_E_NO_MORE_SAMPLES;
     struct wm_stream *stream;
-    HRESULT hr;
     WORD i;
 
     TRACE("reader %p, stream_number %u, sample %p, pts %p, duration %p,"
@@ -104,8 +104,12 @@ static HRESULT WINAPI WMSyncReader_GetNextSample(IWMSyncReader2 *iface,
         for (i = 0; i < reader->reader.stream_count; ++i)
         {
             WORD index = (i + reader->last_read_stream + 1) % reader->reader.stream_count;
+            struct wm_stream *stream = &reader->reader.streams[index];
 
-            hr = wm_reader_get_stream_sample(&reader->reader.streams[index], sample, pts, duration, flags);
+            if (stream->selection == WMT_OFF)
+                continue;
+
+            hr = wm_reader_get_stream_sample(stream, sample, pts, duration, flags);
             if (hr == S_OK)
             {
                 if (output_number)
@@ -217,11 +221,14 @@ static HRESULT WINAPI WMSyncReader_GetStreamNumberForOutput(IWMSyncReader2 *ifac
     return S_OK;
 }
 
-static HRESULT WINAPI WMSyncReader_GetStreamSelected(IWMSyncReader2 *iface, WORD stream_num, WMT_STREAM_SELECTION *selection)
+static HRESULT WINAPI WMSyncReader_GetStreamSelected(IWMSyncReader2 *iface,
+        WORD stream_number, WMT_STREAM_SELECTION *selection)
 {
-    struct sync_reader *This = impl_from_IWMSyncReader2(iface);
-    FIXME("(%p)->(%d %p): stub!\n", This, stream_num, selection);
-    return E_NOTIMPL;
+    struct sync_reader *reader = impl_from_IWMSyncReader2(iface);
+
+    TRACE("reader %p, stream_number %u, selection %p.\n", reader, stream_number, selection);
+
+    return wm_reader_get_stream_selection(&reader->reader, stream_number, selection);
 }
 
 static HRESULT WINAPI WMSyncReader_Open(IWMSyncReader2 *iface, const WCHAR *filename)
@@ -289,19 +296,24 @@ static HRESULT WINAPI WMSyncReader_SetRangeByFrame(IWMSyncReader2 *iface, WORD s
     return E_NOTIMPL;
 }
 
-static HRESULT WINAPI WMSyncReader_SetReadStreamSamples(IWMSyncReader2 *iface, WORD stream_num, BOOL compressed)
+static HRESULT WINAPI WMSyncReader_SetReadStreamSamples(IWMSyncReader2 *iface, WORD stream_number, BOOL compressed)
 {
-    struct sync_reader *This = impl_from_IWMSyncReader2(iface);
-    FIXME("(%p)->(%u %x): stub!\n", This, stream_num, compressed);
-    return E_NOTIMPL;
+    struct sync_reader *reader = impl_from_IWMSyncReader2(iface);
+
+    TRACE("reader %p, stream_index %u, compressed %d.\n", reader, stream_number, compressed);
+
+    return wm_reader_set_read_compressed(&reader->reader, stream_number, compressed);
 }
 
-static HRESULT WINAPI WMSyncReader_SetStreamsSelected(IWMSyncReader2 *iface, WORD stream_count,
-        WORD *stream_numbers, WMT_STREAM_SELECTION *selections)
+static HRESULT WINAPI WMSyncReader_SetStreamsSelected(IWMSyncReader2 *iface,
+        WORD count, WORD *stream_numbers, WMT_STREAM_SELECTION *selections)
 {
-    struct sync_reader *This = impl_from_IWMSyncReader2(iface);
-    FIXME("(%p)->(%d %p %p): stub!\n", This, stream_count, stream_numbers, selections);
-    return S_OK;
+    struct sync_reader *reader = impl_from_IWMSyncReader2(iface);
+
+    TRACE("reader %p, count %u, stream_numbers %p, selections %p.\n",
+            reader, count, stream_numbers, selections);
+
+    return wm_reader_set_streams_selected(&reader->reader, count, stream_numbers, selections);
 }
 
 static HRESULT WINAPI WMSyncReader2_SetRangeByTimecode(IWMSyncReader2 *iface, WORD stream_num,

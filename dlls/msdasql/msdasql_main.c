@@ -26,6 +26,7 @@
 #include "oledb.h"
 #include "rpcproxy.h"
 #include "wine/debug.h"
+#include "oledberr.h"
 
 #include "initguid.h"
 #include "msdasql.h"
@@ -34,6 +35,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(msdasql);
 
+DEFINE_GUID(DBPROPSET_DATASOURCEINFO, 0xc8b522bb, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
 DEFINE_GUID(DBPROPSET_DBINIT,    0xc8b522bc, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
 
 DEFINE_GUID(DBGUID_DEFAULT,      0xc8b521fb, 0x5cf3, 0x11ce, 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d);
@@ -72,6 +74,7 @@ static ULONG WINAPI ClassFactory_Release(IClassFactory *iface)
 }
 
 static HRESULT create_msdasql_provider(REFIID riid, void **ppv);
+static HRESULT create_msdasql_enumerator(REFIID riid, void **ppv);
 
 HRESULT WINAPI msdasql_CreateInstance(IClassFactory *iface, IUnknown *outer, REFIID riid, void **ppv)
 {
@@ -94,7 +97,24 @@ static const IClassFactoryVtbl cfmsdasqlVtbl = {
     ClassFactory_LockServer
 };
 
+HRESULT WINAPI enumerationcf_CreateInstance(IClassFactory *iface, IUnknown *outer, REFIID riid, void **ppv)
+{
+    TRACE("(%p %s %p)\n", outer, debugstr_guid(riid), ppv);
+
+    return create_msdasql_enumerator(riid, ppv);
+}
+
+static const IClassFactoryVtbl enumfactoryVtbl =
+{
+    ClassFactory_QueryInterface,
+    ClassFactory_AddRef,
+    ClassFactory_Release,
+    enumerationcf_CreateInstance,
+    ClassFactory_LockServer
+};
+
 static IClassFactory cfmsdasql = { &cfmsdasqlVtbl };
+static IClassFactory enumfactory = { &enumfactoryVtbl };
 
 HRESULT WINAPI DllGetClassObject( REFCLSID rclsid, REFIID riid, void **ppv )
 {
@@ -102,6 +122,8 @@ HRESULT WINAPI DllGetClassObject( REFCLSID rclsid, REFIID riid, void **ppv )
 
     if (IsEqualGUID(&CLSID_MSDASQL, rclsid))
         return IClassFactory_QueryInterface(&cfmsdasql, riid, ppv);
+    else if (IsEqualGUID(&CLSID_MSDASQL_ENUMERATOR, rclsid))
+        return IClassFactory_QueryInterface(&enumfactory, riid, ppv);
 
     return CLASS_E_CLASSNOTAVAILABLE;
 }
@@ -172,6 +194,12 @@ static const struct dbproperty dbproperties[] =
     { L"General Timeout",          DBPROP_INIT_GENERALTIMEOUT,             DBPROPOPTIONS_OPTIONAL, VT_I4 },
 };
 
+struct msdasql_prop
+{
+    VARTYPE id;
+    VARIANT value;
+};
+
 struct msdasql
 {
     IUnknown         MSDASQL_iface;
@@ -181,6 +209,7 @@ struct msdasql
     IPersist         IPersist_iface;
 
     LONG     ref;
+    struct msdasql_prop properties[14];
 };
 
 static inline struct msdasql *impl_from_IUnknown(IUnknown *iface)
@@ -303,10 +332,69 @@ static HRESULT WINAPI dbprops_GetProperties(IDBProperties *iface, ULONG cPropert
             const DBPROPIDSET rgPropertyIDSets[], ULONG *pcPropertySets, DBPROPSET **prgPropertySets)
 {
     struct msdasql *provider = impl_from_IDBProperties(iface);
+    int i, j, k;
+    DBPROPSET *propset;
 
-    FIXME("(%p)->(%d %p %p %p)\n", provider, cPropertyIDSets, rgPropertyIDSets, pcPropertySets, prgPropertySets);
+    TRACE("(%p)->(%d %p %p %p)\n", provider, cPropertyIDSets, rgPropertyIDSets, pcPropertySets, prgPropertySets);
 
-    return E_NOTIMPL;
+    *pcPropertySets = 1;
+
+    if (cPropertyIDSets != 1)
+    {
+        FIXME("Currently only 1 property set supported.\n");
+        cPropertyIDSets = 1;
+    }
+
+    propset = CoTaskMemAlloc(cPropertyIDSets * sizeof(DBPROPSET));
+
+    if (IsEqualGUID(&rgPropertyIDSets[0].guidPropertySet, &DBPROPSET_DATASOURCEINFO))
+    {
+        TRACE("Propertyset DBPROPSET_DATASOURCEINFO not supported\n");
+        propset->guidPropertySet = rgPropertyIDSets[0].guidPropertySet;
+        propset->cProperties = rgPropertyIDSets[0].cPropertyIDs;
+
+        propset->rgProperties = CoTaskMemAlloc(propset->cProperties * sizeof(DBPROP));
+
+        for (j=0; j < propset->cProperties; j++)
+        {
+            propset->rgProperties[j].dwPropertyID = rgPropertyIDSets[0].rgPropertyIDs[j];
+            propset->rgProperties[j].dwStatus = DBPROPSTATUS_NOTSUPPORTED;
+        }
+
+        *prgPropertySets = propset;
+
+        return DB_E_ERRORSOCCURRED;
+    }
+
+    propset->guidPropertySet = DBPROPSET_DBINIT;
+
+    for (i=0; i < cPropertyIDSets; i++)
+    {
+        TRACE("Property id %d (count %d, set %s)\n", i, rgPropertyIDSets[i].cPropertyIDs,
+                debugstr_guid(&rgPropertyIDSets[i].guidPropertySet));
+
+        propset->cProperties = rgPropertyIDSets[i].cPropertyIDs;
+        propset->rgProperties = CoTaskMemAlloc(propset->cProperties * sizeof(DBPROP));
+
+        for (j=0; j < propset->cProperties; j++)
+        {
+            propset->rgProperties[j].dwPropertyID = rgPropertyIDSets[i].rgPropertyIDs[j];
+
+            for(k = 0; k < ARRAY_SIZE(provider->properties); k++)
+            {
+                if (provider->properties[k].id == rgPropertyIDSets[i].rgPropertyIDs[j])
+                {
+                    V_VT(&propset->rgProperties[j].vValue) = VT_EMPTY;
+                    VariantCopy(&propset->rgProperties[j].vValue, &provider->properties[k].value);
+                    break;
+                }
+            }
+        }
+    }
+
+    *prgPropertySets = propset;
+
+    return S_OK;
 }
 
 static HRESULT WINAPI dbprops_GetPropertyInfo(IDBProperties *iface, ULONG cPropertyIDSets,
@@ -357,10 +445,27 @@ static HRESULT WINAPI dbprops_SetProperties(IDBProperties *iface, ULONG cPropert
             DBPROPSET rgPropertySets[])
 {
     struct msdasql *provider = impl_from_IDBProperties(iface);
+    int i, j, k;
 
-    FIXME("(%p)->(%d %p)\n", provider, cPropertySets, rgPropertySets);
+    TRACE("(%p)->(%d %p)\n", provider, cPropertySets, rgPropertySets);
 
-    return E_NOTIMPL;
+    for (i=0; i < cPropertySets; i++)
+    {
+        for (j=0; j < rgPropertySets[i].cProperties; j++)
+        {
+            for(k=0; k < ARRAY_SIZE(provider->properties); k++)
+            {
+                if (provider->properties[k].id == rgPropertySets[i].rgProperties[j].dwPropertyID)
+                {
+                    TRACE("Found property %d\n", provider->properties[k].id);
+                    VariantCopy(&provider->properties[k].value, &rgPropertySets[i].rgProperties[j].vValue);
+                    break;
+                }
+            }
+        }
+    }
+
+    return S_OK;
 }
 
 static const struct IDBPropertiesVtbl dbprops_vtbl =
@@ -454,7 +559,7 @@ static HRESULT WINAPI dbsess_CreateSession(IDBCreateSession *iface, IUnknown *ou
     if (outer)
         FIXME("outer currently not supported.\n");
 
-    hr = create_db_session(riid, (void**)session);
+    hr = create_db_session(riid, &provider->MSDASQL_iface, (void**)session);
 
     return hr;
 }
@@ -510,6 +615,7 @@ static HRESULT create_msdasql_provider(REFIID riid, void **ppv)
 {
     struct msdasql *provider;
     HRESULT hr;
+    int i;
 
     provider = malloc(sizeof(struct msdasql));
     if (!provider)
@@ -522,7 +628,337 @@ static HRESULT create_msdasql_provider(REFIID riid, void **ppv)
     provider->IPersist_iface.lpVtbl = &persistVtbl;
     provider->ref = 1;
 
+    for(i=0; i < ARRAY_SIZE(dbproperties); i++)
+    {
+        provider->properties[i].id = dbproperties[i].id;
+        VariantInit(&provider->properties[i].value);
+
+        /* Only the follow are initialized to a value */
+        switch(dbproperties[i].id)
+        {
+            case DBPROP_INIT_PROMPT:
+                V_VT(&provider->properties[i].value) = dbproperties[i].type;
+                V_I2(&provider->properties[i].value) = 4;
+                break;
+            case DBPROP_INIT_LCID:
+                V_VT(&provider->properties[i].value) = dbproperties[i].type;
+                V_I4(&provider->properties[i].value) = GetUserDefaultLCID();
+                break;
+            case DBPROP_INIT_OLEDBSERVICES:
+                V_VT(&provider->properties[i].value) = dbproperties[i].type;
+                V_I4(&provider->properties[i].value) = -1;
+                break;
+            default:
+                V_VT(&provider->properties[i].value) = VT_EMPTY;
+        }
+    }
+
     hr = IUnknown_QueryInterface(&provider->MSDASQL_iface, riid, ppv);
     IUnknown_Release(&provider->MSDASQL_iface);
+    return hr;
+}
+
+struct msdasql_enum
+{
+    ISourcesRowset ISourcesRowset_iface;
+    LONG ref;
+};
+
+static inline struct msdasql_enum *msdasql_enum_from_ISourcesRowset(ISourcesRowset *iface)
+{
+    return CONTAINING_RECORD(iface, struct msdasql_enum, ISourcesRowset_iface);
+}
+
+static HRESULT WINAPI msdasql_enum_QueryInterface(ISourcesRowset *iface, REFIID riid, void **out)
+{
+    struct msdasql_enum *enumerator = msdasql_enum_from_ISourcesRowset(iface);
+
+    TRACE("(%p)->(%s %p)\n", enumerator, debugstr_guid(riid), out);
+
+    if(IsEqualGUID(riid, &IID_IUnknown) ||
+        IsEqualGUID(riid, &IID_ISourcesRowset ) )
+    {
+        *out = &enumerator->ISourcesRowset_iface;
+    }
+    else
+    {
+        FIXME("(%s, %p)\n", debugstr_guid(riid), out);
+        *out = NULL;
+        return E_NOINTERFACE;
+    }
+
+    IUnknown_AddRef((IUnknown*)*out);
+    return S_OK;
+}
+
+static ULONG WINAPI msdasql_enum_AddRef(ISourcesRowset *iface)
+{
+    struct msdasql_enum *enumerator = msdasql_enum_from_ISourcesRowset(iface);
+    ULONG ref = InterlockedIncrement(&enumerator->ref);
+
+    TRACE("(%p) ref=%u\n", enumerator, ref);
+
+    return ref;
+}
+
+static ULONG WINAPI msdasql_enum_Release(ISourcesRowset *iface)
+{
+    struct msdasql_enum *enumerator = msdasql_enum_from_ISourcesRowset(iface);
+    ULONG ref = InterlockedDecrement(&enumerator->ref);
+
+    TRACE("(%p) ref=%u\n", enumerator, ref);
+
+    if (!ref)
+    {
+        free(enumerator);
+    }
+
+    return ref;
+}
+
+struct msdasql_enum_rowset
+{
+    IRowset IRowset_iface;
+    IAccessor IAccessor_iface;
+    LONG ref;
+};
+
+static inline struct msdasql_enum_rowset *msdasql_rs_from_IRowset(IRowset *iface)
+{
+    return CONTAINING_RECORD(iface, struct msdasql_enum_rowset, IRowset_iface);
+}
+
+static inline struct msdasql_enum_rowset *msdasql_enum_from_IAccessor ( IAccessor *iface )
+{
+    return CONTAINING_RECORD( iface, struct msdasql_enum_rowset, IAccessor_iface );
+}
+
+static HRESULT WINAPI enum_rowset_QueryInterface(IRowset *iface, REFIID riid,  void **ppv)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    TRACE( "%p, %s, %p\n", rowset, debugstr_guid(riid), ppv );
+    *ppv = NULL;
+
+    if(IsEqualGUID(&IID_IUnknown, riid) ||
+       IsEqualGUID(&IID_IRowset, riid))
+    {
+        *ppv = &rowset->IRowset_iface;
+    }
+    else if(IsEqualGUID(&IID_IAccessor, riid))
+    {
+         *ppv = &rowset->IAccessor_iface;
+    }
+
+    if(*ppv)
+    {
+        IUnknown_AddRef((IUnknown*)*ppv);
+        return S_OK;
+    }
+
+    FIXME("(%p)->(%s %p)\n", iface, debugstr_guid(riid), ppv);
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI enum_rowset_AddRef(IRowset *iface)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+    LONG refs = InterlockedIncrement( &rowset->ref );
+    TRACE( "%p new refcount %d\n", rowset, refs );
+    return refs;
+}
+
+static ULONG WINAPI enum_rowset_Release(IRowset *iface)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+    LONG refs = InterlockedDecrement( &rowset->ref );
+    TRACE( "%p new refcount %d\n", rowset, refs );
+    if (!refs)
+    {
+        TRACE( "destroying %p\n", rowset );
+        free( rowset );
+    }
+    return refs;
+}
+
+static HRESULT WINAPI enum_rowset_AddRefRows(IRowset *iface, DBCOUNTITEM count,
+        const HROW rows[], DBREFCOUNT ref_counts[], DBROWSTATUS status[])
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    FIXME("%p, %ld, %p, %p, %p\n", rowset, count, rows, ref_counts, status);
+
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI enum_rowset_GetData(IRowset *iface, HROW row, HACCESSOR accessor, void *data)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    FIXME("%p, %ld, %ld, %p\n", rowset, row, accessor, data);
+
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI enum_rowset_GetNextRows(IRowset *iface, HCHAPTER reserved, DBROWOFFSET offset,
+        DBROWCOUNT count, DBCOUNTITEM *obtained, HROW **rows)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    FIXME("%p, %ld, %ld, %ld, %p, %p\n", rowset, reserved, offset, count, obtained, rows);
+
+    if (!obtained || !rows)
+        return E_INVALIDARG;
+
+    *obtained = 0;
+
+    if (!count)
+        return S_OK;
+
+    return DB_S_ENDOFROWSET;
+}
+
+static HRESULT WINAPI enum_rowset_ReleaseRows(IRowset *iface, DBCOUNTITEM count,
+        const HROW rows[], DBROWOPTIONS options[], DBREFCOUNT ref_counts[], DBROWSTATUS status[])
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    FIXME("%p, %ld, %p, %p, %p, %p\n", rowset, count, rows, options, ref_counts, status);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI enum_rowset_RestartPosition(IRowset *iface, HCHAPTER reserved)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_rs_from_IRowset( iface );
+
+    FIXME("%p, %ld\n", rowset, reserved);
+
+    return S_OK;
+}
+
+static const struct IRowsetVtbl enum_rowset_vtbl =
+{
+    enum_rowset_QueryInterface,
+    enum_rowset_AddRef,
+    enum_rowset_Release,
+    enum_rowset_AddRefRows,
+    enum_rowset_GetData,
+    enum_rowset_GetNextRows,
+    enum_rowset_ReleaseRows,
+    enum_rowset_RestartPosition
+};
+
+static HRESULT WINAPI enum_rs_accessor_QueryInterface(IAccessor *iface, REFIID riid, void **out)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+    return IRowset_QueryInterface(&rowset->IRowset_iface, riid, out);
+}
+
+static ULONG WINAPI enum_rs_accessor_AddRef(IAccessor *iface)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+    return IRowset_AddRef(&rowset->IRowset_iface);
+}
+
+static ULONG  WINAPI enum_rs_accessor_Release(IAccessor *iface)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+    return IRowset_Release(&rowset->IRowset_iface);
+}
+
+static HRESULT WINAPI enum_rs_accessor_AddRefAccessor(IAccessor *iface, HACCESSOR accessor, DBREFCOUNT *count)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+    FIXME("%p, %lu, %p\n", rowset, accessor, count);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI enum_rs_accessor_CreateAccessor(IAccessor *iface, DBACCESSORFLAGS flags,
+        DBCOUNTITEM count, const DBBINDING bindings[], DBLENGTH row_size, HACCESSOR *accessor,
+        DBBINDSTATUS status[])
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+
+    FIXME("%p 0x%08x, %lu, %p, %lu, %p, %p\n", rowset, flags, count, bindings, row_size, accessor, status);
+
+    if (accessor)
+        *accessor = 0xdeadbeef;
+
+    return S_OK;
+}
+
+static HRESULT WINAPI enum_rs_accessor_GetBindings(IAccessor *iface, HACCESSOR accessor,
+        DBACCESSORFLAGS *flags, DBCOUNTITEM *count, DBBINDING **bindings)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+    FIXME("%p %lu, %p, %p, %p\n", rowset, accessor, flags, count, bindings);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI enum_rs_accessor_ReleaseAccessor(IAccessor *iface, HACCESSOR accessor, DBREFCOUNT *count)
+{
+    struct msdasql_enum_rowset *rowset = msdasql_enum_from_IAccessor( iface );
+
+    FIXME("%p, %lu, %p\n", rowset, accessor, count);
+
+    if (count)
+        *count = 0;
+
+    return S_OK;
+}
+
+struct IAccessorVtbl enum_accessor_vtbl =
+{
+    enum_rs_accessor_QueryInterface,
+    enum_rs_accessor_AddRef,
+    enum_rs_accessor_Release,
+    enum_rs_accessor_AddRefAccessor,
+    enum_rs_accessor_CreateAccessor,
+    enum_rs_accessor_GetBindings,
+    enum_rs_accessor_ReleaseAccessor
+};
+
+static HRESULT WINAPI msdasql_enum_GetSourcesRowset(ISourcesRowset *iface, IUnknown *outer, REFIID riid, ULONG sets,
+                DBPROPSET properties[], IUnknown **rowset)
+{
+    struct msdasql_enum *enumerator = msdasql_enum_from_ISourcesRowset(iface);
+    struct msdasql_enum_rowset *enum_rs;
+    HRESULT hr;
+
+    TRACE("(%p) %p, %s, %d, %p, %p\n", enumerator, outer, debugstr_guid(riid), sets, properties, rowset);
+
+    enum_rs = malloc(sizeof(*enum_rs));
+    enum_rs->IRowset_iface.lpVtbl = &enum_rowset_vtbl;
+    enum_rs->IAccessor_iface.lpVtbl = &enum_accessor_vtbl;
+    enum_rs->ref = 1;
+
+    hr = IRowset_QueryInterface(&enum_rs->IRowset_iface, riid, (void**)rowset);
+    IRowset_Release(&enum_rs->IRowset_iface);
+    return hr;
+}
+
+static const ISourcesRowsetVtbl msdsqlenum_vtbl =
+{
+    msdasql_enum_QueryInterface,
+    msdasql_enum_AddRef,
+    msdasql_enum_Release,
+    msdasql_enum_GetSourcesRowset
+};
+
+static HRESULT create_msdasql_enumerator(REFIID riid, void **ppv)
+{
+    struct msdasql_enum *enumerator;
+    HRESULT hr;
+
+    enumerator = malloc(sizeof(*enumerator));
+    if (!enumerator)
+        return E_OUTOFMEMORY;
+
+    enumerator->ISourcesRowset_iface.lpVtbl = &msdsqlenum_vtbl;
+    enumerator->ref = 1;
+
+    hr = IUnknown_QueryInterface(&enumerator->ISourcesRowset_iface, riid, ppv);
+    IUnknown_Release(&enumerator->ISourcesRowset_iface);
     return hr;
 }

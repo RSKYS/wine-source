@@ -26,14 +26,13 @@
 #endif
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
-#ifdef HAVE_SYS_STAT_H
-# include <sys/stat.h>
-#endif
+#include <dlfcn.h>
 #ifdef HAVE_SYS_MMAN_H
 # include <sys/mman.h>
 #endif
@@ -43,6 +42,7 @@
 #endif
 #include <stdio.h>
 #include <assert.h>
+#include <unistd.h>
 
 #ifdef HAVE_CARBON_CARBON_H
 #define LoadResource __carbon_LoadResource
