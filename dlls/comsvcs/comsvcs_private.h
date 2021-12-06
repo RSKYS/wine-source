@@ -1,7 +1,5 @@
 /*
- * QuickTime Toolkit decoder header
- *
- * Copyright 2011 Aric Stewart, CodeWeavers
+ * Copyright 2021 Jactry Zeng for CodeWeavers
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -18,11 +16,19 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-typedef struct WineDataRefRecordTag
-{
-    IAsyncReader* pReader;
-    GUID streamSubtype;
-} WineDataRefRecord;
+#ifndef _COMSVCS_PRIVATE_H_
+#define _COMSVCS_PRIVATE_H_
 
-HRESULT AccessPixelBufferPixels( CVPixelBufferRef pixelBuffer, LPBYTE pbDstStream);
-void RegisterWineDataHandler( void );
+#define COBJMACROS
+
+#include <stdarg.h>
+
+#include "windef.h"
+#include "winbase.h"
+#include "ole2.h"
+#include "rpcproxy.h"
+#include "comsvcs.h"
+
+HRESULT WINAPI group_manager_create(IClassFactory *iface, IUnknown *outer, REFIID riid, void **out);
+
+#endif

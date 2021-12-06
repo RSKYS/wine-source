@@ -30,7 +30,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -12955,6 +12954,9 @@ static void glsl_blitter_upload_palette(struct wined3d_glsl_blitter *blitter,
     gl_info->gl_ops.gl.p_glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     gl_info->gl_ops.gl.p_glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     gl_info->gl_ops.gl.p_glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+
+    GL_EXTCALL(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+    checkGLcall("glBindBuffer");
 
     if (palette)
     {

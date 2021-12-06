@@ -61,11 +61,11 @@
 #include "winbase.h"
 #include "winnls.h"
 #include "winreg.h"
+#include "winternl.h"
 #include "mmdeviceapi.h"
 #include "initguid.h"
 #include "audioclient.h"
 #include "wine/debug.h"
-#include "wine/unicode.h"
 #include "wine/unixlib.h"
 
 #include "unixlib.h"
@@ -1629,4 +1629,9 @@ unixlib_entry_t __wine_unix_call_funcs[] =
     get_frequency,
     is_started,
     set_volumes,
+    midi_init,
+    midi_release,
+    midi_out_message,
+    midi_in_message,
+    midi_notify_wait,
 };

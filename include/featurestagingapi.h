@@ -1,7 +1,5 @@
 /*
- * COM classes for wineqtdecoder
- *
- * Copyright 2019 Zebediah Figura
+ * Copyright (C) 2021 Alex Henrie
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -18,20 +16,34 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#pragma makedep header
-#pragma makedep ident
-#pragma makedep register
+#ifndef _FEATURESTAGINGAPI_H_
+#define _FEATURESTAGINGAPI_H_
 
-[
-    helpstring("Wine QuickTime splitter"),
-    threading(both),
-    uuid(d0e70e49-5927-4894-a386-359460ee87c9)
-]
-coclass QTSplitter {}
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-[
-    helpstring("Wine QuickTime video decoder"),
-    threading(both),
-    uuid(683ddacb-4354-490c-a058-e05ad0f20537)
-]
-coclass QTVDecoder {}
+DECLARE_HANDLE(FEATURE_STATE_CHANGE_SUBSCRIPTION);
+
+typedef void WINAPI FEATURE_STATE_CHANGE_CALLBACK(void*);
+
+typedef enum FEATURE_CHANGE_TIME
+{
+    FEATURE_CHANGE_TIME_READ,
+    FEATURE_CHANGE_TIME_MODULE_RELOAD,
+    FEATURE_CHANGE_TIME_SESSION,
+    FEATURE_CHANGE_TIME_REBOOT
+} FEATURE_CHANGE_TIME;
+
+typedef enum FEATURE_ENABLED_STATE
+{
+    FEATURE_ENABLED_STATE_DEFAULT,
+    FEATURE_ENABLED_STATE_DISABLED,
+    FEATURE_ENABLED_STATE_ENABLED
+} FEATURE_ENABLED_STATE;
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

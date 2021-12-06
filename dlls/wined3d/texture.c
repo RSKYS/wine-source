@@ -21,7 +21,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 #include "wined3d_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
@@ -929,6 +928,9 @@ static void wined3d_texture_gl_allocate_mutable_storage(struct wined3d_texture_g
         layer_count = 1;
     else
         layer_count = texture_gl->t.layer_count;
+
+    GL_EXTCALL(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+    checkGLcall("glBindBuffer");
 
     for (layer = 0; layer < layer_count; ++layer)
     {
@@ -2532,6 +2534,9 @@ static void wined3d_texture_gl_upload_data(struct wined3d_context *context,
 
         src_mem = wined3d_context_gl_map_bo_address(context_gl, &bo, src_slice_pitch * update_d, WINED3D_MAP_READ);
 
+        GL_EXTCALL(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+        checkGLcall("glBindBuffer");
+
         for (z = 0; z < update_d; ++z, src_mem += src_slice_pitch)
         {
             if (decompress)
@@ -2560,6 +2565,11 @@ static void wined3d_texture_gl_upload_data(struct wined3d_context *context,
             GL_EXTCALL(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, wined3d_bo_gl(bo.buffer_object)->id));
             checkGLcall("glBindBuffer");
             offset += bo.buffer_object->buffer_offset;
+        }
+        else
+        {
+            GL_EXTCALL(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+            checkGLcall("glBindBuffer");
         }
 
         wined3d_texture_gl_upload_bo(src_format, target, level, src_row_pitch, src_slice_pitch, dst_x,
@@ -2687,6 +2697,8 @@ static void wined3d_texture_gl_download_data_slow_path(struct wined3d_texture_gl
 
     if (temporary_mem)
     {
+        GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
+        checkGLcall("glBindBuffer");
         mem = temporary_mem;
     }
     else if (bo)
@@ -2697,6 +2709,8 @@ static void wined3d_texture_gl_download_data_slow_path(struct wined3d_texture_gl
     }
     else
     {
+        GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
+        checkGLcall("glBindBuffer");
         mem = data->addr;
     }
 
@@ -2909,6 +2923,11 @@ static void wined3d_texture_gl_download_data(struct wined3d_context *context,
         GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, wined3d_bo_gl(dst_bo)->id));
         checkGLcall("glBindBuffer");
         offset += dst_bo->buffer_offset;
+    }
+    else
+    {
+        GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
+        checkGLcall("glBindBuffer");
     }
 
     if (src_texture->resource.format_flags & WINED3DFMT_FLAG_COMPRESSED)

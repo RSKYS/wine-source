@@ -21,7 +21,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -994,10 +993,13 @@ void update_net_wm_states( struct x11drv_win_data *data )
     ex_style = GetWindowLongW( data->hwnd, GWL_EXSTYLE );
     if (ex_style & WS_EX_TOPMOST)
         new_state |= (1 << NET_WM_STATE_ABOVE);
-    if (ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
-        new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR) | (1 << NET_WM_STATE_SKIP_PAGER);
-    if (!(ex_style & WS_EX_APPWINDOW) && GetWindow( data->hwnd, GW_OWNER ))
-        new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR);
+    if (!data->add_taskbar)
+    {
+        if (data->skip_taskbar || (ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)))
+            new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR) | (1 << NET_WM_STATE_SKIP_PAGER);
+        else if (!(ex_style & WS_EX_APPWINDOW) && GetWindow( data->hwnd, GW_OWNER ))
+            new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR);
+    }
 
     if (!data->mapped)  /* set the _NET_WM_STATE atom directly */
     {
@@ -1858,6 +1860,8 @@ BOOL CDECL X11DRV_CreateDesktopWindow( HWND hwnd )
 static WNDPROC desktop_orig_wndproc;
 
 #define WM_WINE_NOTIFY_ACTIVITY WM_USER
+#define WM_WINE_DELETE_TAB      (WM_USER + 1)
+#define WM_WINE_ADD_TAB         (WM_USER + 2)
 
 static LRESULT CALLBACK desktop_wndproc_wrapper( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
@@ -1877,6 +1881,12 @@ static LRESULT CALLBACK desktop_wndproc_wrapper( HWND hwnd, UINT msg, WPARAM wp,
         }
         break;
     }
+    case WM_WINE_DELETE_TAB:
+        SendNotifyMessageW( (HWND)wp, WM_X11DRV_DELETE_TAB, 0, 0 );
+        break;
+    case WM_WINE_ADD_TAB:
+        SendNotifyMessageW( (HWND)wp, WM_X11DRV_ADD_TAB, 0, 0 );
+        break;
     }
     return desktop_orig_wndproc( hwnd, msg, wp, lp );
 }
@@ -2777,6 +2787,39 @@ done:
     return ret;
 }
 
+/* Add a window to taskbar */
+static void taskbar_add_tab( HWND hwnd )
+{
+    struct x11drv_win_data *data;
+
+    TRACE("hwnd %p\n", hwnd);
+
+    data = get_win_data( hwnd );
+    if (!data)
+        return;
+
+    data->add_taskbar = TRUE;
+    data->skip_taskbar = FALSE;
+    update_net_wm_states( data );
+    release_win_data( data );
+}
+
+/* Delete a window from taskbar */
+static void taskbar_delete_tab( HWND hwnd )
+{
+    struct x11drv_win_data *data;
+
+    TRACE("hwnd %p\n", hwnd);
+
+    data = get_win_data( hwnd );
+    if (!data)
+        return;
+
+    data->skip_taskbar = TRUE;
+    data->add_taskbar = FALSE;
+    update_net_wm_states( data );
+    release_win_data( data );
+}
 
 /**********************************************************************
  *           X11DRV_WindowMessage   (X11DRV.@)
@@ -2813,6 +2856,12 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return clip_cursor_notify( hwnd, (HWND)wp, (HWND)lp );
     case WM_X11DRV_CLIP_CURSOR_REQUEST:
         return clip_cursor_request( hwnd, (BOOL)wp, (BOOL)lp );
+    case WM_X11DRV_DELETE_TAB:
+        taskbar_delete_tab( hwnd );
+        return 0;
+    case WM_X11DRV_ADD_TAB:
+        taskbar_add_tab( hwnd );
+        return 0;
     default:
         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, wp, lp );
         return 0;

@@ -27,7 +27,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 #include "wined3d_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
@@ -474,6 +473,11 @@ void texture2d_read_from_framebuffer(struct wined3d_texture *texture, unsigned i
         GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, wined3d_bo_gl(data.buffer_object)->id));
         checkGLcall("glBindBuffer");
         offset += data.buffer_object->buffer_offset;
+    }
+    else
+    {
+        GL_EXTCALL(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
+        checkGLcall("glBindBuffer");
     }
 
     level = sub_resource_idx % texture->level_count;

@@ -34,6 +34,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <sys/types.h>
 #include <math.h>
 #include <limits.h>
 #include "ntstatus.h"
@@ -50,7 +51,6 @@
 #include "ddk/d3dkmthk.h"
 #include "wine/debug.h"
 #include "wine/heap.h"
-#include "wine/unicode.h"
 #ifdef HAVE_FLOAT_H
 # include <float.h>
 #endif

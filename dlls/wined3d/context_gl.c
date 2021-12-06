@@ -25,7 +25,6 @@
  */
 
 #include "config.h"
-#include "wine/port.h"
 
 #include "wined3d_private.h"
 
@@ -2669,8 +2668,7 @@ void wined3d_context_gl_submit_command_fence(struct wined3d_context_gl *context_
     wined3d_context_gl_poll_fences(context_gl);
 }
 
-static void *wined3d_bo_gl_map(struct wined3d_bo_gl *bo,
-        struct wined3d_context_gl *context_gl, size_t offset, size_t size, uint32_t flags)
+static void *wined3d_bo_gl_map(struct wined3d_bo_gl *bo, struct wined3d_context_gl *context_gl, uint32_t flags)
 {
     struct wined3d_device_gl *device_gl = wined3d_device_gl(context_gl->c.device);
     const struct wined3d_gl_info *gl_info;
@@ -2707,17 +2705,28 @@ static void *wined3d_bo_gl_map(struct wined3d_bo_gl *bo,
     wined3d_context_gl_wait_command_fence(context_gl, bo->command_fence_id);
 
 map:
+    if (bo->b.map_ptr)
+        return (uint8_t *)bo->b.map_ptr;
+
     gl_info = context_gl->gl_info;
     wined3d_context_gl_bind_bo(context_gl, bo->binding, bo->id);
 
-    if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
+    if (gl_info->supported[ARB_BUFFER_STORAGE])
     {
-        map_ptr = GL_EXTCALL(glMapBufferRange(bo->binding, offset, size, wined3d_resource_gl_map_flags(bo, flags)));
+        if ((map_ptr = GL_EXTCALL(glMapBufferRange(bo->binding, 0, bo->size,
+                GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT | wined3d_resource_gl_map_flags(bo, flags)))))
+        {
+            if (wined3d_map_persistent())
+                bo->b.map_ptr = map_ptr;
+        }
+    }
+    else if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
+    {
+        map_ptr = GL_EXTCALL(glMapBufferRange(bo->binding, 0, bo->size, wined3d_resource_gl_map_flags(bo, flags)));
     }
     else
     {
         map_ptr = GL_EXTCALL(glMapBuffer(bo->binding, wined3d_resource_gl_legacy_map_flags(flags)));
-        map_ptr += offset;
     }
 
     wined3d_context_gl_bind_bo(context_gl, bo->binding, 0);
@@ -2735,10 +2744,13 @@ void *wined3d_context_gl_map_bo_address(struct wined3d_context_gl *context_gl,
     if (!(bo = data->buffer_object))
         return data->addr;
 
-    if (!(map_ptr = wined3d_bo_gl_map(wined3d_bo_gl(bo), context_gl, (uintptr_t)data->addr, size, flags)))
+    if (!(map_ptr = wined3d_bo_gl_map(wined3d_bo_gl(bo), context_gl, flags)))
+    {
         ERR("Failed to map bo.\n");
+        return NULL;
+    }
 
-    return map_ptr;
+    return (uint8_t *)map_ptr + bo->buffer_offset + (uintptr_t)data->addr;
 }
 
 static void flush_bo_ranges(struct wined3d_context_gl *context_gl, const struct wined3d_const_bo_address *data,
@@ -2757,11 +2769,12 @@ static void flush_bo_ranges(struct wined3d_context_gl *context_gl, const struct 
 
     if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
     {
+        /* The offset passed to glFlushMappedBufferRange() is relative to the
+         * mapped range, but we map the whole buffer anyway. */
         for (i = 0; i < range_count; ++i)
         {
-            /* The offset passed to glFlushMappedBufferRange() is relative to
-             * the mapped range, so don't add data->addr in this case. */
-            GL_EXTCALL(glFlushMappedBufferRange(bo->binding, ranges[i].offset, ranges[i].size));
+            GL_EXTCALL(glFlushMappedBufferRange(bo->binding,
+                    bo->b.buffer_offset + (uintptr_t)data->addr + ranges[i].offset, ranges[i].size));
         }
     }
     else if (gl_info->supported[APPLE_FLUSH_BUFFER_RANGE])
@@ -2769,7 +2782,7 @@ static void flush_bo_ranges(struct wined3d_context_gl *context_gl, const struct 
         for (i = 0; i < range_count; ++i)
         {
             GL_EXTCALL(glFlushMappedBufferRangeAPPLE(bo->binding,
-                    (uintptr_t)data->addr + ranges[i].offset, ranges[i].size));
+                    bo->b.buffer_offset + (uintptr_t)data->addr + ranges[i].offset, ranges[i].size));
             checkGLcall("glFlushMappedBufferRangeAPPLE");
         }
     }
@@ -2789,6 +2802,9 @@ void wined3d_context_gl_unmap_bo_address(struct wined3d_context_gl *context_gl,
     bo = wined3d_bo_gl(data->buffer_object);
 
     flush_bo_ranges(context_gl, wined3d_const_bo_address(data), range_count, ranges);
+
+    if (bo->b.map_ptr)
+        return;
 
     gl_info = context_gl->gl_info;
     wined3d_context_gl_bind_bo(context_gl, bo->binding, bo->id);
@@ -2907,9 +2923,15 @@ bool wined3d_context_gl_create_bo(struct wined3d_context_gl *context_gl, GLsizei
     }
 
     if (gl_info->supported[ARB_BUFFER_STORAGE])
+    {
+        if (flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))
+            flags |= GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
         GL_EXTCALL(glBufferStorage(binding, size, NULL, flags | GL_DYNAMIC_STORAGE_BIT));
+    }
     else
+    {
         GL_EXTCALL(glBufferData(binding, size, NULL, usage));
+    }
 
     wined3d_context_gl_bind_bo(context_gl, binding, 0);
     checkGLcall("buffer object creation");
