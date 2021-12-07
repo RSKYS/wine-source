@@ -922,9 +922,9 @@
 @ stub NtUserGetDisplayAutoRotationPreferences
 @ stub NtUserGetDisplayAutoRotationPreferencesByProcessId
 @ stdcall NtUserGetDisplayConfigBufferSizes(long ptr ptr)
-@ stub NtUserGetDoubleClickTime
+@ stdcall -syscall NtUserGetDoubleClickTime()
 @ stub NtUserGetDpiForCurrentProcess
-@ stub NtUserGetDpiForMonitor
+@ stdcall -syscall NtUserGetDpiForMonitor(long long ptr ptr)
 @ stub NtUserGetExtendedPointerDeviceProperty
 @ stub NtUserGetForegroundWindow
 @ stub NtUserGetGUIThreadInfo
@@ -977,7 +977,7 @@
 @ stub NtUserGetPointerType
 @ stub NtUserGetPrecisionTouchPadConfiguration
 @ stdcall NtUserGetPriorityClipboardFormat(ptr long)
-@ stub NtUserGetProcessDpiAwarenessContext
+@ stdcall -syscall NtUserGetProcessDpiAwarenessContext(long)
 @ stub NtUserGetProcessUIContextInformation
 @ stdcall -syscall NtUserGetProcessWindowStation()
 @ stdcall -syscall NtUserGetProp(long wstr)
@@ -993,7 +993,7 @@
 @ stub NtUserGetResizeDCompositionSynchronizationObject
 @ stub NtUserGetScrollBarInfo
 @ stub NtUserGetSharedWindowData
-@ stub NtUserGetSystemDpiForProcess
+@ stdcall -syscall NtUserGetSystemDpiForProcess(long)
 @ stub NtUserGetSystemMenu
 @ stdcall -syscall NtUserGetThreadDesktop(long)
 @ stub NtUserGetThreadState
@@ -1216,7 +1216,7 @@
 @ stdcall -syscall NtUserSetObjectInformation(long long ptr long)
 @ stub NtUserSetParent
 @ stub NtUserSetPrecisionTouchPadConfiguration
-@ stub NtUserSetProcessDpiAwarenessContext
+@ stdcall -syscall NtUserSetProcessDpiAwarenessContext(long long)
 @ stub NtUserSetProcessInteractionFlags
 @ stub NtUserSetProcessMousewheelRoutingMode
 @ stub NtUserSetProcessRestrictionExemption
@@ -1227,7 +1227,7 @@
 @ stub NtUserSetSensorPresence
 @ stub NtUserSetSharedWindowData
 @ stub NtUserSetShellWindowEx
-@ stub NtUserSetSysColors
+@ stdcall NtUserSetSysColors(long ptr ptr)
 @ stub NtUserSetSystemCursor
 @ stub NtUserSetSystemMenu
 @ stub NtUserSetSystemTimer
@@ -1271,8 +1271,8 @@
 @ stub NtUserSoundSentry
 @ stub NtUserStopAndEndInertia
 @ stub NtUserSwitchDesktop
-@ stub NtUserSystemParametersInfo
-@ stub NtUserSystemParametersInfoForDpi
+@ stdcall NtUserSystemParametersInfo(long long ptr long)
+@ stdcall NtUserSystemParametersInfoForDpi(long long ptr long long)
 @ stub NtUserTestForInteractiveUser
 @ stub NtUserThunkedMenuInfo
 @ stub NtUserThunkedMenuItemInfo

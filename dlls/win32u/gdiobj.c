@@ -572,16 +572,6 @@ BOOL GDI_dec_ref_count( HGDIOBJ handle )
 }
 
 
-/******************************************************************************
- *              get_system_dpi
- *
- * Get the system DPI, based on the DPI awareness mode.
- */
-DWORD get_system_dpi(void)
-{
-    return user_callbacks ? user_callbacks->pGetDpiForSystem() : 96;
-}
-
 static HFONT create_font( const LOGFONTW *deffont )
 {
     ENUMLOGFONTEXDVW lf;
@@ -1184,7 +1174,10 @@ static struct unix_funcs unix_funcs =
     NtUserMapVirtualKeyEx,
     NtUserScrollDC,
     NtUserSelectPalette,
+    NtUserSetSysColors,
     NtUserShowCursor,
+    NtUserSystemParametersInfo,
+    NtUserSystemParametersInfoForDpi,
     NtUserToUnicodeEx,
     NtUserUnregisterHotKey,
     NtUserVkKeyScanEx,
